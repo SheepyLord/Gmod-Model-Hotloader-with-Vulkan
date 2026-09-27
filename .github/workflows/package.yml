@@ -44,7 +44,8 @@ jobs:
 
       # Pinned sources, the CoACD wheel and the shader compiler. bootstrap.py
       # reuses them only when their recorded revisions still match the lock file.
-      # DXVK is cloned fresh by build-dxvk.ps1 so its patches always apply to a clean tree.
+      # The exclusion does not reach inside the cached vendor folder, so vendor/dxvk can
+      # return patched; build-dxvk.ps1 resets it to the pinned tag when its patches changed.
       - name: Restore pinned dependencies
         uses: actions/cache@v5
         with:

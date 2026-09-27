@@ -13,11 +13,23 @@ if(-not (Test-Path -LiteralPath (Join-Path $dxvk 'meson.build'))){
 }
 $head=(git -C $dxvk rev-parse --short=7 HEAD).Trim()
 if($head -ne $commit){throw "vendor/dxvk is at $head, expected $commit ($tag)"}
-foreach($patch in Get-ChildItem -LiteralPath (Join-Path $root 'patches\dxvk') -Filter *.patch | Sort-Object Name){
-    git -C $dxvk apply --check --reverse $patch.FullName 2>$null
-    if($LASTEXITCODE -eq 0){continue}
-    git -C $dxvk apply $patch.FullName
-    if($LASTEXITCODE){throw "Applying $($patch.Name) failed"}
+# A reused tree (a local checkout, or vendor restored from the Actions cache) may
+# carry an older version of these patches: unless every current patch is applied,
+# start again from the pinned tag.
+$patches=@(Get-ChildItem -LiteralPath (Join-Path $root 'patches\dxvk') -Filter *.patch | Sort-Object Name)
+# git reports an unapplied patch on stderr, which Windows PowerShell 5.1 would raise under 'Stop'.
+function Test-Applied($patch){$ErrorActionPreference='Continue';git -C $dxvk apply --check --reverse $patch.FullName 2>$null;$LASTEXITCODE -eq 0}
+$applied=$true
+foreach($patch in $patches){if(-not (Test-Applied $patch)){$applied=$false;break}}
+if(-not $applied){
+    git -C $dxvk reset --hard --quiet
+    if($LASTEXITCODE){throw 'Resetting vendor/dxvk failed'}
+    git -C $dxvk clean -fdq
+    if($LASTEXITCODE){throw 'Cleaning vendor/dxvk failed'}
+    foreach($patch in $patches){
+        git -C $dxvk apply $patch.FullName
+        if($LASTEXITCODE){throw "Applying $($patch.Name) failed"}
+    }
 }
 $glslang=Join-Path $root 'build\vendor\glslang\StandAlone\Release'
 if(-not (Test-Path -LiteralPath (Join-Path $glslang 'glslangValidator.exe'))){throw 'glslangValidator.exe missing: run scripts/build.ps1 first'}
