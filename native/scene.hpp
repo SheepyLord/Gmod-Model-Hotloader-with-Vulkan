@@ -1,0 +1,41 @@
+#pragma once
+#include "runtime.hpp"
+#include <ext/physics.h>
+#include "broadphase.hpp"
+namespace mmd {
+constexpr int ExternalCollisionTag=0x4d4d44;
+struct SceneGeometry {
+ enum Kind { Sphere,Triangles,Convexes } kind=Convexes;
+ std::vector<btVector3> vertices;
+ std::vector<int> hullCounts;
+ float radius=0;
+ btVector3 minimum{0,0,0},maximum{0,0,0};
+};
+struct SceneObject {
+ uint64_t id=0,owner=0;
+ int physicsBone=0;btVector3 localCenter{0,0,0};
+ std::shared_ptr<const SceneGeometry> geometry;
+ btTransform transform=btTransform::getIdentity();
+ btVector3 velocity{0,0,0},angular{0,0,0};
+ bool isStatic=false;
+};
+struct SceneFrame {uint64_t sequence=0;double timestamp=0,captureMs=0;unsigned ownedObjects=0;std::vector<SceneObject> objects;};
+void publishScene(std::shared_ptr<const SceneFrame>);
+std::shared_ptr<const SceneFrame> readScene(World* host=nullptr);
+// Where the scene's consumers need objects (Source units). Each secondary world
+// registers its character's collision box when it syncs, each remote subscriber
+// the sphere it is sent; the server capture skips objects outside every region.
+// A region lapses when it is not refreshed for two seconds.
+struct SceneRegion {btVector3 lower,upper;};
+void noteSceneInterest(uintptr_t consumer,const btVector3& lower,const btVector3& upper);
+void forgetSceneInterest(uintptr_t consumer);
+std::vector<SceneRegion> sceneInterest();
+btSoftRigidDynamicsWorld* nanoemWorld(nanoem_physics_world_t*);
+nanoem_physics_world_t* nanoemCreateSecondaryWorld(const BroadphaseConfig&,nanoem_status_t*,const std::string& backend="reference");
+Json nanoemBroadphaseInfo(nanoem_physics_world_t*);
+// Diagnostic pair counters of the multicore dispatchers (profiler only).
+void nanoemSetPairCounting(nanoem_physics_world_t*,bool enabled);
+void nanoemStepFixed(nanoem_physics_world_t*,float seconds);
+btRigidBody* nanoemRigidBody(nanoem_physics_rigid_body_t*);
+btTypedConstraint* nanoemConstraint(nanoem_physics_joint_t*);
+}

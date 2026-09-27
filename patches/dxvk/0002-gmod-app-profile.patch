@@ -1,0 +1,17 @@
+diff --git a/src/util/config/config.cpp b/src/util/config/config.cpp
+index 2b7ced4..945246c 100644
+--- a/src/util/config/config.cpp
++++ b/src/util/config/config.cpp
+@@ -541,6 +541,12 @@ namespace dxvk {
+     { R"(\\Gothic(3|3Final| III Forsaken Gods)\.exe$)", {{
+       { "d3d9.supportDFFormats",           "False" },
+     }} },
++    /* Garry's Mod (x86-64) - crashes right after *
++     * device creation with descriptor heaps      *
++     * (NVIDIA 610.88; MMDHL shipped build)       */
++    { R"(\\gmod\.exe$)", {{
++      { "dxvk.enableDescriptorHeap",       "False" },
++    }} },
+     /* Sonic Adventure 2                          */
+     { R"(\\Sonic Adventure 2\\(launcher|sonic2app)\.exe$)", {{
+       { "d3d9.floatEmulation",            "Strict" },

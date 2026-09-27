@@ -1,0 +1,256 @@
+diff --git a/lua/advmat/cl_50_apply.lua b/lua/advmat/cl_50_apply.lua
+index 4ada48f..541538f 100644
+--- a/lua/advmat/cl_50_apply.lua
++++ b/lua/advmat/cl_50_apply.lua
+@@ -665,7 +665,7 @@ function A.Refresh( ent )
+ 	end
+ 
+ 	local applied = A.ClientSet[ ei ] or {}
+-	local count   = math.min( #mats, AdvMat.MAX_SUBMATERIALS )
++	local count   = math.min( #mats, AdvMat.GetMaterialLimit( ent ) )
+ 	local any     = false
+ 
+ 	-- This must run even in server-authoritative mode: the server can select a
+@@ -805,7 +805,7 @@ function A.SweepForMissing()
+ 
+ 	for _, ent in ipairs( ents.GetAll() ) do
+ 		if IsValid( ent ) and ent:GetModel() then
+-			for idx = 0, AdvMat.MAX_SUBMATERIALS - 1 do
++			for idx = 0, AdvMat.GetMaterialLimit( ent ) - 1 do
+ 				local name = ent:GetSubMaterial( idx )
+ 
+ 				if isstring( name ) and string.sub( name, 1, 8 ) == "!advmat_"
+diff --git a/lua/advmat/cl_58_meshuv.lua b/lua/advmat/cl_58_meshuv.lua
+index ccf2ce1..1f5c442 100644
+--- a/lua/advmat/cl_58_meshuv.lua
++++ b/lua/advmat/cl_58_meshuv.lua
+@@ -104,7 +104,10 @@ function M.Data( model, mask, matpath, slot )
+ 		return nil
+ 	end
+ 
+-	local meshes = util.GetModelMeshes( model, 0, mask )
++	local meshes
++	if mmdhl and mmdhl.GetRigForModel and mmdhl.GetRigForModel( model ) then
++		meshes = mmdhl.GetModelMaterialMeshes( model, targeted and slotIndex or nil, mask )
++	else meshes = util.GetModelMeshes( model, 0, mask ) end
+ 
+ 	if not istable( meshes ) or #meshes == 0 then
+ 		cache[ key ] = false
+@@ -590,6 +593,7 @@ end
+ --- the total, but they shift the scale for every group after them, and leaving
+ --- them out silently addresses the wrong part.
+ function M.BodyMask( ent )
++	if mmdhl and mmdhl.IsMMD and mmdhl.IsMMD( ent ) and mmdhl.GetMaterialVisibilityMask then return mmdhl.GetMaterialVisibilityMask( ent ) end
+ 	if not IsValid( ent ) or not ent.GetNumBodyGroups then return 0 end
+ 
+ 	local mask, scale = 0, 1
+@@ -656,6 +660,7 @@ end
+ --- geometry wants to know, and to ask again in a moment.
+ function M.WorldPositions( ent, group, model )
+ 	if not IsValid( ent ) or not group then return nil, false end
++	if mmdhl and mmdhl.GetMaterialPositions then local positions = mmdhl.GetMaterialPositions( ent, group.material ) if positions then return positions, true end end
+ 
+ 	local pos = group.pos
+ 	local out = {}
+diff --git a/lua/advmat/cl_70_ui.lua b/lua/advmat/cl_70_ui.lua
+index 66621f5..e78206b 100644
+--- a/lua/advmat/cl_70_ui.lua
++++ b/lua/advmat/cl_70_ui.lua
+@@ -655,7 +655,19 @@ function PANEL:Init()
+ 	self.ModelPanel:SetFOV( 40 )
+ 	self.ModelPanel:SetAnimated( false )
+ 	self.ModelPanel.LayoutEntity = function( panel, ent )
++		AdvMat.AttachMMDPreview( ent ) -- Asset decoding may finish after the editor opens.
+ 		ent:SetAngles( Angle( 0, RealTime() * 20 % 360, 0 ) )
++		if ent.MMDHLEditorPreview then
++			-- The empty carrier's bounds do not include hair and accessories.
++			-- Fit the visible MMD mesh after layout, accounting for panel aspect.
++			local mn, mx = ent:GetRenderBounds()
++			local center = ent:LocalToWorld( ( mn + mx ) * 0.5 )
++			local half = math.rad( panel:GetFOV() * 0.5 )
++			half = math.min( half, math.atan( math.tan( half ) * panel:GetTall() / math.max( panel:GetWide(), 1 ) ) )
++			local distance = ( mx - mn ):Length() * 0.53 / math.max( math.sin( half ), 0.05 )
++			panel:SetLookAt( center )
++			panel:SetCamPos( center + Vector( -1, -0.2, 0.05 ):GetNormalized() * distance )
++		end
+ 	end
+ 
+ 	-- World mode has no model to spin, so the material itself is shown instead.
+@@ -792,10 +804,10 @@ function PANEL:SetEntity( ent )
+ 	self.Entity    = ent
+ 	self.Materials = ent:GetMaterials() or {}
+ 
+-	-- SetSubMaterial only reaches slots 0-31; anything past that cannot be
+-	-- overridden at all, so it is not offered.
+-	local trimmed = #self.Materials > AdvMat.MAX_SUBMATERIALS
+-	for i = #self.Materials, AdvMat.MAX_SUBMATERIALS + 1, -1 do
++	-- Ordinary models retain the engine limit; MMD supplies overflow state.
++	local limit = AdvMat.GetMaterialLimit( ent )
++	local trimmed = #self.Materials > limit
++	for i = #self.Materials, limit + 1, -1 do
+ 		self.Materials[ i ] = nil
+ 	end
+ 
+@@ -808,6 +820,7 @@ function PANEL:SetEntity( ent )
+ 	self.ModelPanel:SetModel( ent:GetModel() or "models/error.mdl" )
+ 
+ 	local pe = self.ModelPanel.Entity
++	AdvMat.AttachMMDPreview( pe )
+ 	if IsValid( pe ) then
+ 		local mn, mx = pe:GetRenderBounds()
+ 		local size   = math.max( mx.x - mn.x, mx.y - mn.y, mx.z - mn.z, 1 )
+@@ -924,7 +937,11 @@ function PANEL:RefreshMaterialList()
+ 		local w    = self.Working[ idx ]
+ 		local mark = AdvMat.RuleIsEmpty( w ) and "" or "*"
+ 
+-		local line = self.MatList:AddLine( idx, AdvMat.NormalizeMaterial( self.Materials[ i ] ), mark )
++		local label = AdvMat.NormalizeMaterial( self.Materials[ i ] )
++		local inventory = IsValid( self.Entity ) and mmdhl and mmdhl.GetMaterials and mmdhl.GetMaterials( self.Entity )
++		if inventory and inventory[ i ] then label = inventory[ i ].name end
++		local line = self.MatList:AddLine( idx, label, mark )
++		line:SetTooltip( self.Materials[ i ] )
+ 		line.AdvMatIndex = idx
+ 		line:SetTooltip( AdvMat.L( "editor.slot_tip", {
+ 			material = self.Materials[ i ], slot = idx,
+diff --git a/lua/advmat/cl_73_modelview.lua b/lua/advmat/cl_73_modelview.lua
+index a93dd1c..3b0cabd 100644
+--- a/lua/advmat/cl_73_modelview.lua
++++ b/lua/advmat/cl_73_modelview.lua
+@@ -63,6 +63,7 @@ end
+ local function Ent( frame )
+ 	local mp = frame.ModelPanel
+ 	if not IsValid( mp ) or not IsValid( mp.Entity ) then return nil end
++	AdvMat.AttachMMDPreview( mp.Entity )
+ 	return mp.Entity
+ end
+ 
+diff --git a/lua/advmat/cl_74_texeditor.lua b/lua/advmat/cl_74_texeditor.lua
+index 1ec1ed8..6708cc3 100644
+--- a/lua/advmat/cl_74_texeditor.lua
++++ b/lua/advmat/cl_74_texeditor.lua
+@@ -4554,6 +4554,7 @@ function PANEL:Setup( param, recipe, ctx, done )
+ 	-------------------------------------------------------------- the model
+ 	if ctx.model and ctx.model ~= "" then
+ 		self.ModelPanel:SetModel( ctx.model )
++		AdvMat.AttachMMDPreview( self.ModelPanel.Entity )
+ 
+ 		-- Nought is every bodygroup at its first option, which is what a model
+ 		-- panel shows until somebody changes it.
+diff --git a/lua/advmat/sh_40_gen.lua b/lua/advmat/sh_40_gen.lua
+index c8c9f72..42a2622 100644
+--- a/lua/advmat/sh_40_gen.lua
++++ b/lua/advmat/sh_40_gen.lua
+@@ -294,7 +294,7 @@ function GEN.Sanitize( recipe )
+ 	local model = AdvMat.NormalizeModel( recipe.model or "" )
+ 	if model ~= "" and string.sub( model, -4 ) == ".mdl" then
+ 		out.model = model
+-		out.slot  = math.floor( AdvMat.ClampNum( recipe.slot, 0, AdvMat.MAX_SUBMATERIALS - 1, 0 ) )
++		out.slot  = math.floor( AdvMat.ClampNum( recipe.slot, 0, AdvMat.GetMaterialLimit( model ) - 1, 0 ) )
+ 
+ 		local matpath = AdvMat.NormalizeMaterial( recipe.matpath or "" )
+ 		if matpath ~= "" then out.matpath = matpath end
+diff --git a/lua/advmat/sv_30_store.lua b/lua/advmat/sv_30_store.lua
+index 033dd0d..c11ecc3 100644
+--- a/lua/advmat/sv_30_store.lua
++++ b/lua/advmat/sv_30_store.lua
+@@ -100,7 +100,7 @@ local function MakeRule( scope, key, index, mat, shader, params, ply, gen )
+ 	return {
+ 		scope  = scope,
+ 		key    = key,
+-		index  = math.Clamp( math.floor( tonumber( index ) or 0 ), 0, AdvMat.MAX_SUBMATERIALS - 1 ),
++		index  = math.Clamp( math.floor( tonumber( index ) or 0 ), 0, AdvMat.GetMaterialLimit( key ) - 1 ),
+ 		mat    = AdvMat.NormalizeMaterial( mat or "" ),
+ 		shader = isstring( shader ) and string.sub( shader, 1, 64 ) or nil,
+ 		params = AdvMat.SanitizeParams( params ),
+@@ -209,7 +209,7 @@ function Store.ClearModel( mdl )
+ 	mdl = AdvMat.NormalizeModel( mdl )
+ 
+ 	local n = 0
+-	for i = 0, AdvMat.MAX_SUBMATERIALS - 1 do
++	for i = 0, AdvMat.GetMaterialLimit( mdl ) - 1 do
+ 		local id = AdvMat.RuleID( AdvMat.SCOPE.MODEL, mdl, i )
+ 		if Store.Rules[ id ] then
+ 			Store.Rules[ id ] = nil
+@@ -428,7 +428,7 @@ duplicator.RegisterEntityModifier( DUPE_MODIFIER, function( ply, ent, data )
+ 
+ 	local set = {}
+ 	for k, entry in pairs( data ) do
+-		local idx = math.Clamp( math.floor( tonumber( k ) or 0 ), 0, AdvMat.MAX_SUBMATERIALS - 1 )
++		local idx = math.Clamp( math.floor( tonumber( k ) or 0 ), 0, AdvMat.GetMaterialLimit( ent ) - 1 )
+ 		if istable( entry ) and istable( entry.params ) then
+ 			set[ idx ] = {
+ 				scope  = AdvMat.SCOPE.ENTITY,
+diff --git a/lua/advmat/sv_32_rtx_tool.lua b/lua/advmat/sv_32_rtx_tool.lua
+index 7f0a8b6..1bb6cf7 100644
+--- a/lua/advmat/sv_32_rtx_tool.lua
++++ b/lua/advmat/sv_32_rtx_tool.lua
+@@ -38,7 +38,7 @@ function RTXTool.RightClick( tool, ent, ply )
+ 
+ 	if tool:GetStage() == 0 then
+ 		local clip = {}
+-		for index = 1, math.min( #mats, AdvMat.MAX_SUBMATERIALS ) do
++		for index = 1, math.min( #mats, AdvMat.GetMaterialLimit( ent ) ) do
+ 			local material = AdvMat.NormalizeMaterial( mats[ index ] )
+ 			local profile = ProfileFor( store, material )
+ 			if profile then clip[ index - 1 ] = table.Copy( profile ) end
+diff --git a/lua/advmat/sv_40_apply.lua b/lua/advmat/sv_40_apply.lua
+index d37da0f..e640bc9 100644
+--- a/lua/advmat/sv_40_apply.lua
++++ b/lua/advmat/sv_40_apply.lua
+@@ -44,7 +44,7 @@ function SV.Refresh( ent )
+ 	if not istable( mats ) then return end
+ 
+ 	local applied = ent.AdvMatApplied or {}
+-	local count   = math.min( #mats, AdvMat.MAX_SUBMATERIALS )
++	local count   = math.min( #mats, AdvMat.GetMaterialLimit( ent ) )
+ 	local any     = false
+ 
+ 	-- With advmat_serverside 0 each client draws its own overrides, so the
+diff --git a/lua/weapons/gmod_tool/stools/advmateditor.lua b/lua/weapons/gmod_tool/stools/advmateditor.lua
+index 5c23f3f..88142a2 100644
+--- a/lua/weapons/gmod_tool/stools/advmateditor.lua
++++ b/lua/weapons/gmod_tool/stools/advmateditor.lua
+@@ -142,7 +142,7 @@ function TOOL:RightClick( trace )
+ 		local clip = {}
+ 
+ 		local mats = ent:GetMaterials() or {}
+-		for i = 1, math.min( #mats, AdvMat.MAX_SUBMATERIALS ) do
++		for i = 1, math.min( #mats, AdvMat.GetMaterialLimit( ent ) ) do
+ 			local idx  = i - 1
+ 			local base = AdvMat.NormalizeMaterial( mats[ i ] )
+ 
+@@ -252,7 +252,7 @@ function TOOL:Reload( trace )
+ 
+ 	-- Material scope
+ 	local mats = ent:GetMaterials() or {}
+-	for i = 1, math.min( #mats, AdvMat.MAX_SUBMATERIALS ) do
++	for i = 1, math.min( #mats, AdvMat.GetMaterialLimit( ent ) ) do
+ 		local id = AdvMat.RuleID( AdvMat.SCOPE.MATERIAL, mats[ i ] )
+ 		if Store.Rules[ id ] then
+ 			Store.Clear( AdvMat.SCOPE.MATERIAL, mats[ i ], 0 )
+diff --git a/lua/advmat/sh_15_mmd.lua b/lua/advmat/sh_15_mmd.lua
+new file mode 100644
+--- /dev/null
++++ b/lua/advmat/sh_15_mmd.lua
+@@ -0,0 +1,21 @@
++-- Optional provider: native limits remain unchanged for ordinary Source models.
++function AdvMat.GetMaterialLimit(target)
++ if not mmdhl or not mmdhl.GetRigForModel then return AdvMat.MAX_SUBMATERIALS end
++ if isnumber(target) then target=Entity(target) end
++ local rig
++ if IsValid(target) then rig=mmdhl.GetRig(target) or mmdhl.GetRigForModel(target:GetModel())
++ elseif isstring(target) then
++  rig=mmdhl.GetRigForModel(target)
++  if not rig then
++   local asset=mmdhl.GetMaterialAsset and mmdhl.GetMaterialAsset(target)
++   if asset and #asset==64 then
++    local manifest=util.JSONToTable(file.Read('mmd_hotloader/assets/'..asset..'/manifest.json','DATA') or '')
++    if manifest and manifest.materials then return #manifest.materials end
++   end
++  end
++ end
++ return rig and rig.materials and #rig.materials or AdvMat.MAX_SUBMATERIALS
++end
++function AdvMat.AttachMMDPreview(ent)
++ return CLIENT and mmdhl and mmdhl.AttachEditorPreview and mmdhl.AttachEditorPreview(ent)
++end

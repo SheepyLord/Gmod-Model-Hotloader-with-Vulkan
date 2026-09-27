@@ -1,0 +1,253 @@
+#include "runtime.hpp"
+#include "rig.hpp"
+#include "spring_bones.hpp"
+#include "vrm.hpp"
+#include <windows.h>
+#include <bcrypt.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+#include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <set>
+#include <map>
+#include <stdexcept>
+#include <sstream>
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+namespace mmd {
+std::wstring wide(std::string_view s){if(s.empty())return {};int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0);if(!n)throw std::runtime_error("Invalid UTF-8 path");std::wstring out(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),out.data(),n);return out;}
+std::string utf8(std::wstring_view s){if(s.empty())return {};int n=WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),nullptr,0,nullptr,nullptr);std::string out(n,0);WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),n,nullptr,nullptr);return out;}
+// GMod's host executable need not opt in to Windows long paths. Cache identities
+// plus an atomic-write suffix can exceed MAX_PATH even in an ordinary install.
+// Normalize before adding the extended prefix (which disables Win32 dot folding).
+fs::path ioPath(const fs::path& path){
+ auto value=fs::absolute(path).lexically_normal().wstring();
+ if(value.starts_with(L"\\\\?\\"))return value;
+ if(value.starts_with(L"\\\\"))return L"\\\\?\\UNC\\"+value.substr(2);
+ return L"\\\\?\\"+value;
+}
+Bytes readFile(const fs::path& path){std::ifstream f(ioPath(path),std::ios::binary|std::ios::ate);if(!f)throw std::runtime_error("Cannot read "+utf8(path.wstring()));auto size=f.tellg();if(size<0)throw std::runtime_error("Cannot determine file size");Bytes b(static_cast<size_t>(size));f.seekg(0);if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))throw std::runtime_error("Incomplete file read");return b;}
+void writeAtomic(const fs::path& path,std::span<const unsigned char> b){auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());{std::ofstream f(tmp,std::ios::binary|std::ios::trunc);if(!f||!f.write(reinterpret_cast<const char*>(b.data()),b.size()))throw std::runtime_error("Cannot write output file: "+utf8(path.wstring()));}for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED))throw std::runtime_error("Cannot commit output file: "+utf8(path.wstring()));Sleep(10);}}
+void writeJson(const fs::path& path,const Json& j){auto s=j.dump(2);writeAtomic(path,std::span(reinterpret_cast<const unsigned char*>(s.data()),s.size()));}
+Json readJson(const fs::path& p){auto b=readFile(p);return Json::parse(b.begin(),b.end());}
+std::string hash(std::span<const unsigned char> b){
+ BCRYPT_ALG_HANDLE alg=nullptr;BCRYPT_HASH_HANDLE state=nullptr;unsigned char digest[32];
+ if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("SHA256 unavailable");
+ auto status=BCryptCreateHash(alg,&state,nullptr,0,nullptr,0,0);
+ for(size_t at=0;status>=0&&at<b.size();){auto count=ULONG(std::min<size_t>(b.size()-at,128ull<<20));status=BCryptHashData(state,const_cast<unsigned char*>(b.data()+at),count,0);at+=count;}
+ if(status>=0)status=BCryptFinishHash(state,digest,32,0);if(state)BCryptDestroyHash(state);BCryptCloseAlgorithmProvider(alg,0);
+ if(status<0)throw std::runtime_error("SHA256 failed");std::string s;for(auto c:digest){s.push_back("0123456789abcdef"[c>>4]);s.push_back("0123456789abcdef"[c&15]);}return s;
+}
+void retainCacheFiles(const fs::path& cache,const std::vector<fs::path>& paths){
+ auto queue=cache/L"cleanup.json";if(!fs::exists(queue))return;auto pending=readJson(queue);Json keep=Json::array();
+ for(auto& item:pending){auto path=fs::path(wide(item.get<std::string>())).lexically_normal();bool retained=false;
+  for(auto& root:paths){auto relative=path.lexically_relative(root);retained|=!relative.empty()&&!relative.is_absolute()&&*relative.begin()!=L"..";}if(!retained)keep.push_back(item);
+ }
+ if(keep.empty())fs::remove(queue);else writeJson(queue,keep);
+}
+void registerShortName(const fs::path& cache,const std::string& kind,const std::string& id){
+ auto path=cache/L"names"/wide(kind)/wide(id.substr(0,16)+".json");
+ // Detect a shortened-identifier collision before mounting any conflicting data.
+ if(fs::exists(path)&&readJson(path).value("id","")!=id)throw std::runtime_error("Cache identifier collision; no existing data was overwritten");
+ retainCacheFiles(cache,{path.lexically_relative(cache)});writeJson(path,{{"id",id}});
+}
+bool validId(std::string_view s){return s.size()==64&&std::all_of(s.begin(),s.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
+static fs::path resolveTexture(const fs::path& base,std::string path){std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);return (base/p).lexically_normal();}
+static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings){
+    int width=0,height=0,channels=0;
+    if(bytes.size()>INT_MAX)throw std::runtime_error("Texture exceeds the decoder's signed 32-bit input format: "+name);
+    Bytes decoded;unsigned char* pixels=nullptr;
+    std::unique_ptr<unsigned char,decltype(&stbi_image_free)> guard(nullptr,stbi_image_free);
+    if(bytes.size()>4&&!memcmp(bytes.data(),"DDS ",4)){
+        HRESULT initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);struct Apartment{HRESULT hr;~Apartment(){if(SUCCEEDED(hr))CoUninitialize();}} apartment{initialized};
+        using Microsoft::WRL::ComPtr;ComPtr<IWICImagingFactory> factory;ComPtr<IWICStream> stream;ComPtr<IWICBitmapDecoder> decoder;ComPtr<IWICBitmapFrameDecode> frame;ComPtr<IWICFormatConverter> converter;
+        auto ok=[](HRESULT hr){if(FAILED(hr))throw std::runtime_error("Unsupported DDS texture (Windows codec supports BC1, BC2 and BC3)");};
+        ok(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)));ok(factory->CreateStream(&stream));ok(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()),DWORD(bytes.size())));ok(factory->CreateDecoderFromStream(stream.Get(),nullptr,WICDecodeMetadataCacheOnDemand,&decoder));ok(decoder->GetFrame(0,&frame));UINT w=0,h=0;ok(frame->GetSize(&w,&h));if(!w||!h||uint64_t(w)*h*4>UINT_MAX)throw std::runtime_error("DDS dimensions exceed the Windows decoder format");width=int(w);height=int(h);
+        ok(factory->CreateFormatConverter(&converter));ok(converter->Initialize(frame.Get(),GUID_WICPixelFormat32bppRGBA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom));decoded.resize(size_t(w)*h*4);ok(converter->CopyPixels(nullptr,w*4,UINT(decoded.size()),decoded.data()));pixels=decoded.data();
+    }else{
+        if(!stbi_info_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels)||width<1||height<1)throw std::runtime_error("Unsupported texture: "+name);
+        guard.reset(stbi_load_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels,4));pixels=guard.get();if(!pixels)throw std::runtime_error("Cannot decode texture: "+name);
+    }
+    if(width>4096||height>4096||bytes.size()>(64ull<<20))warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+"). Import continues; memory use and loading time may be high.");
+    for(size_t i=3;i<size_t(width)*height*4;i+=4)if(pixels[i]<255){alpha=true;break;}
+    Bytes png;auto callback=[](void* context,void* p,int n){auto& b=*static_cast<Bytes*>(context);auto src=static_cast<unsigned char*>(p);b.insert(b.end(),src,src+n);};
+    if(!stbi_write_png_to_func(callback,&png,width,height,4,pixels,width*4))throw std::runtime_error("Texture encoding failed");auto id=hash(png);auto path=cache/L"textures"/wide(id+".png");if(!fs::exists(path))writeAtomic(path,png);return id;
+}
+// Source-readable derivatives allow normal IMaterial/VMT editor workflows.
+void prepareSourceMaterials(const fs::path& cache,const std::string& id){
+ auto directory=cache/L"assets"/wide(id),package=directory/L"materials-v5.gma";
+ auto manifest=readJson(directory/L"manifest.json");registerShortName(cache,"assets",id);
+ std::vector<fs::path> retained={fs::path(L"assets")/wide(id)};
+ for(auto& t:manifest["textures"])for(auto kind:{"base","sphere","toon"}){auto h=t.value(kind,"");if(validId(h))for(auto ext:{".png",".vtf"})retained.push_back(fs::path(L"textures")/wide(h+ext));}
+ retainCacheFiles(cache,retained);if(fs::is_regular_file(package))return;
+ std::map<std::string,Bytes> files;
+ for(size_t i=0;i<manifest["materials"].size();i++){
+  auto& material=manifest["materials"][i];auto& texture=manifest["textures"][i];std::string base=texture.value("base","");
+  std::string texturePath="models/debug/debugwhite";
+  if(validId(base)){
+   registerShortName(cache,"textures",base);texturePath="mmd/t/"+base.substr(0,16);auto derivative=cache/L"textures"/wide(base+".vtf");
+   if(!fs::is_regular_file(derivative)){
+    auto png=readFile(cache/L"textures"/wide(base+".png"));int width,height,channels;
+    std::unique_ptr<unsigned char,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4),stbi_image_free);
+    if(!pixels)throw std::runtime_error("Cannot create Source texture derivative");
+    if(width>65535||height>65535)throw std::runtime_error("Texture dimensions cannot be represented in the VTF format");
+    Bytes vtf(80,0);auto put=[&]<class T>(size_t at,T value){std::memcpy(vtf.data()+at,&value,sizeof(T));};
+    std::memcpy(vtf.data(),"VTF",3);put(4,uint32_t(7));put(8,uint32_t(2));put(12,uint32_t(80));put(16,uint16_t(width));put(18,uint16_t(height));put(20,uint32_t(texture.value("alpha",false)?0x2000:0));put(24,uint16_t(1));put(32,.5f);put(36,.5f);put(40,.5f);put(48,1.f);put(52,uint32_t(0));put(57,int32_t(-1));put(63,uint16_t(1));
+    std::vector<Bytes> mips;int w=width,h=height;mips.emplace_back(pixels.get(),pixels.get()+size_t(w)*h*4);
+    while(w>1||h>1){int nw=std::max(1,w/2),nh=std::max(1,h/2);Bytes next(size_t(nw)*nh*4);auto& prior=mips.back();for(int y=0;y<nh;y++)for(int x=0;x<nw;x++)for(int c=0;c<4;c++){unsigned sum=0;for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)sum+=prior[(size_t(std::min(h-1,y*2+yy))*w+std::min(w-1,x*2+xx))*4+c];next[(size_t(y)*nw+x)*4+c]=uint8_t(sum/4);}mips.push_back(std::move(next));w=nw;h=nh;}
+    vtf[56]=uint8_t(mips.size());for(auto it=mips.rbegin();it!=mips.rend();++it)vtf.insert(vtf.end(),it->begin(),it->end());writeAtomic(derivative,vtf);
+   }
+   std::string path="materials/"+texturePath+".vtf";if(!files.contains(path))files[path]=readFile(derivative);
+   auto& pixels=files.at(path);
+   if(pixels.size()<80||std::memcmp(pixels.data(),"VTF\0",4)!=0)throw std::runtime_error("Invalid Source texture derivative header");
+   uint16_t width=0,height=0;std::memcpy(&width,pixels.data()+16,2);std::memcpy(&height,pixels.data()+18,2);size_t count=size_t(width)*height*4;
+   if(!width||!height||count>pixels.size()-80)throw std::runtime_error("Invalid Source texture derivative");
+  }
+  std::ostringstream vmt;vmt<<"VertexLitGeneric\n{\n";
+  auto value=[&](const char* key,const std::string& v){vmt<<'"'<<key<<"\" \""<<v<<"\"\n";};
+  value("$basetexture",texturePath);value("$model","1");value("$vertexcolor","1");value("$nocull",material.value("twoSided",false)?"1":"0");
+  value("$translucent","0");value("$vertexalpha","0");value("$alphatest","1");value("$alphatestreference",".5");value("$allowalphatocoverage","1");
+  value("$bumpmap","mmdhl/scmi/normal");value("$lightwarptexture","mmdhl/scmi/lightwarptexture");value("$halflambert","0");value("$phong","1");value("$phongboost","24");value("$phongalbedotint","1");value("$phongexponenttexture","mmdhl/scmi/phong_exp");value("$phongfresnelranges","[0 0 1]");value("$rimlight","1");value("$rimlightexponent","2");value("$rimlightboost","2");vmt<<"}\n";
+  auto text=vmt.str();files["materials/"+materialPath(id,i,material.value("name",""))+".vmt"]=Bytes(text.begin(),text.end());
+ }
+ writeAtomic(package,makeGma(files,"Model Hotloader materials "+id));
+}
+Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress){
+    auto report=[&](const char* stage,float value){if(!progress.empty())writeJson(progress,{{"state","running"},{"stage",stage},{"progress",value},{"filename",utf8(source.filename().wstring())}});};
+    report("Parsing skeleton, materials and physics",.05f);auto raw=readFile(source);
+    // VRM avatars become a PMX in memory with their embedded textures; spring
+    // bones and licence metadata travel in the manifest (and so in its identity).
+    const bool vrmSource=isVrmData(raw);std::map<std::string,Bytes> embedded;Json vrm;std::vector<std::string> converted;
+    if(vrmSource){report("Converting VRM avatar",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
+    if(!vrmSource&&(raw.size()<4||(std::memcmp(raw.data(),"PMX ",4)&&std::memcmp(raw.data(),"Pmd",3))))throw std::runtime_error("This file is not a PMX, PMD or VRM character. Static 3D models (OBJ, FBX, glTF, BLEND) belong in Static Props.");
+    auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource)model->springs=SpringSetup::fromManifest(vrm,*model);
+    Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
+    std::map<std::wstring,std::pair<std::string,bool>> prepared;
+    for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
+        for(auto entry:std::array<std::pair<const char*,std::string>,3>{{{"base",material.base},{"sphere",material.sphere},{"toon",material.toon}}}){
+            std::string id;bool localAlpha=false;if(!entry.second.empty())try{
+                if(vrmSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
+                    auto key=L"vrm:"+wide(entry.second);auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(found->second,entry.second,cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
+                    textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;continue;}
+                auto file=resolveTexture(source.parent_path(),entry.second);
+                if(!fs::exists(file)&&std::string(entry.first)=="toon"){
+                    // MMD's shared ramps normally live beside the executable in Data.
+                    auto candidate=source.parent_path().parent_path().parent_path()/L"Data"/fs::path(wide(entry.second)).filename();
+                    if(fs::exists(candidate))file=candidate;
+                    else if(entry.second.starts_with("toon")){textures[entry.first]="";continue;}
+                }
+                auto key=file.wstring();auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(readFile(file),utf8(file.filename().wstring()),cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
+            }catch(const std::exception& e){model->warnings.push_back(e.what());}
+            textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;
+        }
+        textures["alpha"]=alpha;manifest["textures"].push_back(textures);report("Preparing textures",.1f+.8f*float(i+1)/std::max<size_t>(1,model->materials.size()));
+    }
+    manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
+    auto directory=cache/L"assets"/wide(id);writeAtomic(directory/L"model.bin",raw);writeJson(directory/L"manifest.json",manifest);
+    auto registryPath=cache/L"sources.local.json";Json registry=fs::exists(registryPath)?readJson(registryPath):Json::object();registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
+    model->id=id;report("Preparing Source materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy",.94f);prepareModelFit(*model,cache);
+    return {{"state","complete"},{"asset",id},{"info",manifest}};
+}
+std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
+    if(!validId(id))throw std::runtime_error("Invalid asset ID");auto directory=cache/L"assets"/wide(id);auto manifest=readJson(directory/L"manifest.json");if((manifest.value("version",0)!=1&&manifest.value("version",0)!=2)||manifest.value("id",std::string())!=id)throw std::runtime_error("Cache version or ID mismatch");
+    auto identity=manifest;identity["id"]=manifest.at("sourceHash");auto encoded=identity.dump();if(hash(std::span(reinterpret_cast<const unsigned char*>(encoded.data()),encoded.size()))!=id)throw std::runtime_error("Cached manifest checksum mismatch");
+    auto raw=readFile(directory/L"model.bin");if(hash(raw)!=manifest.at("sourceHash"))throw std::runtime_error("Cached model checksum mismatch");auto model=parse(raw);model->id=id;for(auto& warning:manifest.value("warnings",std::vector<std::string>{}))if(std::find(model->warnings.begin(),model->warnings.end(),warning)==model->warnings.end())model->warnings.push_back(warning);
+    if(manifest.contains("vrm"))model->springs=SpringSetup::fromManifest(manifest["vrm"],*model);
+    if(manifest.at("textures").size()!=model->materials.size())throw std::runtime_error("Cached material count mismatch");
+    std::set<std::string> verified;
+    std::map<std::string,std::vector<size_t>> alphaParts;
+    for(size_t i=0;i<model->materials.size();i++){auto& t=manifest["textures"][i];auto& m=model->materials[i];auto resolve=[&](const char* key){std::string h=t.value(key,std::string());if(h.empty())return h;if(!validId(h))throw std::runtime_error("Invalid cached texture reference");if(verified.insert(h).second){auto p=cache/L"textures"/wide(h+".png");if(hash(readFile(p))!=h)throw std::runtime_error("Cached texture checksum mismatch");}return h;};m.base=resolve("base");m.sphere=resolve("sphere");m.toon=resolve("toon");m.alphaTexture=t.value("alpha",false);}
+    // Cached manifests remain immutable. Classify their decoded base alpha at
+    // load time so cutout hair writes depth, while authored sheer fabric/glass
+    // still blends. Count meaningful coverage rather than empty atlas space.
+    // The RTX Remix renderer (renderer.cpp) also needs what the materials' 0.5
+    // alpha test removes, sampled where each triangle maps (corners, edge
+    // midpoints and centre), not over the whole texture: atlases pad the regions
+    // a part uses with transparent texels (Furina's socks: 7 % of an 8192 atlas
+    // passes, 99 % where they map). A triangle with no passing sample is cut
+    // away (cutoutTriangles 0), and alphaCoverage is the area-weighted passing
+    // share of the part's remaining triangles, 0 when none remains. Near-empty
+    // shells (a body copy that keeps only the gloves) then lose their empty
+    // triangles instead of being drawn blended over the whole body.
+    for(size_t i=0;i<model->materials.size();i++){auto& m=model->materials[i];if(m.alphaTexture&&!m.base.empty())alphaParts[m.base].push_back(i);}
+    if(!alphaParts.empty())model->cutoutTriangles.assign(model->indices.size()/3,1);
+    for(auto& [base,parts]:alphaParts){
+        auto png=readFile(cache/L"textures"/wide(base+".png"));int w=0,h=0,c=0;
+        std::unique_ptr<unsigned char,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(png.data(),int(png.size()),&w,&h,&c,4),stbi_image_free);
+        if(!pixels||w<1||h<1)throw std::runtime_error("Cannot inspect cached texture alpha");
+        size_t visible=0,soft=0;for(size_t k=3;k<size_t(w)*h*4;k+=4){auto a=pixels.get()[k];visible+=a>8;soft+=a>8&&a<247;}
+        auto passes=[&](float u,float v){u-=std::floor(u);v-=std::floor(v);int x=std::min(w-1,int(u*float(w))),y=std::min(h-1,int(v*float(h)));return pixels.get()[(size_t(y)*size_t(w)+size_t(x))*4+3]>=128;};
+        for(auto index:parts){
+            auto& material=model->materials[index];material.translucentTexture=visible>0&&soft>visible/10;
+            double passing=0,total=0;size_t triangles=0;
+            for(size_t t=material.first;t+2<size_t(material.first)+material.count&&t+2<model->indices.size();t+=3){
+                const auto& a=model->vertices[model->indices[t]];const auto& b=model->vertices[model->indices[t+1]];const auto& d=model->vertices[model->indices[t+2]];
+                double weight=std::max(double((b.position-a.position).cross(d.position-a.position).length())*.5,1e-12);int hits=0;triangles++;
+                for(auto [s,r,q]:{std::array<float,3>{1,0,0},{0,1,0},{0,0,1},{.5f,.5f,0},{0,.5f,.5f},{.5f,0,.5f},{1/3.f,1/3.f,1/3.f}})
+                    hits+=passes(a.uv[0]*s+b.uv[0]*r+d.uv[0]*q,a.uv[1]*s+b.uv[1]*r+d.uv[1]*q);
+                if(!hits){model->cutoutTriangles[t/3]=0;continue;}
+                passing+=weight*hits/7;total+=weight;
+            }
+            material.alphaCoverage=total>0?float(passing/total):triangles?0.f:1.f;
+        }
+    }
+    prepareSourceMaterials(cache,id);prepareModelFit(*model,cache);return model;
+}
+static bool plainDirectory(const fs::path& path){auto attributes=GetFileAttributesW(path.c_str());return attributes!=INVALID_FILE_ATTRIBUTES&&(attributes&FILE_ATTRIBUTE_DIRECTORY)&&!(attributes&FILE_ATTRIBUTE_REPARSE_POINT);}
+size_t sweepJobFolders(const fs::path& cache,std::chrono::hours age){
+ std::error_code error;auto jobs=cache/L"jobs";if(!plainDirectory(jobs))return 0;auto cutoff=fs::file_time_type::clock::now()-age;size_t removed=0;
+ for(auto& entry:fs::directory_iterator(jobs,error)){std::error_code e;auto time=entry.last_write_time(e);if(!e&&time<cutoff&&plainDirectory(entry.path())&&fs::remove_all(entry.path(),e)>0&&!e)removed++;}
+ return removed;
+}
+// Only generated cache files are eligible. Resolve and check every path before
+// deletion; never follow a junction/symlink out of the cache or touch sources.
+Json deleteAssets(const fs::path& cache,const std::vector<std::string>& ids){
+ std::set<std::string> selected(ids.begin(),ids.end()),textures,used;
+ for(auto& id:selected)if(!validId(id))throw std::runtime_error("Invalid asset ID for deletion");
+ auto root=fs::weakly_canonical(cache);std::set<fs::path> paths;
+ auto checked=[&](const fs::path& relative){
+  if(relative.empty()||relative.is_absolute())throw std::runtime_error("Invalid cache cleanup path");
+  static const std::set<std::wstring> allowed={L"assets",L"textures",L"fits",L"rigs",L"library",L"fit_overrides",L"names",L"jobs"};
+  if(!allowed.contains(relative.begin()->wstring()))throw std::runtime_error("Invalid cache cleanup directory");
+  for(auto& part:relative)if(part==L"..")throw std::runtime_error("Cache cleanup cannot traverse parents");
+  auto path=root/relative,resolved=fs::weakly_canonical(path);auto rel=resolved.lexically_relative(root);
+  if(rel.empty()||rel.is_absolute()||*rel.begin()==L"..")throw std::runtime_error("Cache cleanup escaped its directory");
+  auto current=root;for(auto& part:relative){current/=part;auto attr=GetFileAttributesW(current.c_str());if(attr!=INVALID_FILE_ATTRIBUTES&&(attr&FILE_ATTRIBUTE_REPARSE_POINT))throw std::runtime_error("Cache cleanup will not follow a junction or symlink");}
+  return path;
+ };
+ std::function<void(fs::path)> collect=[&](fs::path relative){auto path=checked(relative);if(!fs::exists(path))return;paths.insert(relative);if(fs::is_directory(path))for(auto& e:fs::directory_iterator(path))collect(relative/e.path().filename());};
+ auto queue=cache/L"cleanup.json";
+ if(fs::exists(queue))for(auto& entry:readJson(queue)){auto relative=fs::path(wide(entry.get<std::string>()));checked(relative);paths.insert(relative);}
+ // One unreadable manifest must not block every deletion. Its textures are
+ // unknown, so no texture is collected for it (a selected one may leak its own).
+ size_t unreadable=0;
+ if(fs::exists(cache/L"assets"))for(auto& entry:fs::directory_iterator(cache/L"assets")){
+  auto id=utf8(entry.path().filename().wstring());if(!validId(id)||!fs::exists(entry.path()/L"manifest.json"))continue;
+  std::set<std::string> refs;
+  try{auto manifest=readJson(entry.path()/L"manifest.json");
+   for(auto& material:manifest.value("textures",Json::array()))for(auto key:{"base","sphere","toon"}){auto ref=material.value(key,"");if(validId(ref))refs.insert(ref);}
+  }catch(const std::exception&){unreadable++;continue;}
+  (selected.contains(id)?textures:used).insert(refs.begin(),refs.end());
+ }
+ for(auto& id:selected){collect(fs::path(L"assets")/wide(id));collect(fs::path(L"library")/wide(id+".json"));collect(fs::path(L"fit_overrides")/wide(id+".json"));collect(fs::path(L"names/assets")/wide(id.substr(0,16)+".json"));collect(fs::path(L"names/assets")/wide(id.substr(0,16)+"-materials-v5.gma"));}
+ for(auto& id:textures)if(!used.contains(id)){for(auto ext:{".png",".vtf",".png.share2"})collect(fs::path(L"textures")/wide(id+ext));collect(fs::path(L"names/textures")/wide(id.substr(0,16)+".json"));}
+ for(auto dir:{L"fits",L"rigs",L"jobs"})if(fs::exists(cache/dir))for(auto& entry:fs::directory_iterator(cache/dir)){
+  auto path=entry.is_directory()?entry.path()/(std::wstring(dir)==L"rigs"?L"rig.json":L"status.json"):entry.path();if(path.extension()!=L".json"||!fs::exists(path))continue;
+  Json metadata;try{metadata=readJson(path);}catch(...){continue;}auto asset=metadata.contains("fit")?metadata["fit"].value("asset",""):metadata.value("asset","");if(selected.contains(asset)){collect(fs::path(dir)/entry.path().filename());if(std::wstring(dir)==L"rigs"){collect(fs::path(L"names/rigs")/wide(metadata.value("key","").substr(0,16)+".json"));collect(fs::path(L"names/rigs")/wide(metadata.value("key","").substr(0,16)+"-carrier.gma"));}}
+ }
+ auto registryPath=cache/L"sources.local.json";
+ if(!selected.empty()&&fs::exists(registryPath)){auto registry=readJson(registryPath);for(auto& id:selected)registry.erase(id);writeJson(registryPath,registry);}
+ // Persist intent before touching mounted files. Windows may hold an archive
+ // open until game exit; the next client startup finishes these exact paths.
+ auto save=[&](const auto& entries){Json list=Json::array();for(auto& relative:entries)list.push_back(utf8(relative.generic_wstring()));writeJson(queue,list);};
+ save(paths);std::vector<fs::path> ordered(paths.begin(),paths.end());std::sort(ordered.begin(),ordered.end(),[](auto& a,auto& b){return a.native().size()>b.native().size();});
+ uint64_t bytes=0;size_t removed=0;std::vector<fs::path> pending;
+ for(auto& relative:ordered){auto path=checked(relative);std::error_code ec;auto size=fs::is_regular_file(path,ec)?fs::file_size(path,ec):0;ec.clear();bool done=fs::remove(path,ec);if(ec)pending.push_back(relative);else if(done){bytes+=size;removed++;}}
+ save(pending);if(pending.empty())fs::remove(queue);
+ return {{"removedFiles",removed},{"removedBytes",bytes},{"pendingFiles",pending.size()},{"unreadableManifests",unreadable}};
+}
+} // namespace mmd

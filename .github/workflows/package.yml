@@ -1,0 +1,103 @@
+# Builds the native modules and the patched DXVK renderer on Windows, runs the
+# offline validation and uploads two GarrysMod folders (scripts/package-dropin.py):
+# -vulkan with the native files and DXVK (bin/win64/d3d9.dll), and -opengl-remix
+# with the native files only, for PCs where DXVK does not work or RTX Remix runs.
+# The Lua addon is distributed through Workshop; the run's summary shows the
+# native_policy.lua record for these binaries. It runs only when started from the
+# Actions tab with "Run workflow" (any branch).
+name: Build drop-in package
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Windows x64 build and package
+    runs-on: windows-2022
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check translations
+        run: python scripts/check-i18n.py
+
+      # The addon's Lua against simulated games; no native build needed.
+      - name: Run offline Lua tests
+        run: |
+          python -m pip install lupa==2.8
+          if ($LASTEXITCODE) { throw 'Installing lupa failed' }
+          python scripts/check-lua-tests.py
+
+      # Pinned sources, the CoACD wheel and the shader compiler. bootstrap.py
+      # reuses them only when their recorded revisions still match the lock file.
+      # DXVK is cloned fresh by build-dxvk.ps1 so its patches always apply to a clean tree.
+      - name: Restore pinned dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            vendor
+            !vendor/dxvk
+          key: vendor-${{ hashFiles('dependencies.lock.json', 'scripts/bootstrap.py', 'scripts/patch-bullet-threading.py', 'scripts/shaders.py') }}
+
+      # The runner has no imported production models, so the dense-rig gate check
+      # runs on the generated fixture only (the default cache is on drive H:).
+      - name: Build and run native validation
+        env:
+          MMDHL_ASSET_CACHE: ${{ runner.temp }}/mmd_hotloader
+        run: ./scripts/build.ps1
+
+      - name: Run CTest suite
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Test installer
+        run: python tests/test_native_installer.py
+
+      # DXVK 3.1.1 (d3d9 only) with patches/dxvk, built with MSVC, Meson and Ninja;
+      # its shaders use the glslang built above. The renderer's size and SHA-256
+      # join the release record, so native_policy.lua knows the bundled d3d9.dll.
+      - name: Build the DXVK renderer
+        run: |
+          python -m pip install meson==1.12.1 ninja
+          if ($LASTEXITCODE) { throw 'Installing Meson failed' }
+          ./scripts/build-dxvk.ps1
+          python scripts/native_manifest.py --renderer build-dxvk/src/d3d9/d3d9.dll
+          if ($LASTEXITCODE) { throw 'Recording the renderer failed' }
+
+      - name: Stage GarrysMod folders
+        id: package
+        run: |
+          $release = (Get-Content -LiteralPath build/bin/Release/native-release.json -Raw | ConvertFrom-Json).release
+          $name = "Model-Hotloader-$release-$($env:GITHUB_SHA.Substring(0, 8))-win64"
+          python scripts/package-dropin.py --name $name --renderer build-dxvk/src/d3d9/d3d9.dll
+          if ($LASTEXITCODE) { throw 'Packaging failed' }
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      # Each downloaded artifact is a zip: the GarrysMod folder (license notices in
+      # GarrysMod/bin/win64/LICENSES) and INSTALL.txt.
+      # Default package: native files and the DXVK renderer (its notices in bin/win64/DXVK-LICENSES).
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.package.outputs.name }}-vulkan
+          path: dist/${{ steps.package.outputs.name }}-vulkan/
+          if-no-files-found: error
+
+      # Native files only: for PCs where DXVK fails, or with RTX Remix or another d3d9.dll.
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.package.outputs.name }}-opengl-remix
+          path: dist/${{ steps.package.outputs.name }}-opengl-remix/
+          if-no-files-found: error

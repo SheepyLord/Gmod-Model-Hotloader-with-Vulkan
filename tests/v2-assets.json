@@ -1,0 +1,74 @@
+[
+  {
+    "name": "xin",
+    "sourceHash": "4cf8454f7a79c84b88cf3dadfaca3fe2d55d3c6349fffd204acaf24dc78ea82e",
+    "rigidBodies": 686,
+    "joints": 947,
+    "vertices": 92521,
+    "asset": "b5a0ce9ba92a2866fb6a4e2facf62850ada513df9a3ff83c3224f012adb681f5",
+    "label": "Xin"
+  },
+  {
+    "name": "星穹铁道—昔涟",
+    "sourceHash": "286b59791f260d6b682afd0c5104a7764053474cb5d49d39e38e12f435a8a93e",
+    "rigidBodies": 447,
+    "joints": 639,
+    "vertices": 55830,
+    "asset": "8e5aee0dd283aabf40148bc8ba8193a184462edaed9b88b601ad0c44b98d77d0",
+    "label": "Cyrene"
+  },
+  {
+    "name": "Marionette",
+    "sourceHash": "f73cd498580b0950856536223d57df04eb1164e01836c783cc75188a4c5c7514",
+    "rigidBodies": 571,
+    "joints": 873,
+    "vertices": 61973,
+    "asset": "974e56f3e2aefe1f0bba2654f992baaf78a5c409e01c5b1397f8efc8b9e464ba",
+    "label": "Sandrone"
+  },
+  {
+    "name": "星穹铁道—三月七",
+    "sourceHash": "25f5a15979dbbe700c137db6029f2e9ada95820ab8d4434d799c7d58f5882503",
+    "rigidBodies": 287,
+    "joints": 329,
+    "vertices": 22754,
+    "asset": "bac307fdcefad2b6331a95e3b77644ad1562a1aba9983c0830e260326f2ee4c6",
+    "label": "March 7th"
+  },
+  {
+    "name": "星穹铁道—长夜月",
+    "sourceHash": "f6c30cd49ec1818b4f200f216f290a15570f0fffbc0e05ffba60547bf8a1e560",
+    "rigidBodies": 282,
+    "joints": 381,
+    "vertices": 30984,
+    "asset": "6ba956bb71202726e5624bd17364de9ca201c1151238d75076a108c6ef23ec5e",
+    "label": "Long Night Moon"
+  },
+  {
+    "name": "ホタル R18",
+    "sourceHash": "a56b4f20845310d1ce0c752ee78ea80ffccf6def103cc51e68e1455b2782d912",
+    "rigidBodies": 654,
+    "joints": 1061,
+    "vertices": 154682,
+    "asset": "3c73599e69ac1886ff0b3820c856a58cd28c0b0760609d8aa2bf9b0ffbd2710a",
+    "label": "Firefly"
+  },
+  {
+    "name": "芙宁娜 R18",
+    "sourceHash": "476fe45c75d582ec4052fd8916812505cfde4c6a21032fd0dee07257229be468",
+    "rigidBodies": 356,
+    "joints": 475,
+    "vertices": 64031,
+    "asset": "8f6507b0fad5769a24718bdb8dbcca19050b1e9730db313db649b8f89142881f",
+    "label": "Furina"
+  },
+  {
+    "name": "Columbina",
+    "sourceHash": "7476ad7f23026bdf48ae538d125ff7829b63983c46e94c590a2677ec6842b2b5",
+    "rigidBodies": 607,
+    "joints": 956,
+    "vertices": 55943,
+    "asset": "177e80d28f6ade39fd8c564ceafd98a56e3863508f3fb5402a4101df1f7ef934",
+    "label": "Columbina"
+  }
+]

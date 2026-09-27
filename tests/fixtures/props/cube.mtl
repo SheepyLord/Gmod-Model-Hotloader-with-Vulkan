@@ -1,0 +1,3 @@
+newmtl red
+Kd 1 1 1
+map_Kd colors.png

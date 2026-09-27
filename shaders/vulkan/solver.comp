@@ -1,0 +1,286 @@
+/*
+Bullet Continuous Collision Detection and Physics Library
+Copyright (c) 2003-2006 Erwin Coumans  https://bulletphysics.org
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from the use of this software.
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it freely,
+subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim that you wrote the original software. If you use this software in a product, an acknowledgment in the product documentation would be appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+*/
+// Altered: Vulkan compute port of the Bullet SIMD row solvers used by the
+// CPU backends (SOLVER_SIMD). With FMA_ROWS (the CPU has FMA3 and SSE4.1, as
+// Bullet detects at run time) joint, contact and friction rows follow
+// gResolveSingleConstraintRow{Generic,LowerLimit}_sse4_1_fma3, otherwise the
+// _sse2 variants; split-impulse rows always follow
+// gResolveSplitPenetrationImpulse_sse2. Same operations and rounding, so the
+// level-ordered sweep reproduces the CPU solver. One workgroup solves one
+// island (a Bullet solver batch).
+//
+// Rows arrive in solve order. A level of kind 0 is a set of groups that
+// share no writable body: one thread per group fetches all of its rows (at
+// most GROUP_ROWS, one joint) at once, then solves them in order. A level of
+// kind 1 is a serial run of rows (merged tiny levels): one subgroup fetches a
+// row per lane and the lanes solve in order behind subgroup barriers.
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_control_flow_attributes : require
+#ifdef MMDHL_PROFILE
+// Profiling build only: SM clock cycles per level of the second main iteration.
+#extension GL_ARB_shader_clock : require
+#endif
+layout(local_size_x_id=0) in;
+// Shared memory in 32-bit words: nine component arrays over the island's
+// bodies (linear xyz, angular xyz, inverse mass xyz; separate arrays keep a
+// warp's scattered body reads on distinct banks), then one word per island
+// row (the impulse component of the running pass).
+layout(constant_id=1) const int POOL_WORDS=12288;
+layout(constant_id=2) const bool FMA_ROWS=true;
+// False compiles the pool-only kernel, used when every island of a batch fits.
+layout(constant_id=4) const bool GLOBAL_PATH=true;
+const int GROUP_ROWS=6;
+
+struct Body {vec4 linear,angular,push,turn,invMass;};
+// normal (w rhs), relA (w cfm), relB (w jacDiagABInv), angularA (w lower),
+// angularB (w upper), extra (friction, rhsPenetration, override iterations),
+// ids (body A, body B, friction's normal row or -1, flags).
+struct Row {vec4 normal,relA,relB,angularA,angularB,extra;ivec4 ids;};
+struct Island {ivec4 rows,levels,other;vec4 settings;};
+const int NEGATED_B=4,WRITABLE_A=8,WRITABLE_B=16;
+
+layout(std430,binding=0) coherent buffer BodyBuffer {Body bodies[];};
+layout(std430,binding=1) restrict readonly buffer RowBuffer {Row rows[];};
+layout(std430,binding=2) coherent buffer ImpulseBuffer {vec2 impulses[];};
+layout(std430,binding=3) restrict readonly buffer GroupBuffer {ivec2 groups[];};
+// first, end, kind, pool
+layout(std430,binding=4) restrict readonly buffer LevelBuffer {ivec4 levels[];};
+layout(std430,binding=5) restrict readonly buffer IslandBuffer {Island islands[];};
+// The iterations this dispatch runs, counted over each island's combined
+// sequence (split-impulse iterations, then main iterations). The host may split
+// a solve into several short dispatches; the state carries over in the global
+// buffers, so the result is the same as one dispatch.
+layout(push_constant) uniform Chunk {int first,end;} chunk;
+#ifdef MMDHL_PROFILE
+layout(std430,binding=6) buffer ClockBuffer {uint clocks[];};
+#endif
+
+shared float words[POOL_WORDS];
+
+// Per-island values, passed by value so they stay in registers (module-scope
+// variables may be kept in local memory). Pooled islands keep velocities,
+// inverse masses and impulses in shared memory; larger ones run on the global
+// buffers. `split` selects push/turn and appliedPushImpulse.
+struct Scope {int bodyOffset,bodyCount,rowBase,contactIterations;bool pooled,split;int profileSlot;};
+
+bool usePool(Scope s){return !GLOBAL_PATH||s.pooled;}
+// Local body k, vector v (0 linear, 1 angular, 2 inverse mass): components at (3v+c)*bodyCount+k.
+vec3 poolRead(Scope s,int k,int v){int b=3*v*s.bodyCount+k;return vec3(words[b],words[b+s.bodyCount],words[b+2*s.bodyCount]);}
+void poolWrite(Scope s,int k,int v,vec3 x){int b=3*v*s.bodyCount+k;words[b]=x.x;words[b+s.bodyCount]=x.y;words[b+2*s.bodyCount]=x.z;}
+vec3 loadLinear(Scope s,int i){if(usePool(s))return poolRead(s,i-s.bodyOffset,0);return s.split?bodies[i].push.xyz:bodies[i].linear.xyz;}
+vec3 loadAngular(Scope s,int i){if(usePool(s))return poolRead(s,i-s.bodyOffset,1);return s.split?bodies[i].turn.xyz:bodies[i].angular.xyz;}
+vec3 inverseMass(Scope s,int i){if(usePool(s))return poolRead(s,i-s.bodyOffset,2);return bodies[i].invMass.xyz;}
+void store(Scope s,int i,vec3 l,vec3 a){
+ if(usePool(s)){poolWrite(s,i-s.bodyOffset,0,l);poolWrite(s,i-s.bodyOffset,1,a);}
+ else if(s.split){bodies[i].push.xyz=l;bodies[i].turn.xyz=a;}
+ else{bodies[i].linear.xyz=l;bodies[i].angular.xyz=a;}
+}
+float loadImpulse(Scope s,int row){if(usePool(s))return words[9*s.bodyCount+row-s.rowBase];return s.split?impulses[row].y:impulses[row].x;}
+void storeImpulse(Scope s,int row,float v){if(usePool(s))words[9*s.bodyCount+row-s.rowBase]=v;else if(s.split)impulses[row].y=v;else impulses[row].x=v;}
+
+// A pooled island only needs the workgroup barrier (it orders shared memory);
+// the global path also needs its buffer writes visible to the workgroup.
+void sync(Scope s){if(usePool(s))barrier();else{groupMemoryBarrier();barrier();}}
+// Around the pool fills and write-backs both kinds of memory change hands.
+void syncAll(){memoryBarrierShared();memoryBarrierBuffer();barrier();}
+
+// btSimdDot3 (SSE2): products, then x + (y + z).
+float dotSse2(vec3 a,vec3 b){precise float x=a.x*b.x,y=a.y*b.y,z=a.z*b.z;precise float r=x+(y+z);return r;}
+// _mm_dp_ps(a, b, 0x7f): products, then (0 + z) + (y + x).
+float dotSse4(vec3 a,vec3 b){precise float x=a.x*b.x,y=a.y*b.y,z=a.z*b.z;precise float r=z+(y+x);return r;}
+
+// The velocities of a row's two bodies, held in registers while a thread
+// solves consecutive rows on the same pair (every row of one constraint).
+struct Pair {vec3 la,aa,lb,ab,invA,invB;};
+Pair loadPair(Scope s,int ia,int ib){return Pair(loadLinear(s,ia),loadAngular(s,ia),loadLinear(s,ib),loadAngular(s,ib),inverseMass(s,ia),inverseMass(s,ib));}
+void storePair(Scope s,Row r,Pair p){if((r.ids.w&WRITABLE_A)!=0)store(s,r.ids.x,p.la,p.aa);if((r.ids.w&WRITABLE_B)!=0)store(s,r.ids.y,p.lb,p.ab);}
+
+// linear += (normal*invMass)*delta, angular += angularComponent*delta, fused
+// with FMA_ROWS. normal*invMass is the solver's rounded product. Unwritable
+// bodies (fixed, zero-mass followers) would only receive zero terms, and A
+// and B are distinct whenever both are writable.
+void apply(inout vec3 l,inout vec3 a,vec3 normal,vec3 inverse,vec3 angular,float delta,bool fused){
+ precise vec3 term=normal*inverse;precise vec3 nl,na;
+ if(fused){nl=fma(term,vec3(delta),l);na=fma(angular,vec3(delta),a);}else{nl=l+term*delta;na=a+angular*delta;}
+ l=nl;a=na;
+}
+
+void solveRow(Scope s,int index,Row r,inout Pair p){
+ int flags=r.ids.w,kind=flags&3;
+ // Friction rows take their bounds from this iteration's normal impulse and
+ // are skipped while it is not positive.
+ bool friction=r.ids.z>=0;float normal=loadImpulse(s,friction?r.ids.z:index);
+ precise float scaled=r.extra.x*normal;float magnitude=kind==3?min(scaled,r.extra.x):scaled;
+ float lower=friction?-magnitude:r.angularA.w,upper=friction?magnitude:r.angularB.w;
+ if(friction&&!(normal>0.0))return;
+ vec3 nA=r.normal.xyz,nB=(flags&NEGATED_B)!=0?-nA:nA;
+ float previous=loadImpulse(s,index);
+ precise float cfm=previous*r.relA.w;precise float delta=r.normal.w-cfm;
+ precise float lowDelta=lower-previous,highDelta=upper-previous;
+ float next;bool low,high;
+ if(FMA_ROWS){
+  precise float velocityA=dotSse4(nA,p.la)+dotSse4(r.relA.xyz,p.aa);
+  precise float velocityB=dotSse4(nB,p.lb)+dotSse4(r.relB.xyz,p.ab);
+  delta=fma(-velocityA,r.relB.w,delta);delta=fma(-velocityB,r.relB.w,delta);
+  precise float sum=previous+delta;
+  // blendv on sum > lower, then (joints and friction) upper > sum.
+  low=!(sum>lower);high=!low&&kind!=1&&!(upper>sum);next=low?lower:high?upper:sum;
+ }else{
+  precise float velocityA=dotSse2(nA,p.la)+dotSse2(r.relA.xyz,p.aa);
+  precise float velocityB=dotSse2(nB,p.lb)+dotSse2(r.relB.xyz,p.ab);
+  precise float termA=velocityA*r.relB.w;delta=delta-termA;precise float termB=velocityB*r.relB.w;delta=delta-termB;
+  precise float sum=previous+delta;
+  low=sum<lower;high=!low&&kind!=1&&!(sum<upper);next=low?lower:high?upper:sum;
+ }
+ delta=low?lowDelta:high?highDelta:delta;
+ if((flags&WRITABLE_A)!=0)apply(p.la,p.aa,nA,p.invA,r.angularA.xyz,delta,FMA_ROWS);
+ if((flags&WRITABLE_B)!=0)apply(p.lb,p.ab,nB,p.invB,r.angularB.xyz,delta,FMA_ROWS);
+ storeImpulse(s,index,next);
+}
+
+// gResolveSplitPenetrationImpulse_sse2 on push/turn velocities.
+void solveSplit(Scope s,int index,Row r,inout Pair p){
+ if(r.extra.y==0.0)return;
+ int flags=r.ids.w;float lower=r.angularA.w;
+ vec3 nA=r.normal.xyz,nB=(flags&NEGATED_B)!=0?-nA:nA;
+ float previous=loadImpulse(s,index);
+ precise float cfm=previous*r.relA.w;precise float delta=r.extra.y-cfm;
+ precise float velocityA=dotSse2(nA,p.la)+dotSse2(r.relA.xyz,p.aa);
+ precise float velocityB=dotSse2(nB,p.lb)+dotSse2(r.relB.xyz,p.ab);
+ precise float termA=velocityA*r.relB.w;delta=delta-termA;precise float termB=velocityB*r.relB.w;delta=delta-termB;
+ precise float sum=previous+delta;precise float lowDelta=lower-previous;
+ bool low=sum<lower;float next=low?lower:sum;delta=low?lowDelta:delta;
+ if((flags&WRITABLE_A)!=0)apply(p.la,p.aa,nA,p.invA,r.angularA.xyz,delta,false);
+ if((flags&WRITABLE_B)!=0)apply(p.lb,p.ab,nB,p.invB,r.angularB.xyz,delta,false);
+ storeImpulse(s,index,next);
+}
+
+// Joint rows run for their own override count; contacts and friction for the
+// island's contact iterations (btSequentialImpulseConstraintSolver).
+void solve(Scope s,int index,Row r,int iteration,inout Pair p){
+ if(s.split)solveSplit(s,index,r,p);
+ else if(iteration<((r.ids.w&3)==0?int(r.extra.z):s.contactIterations))solveRow(s,index,r,p);
+}
+
+// Kind 0: a thread per group. A group is one constraint's rows (or a single
+// contact row), all on one body pair: the pair is loaded once, the rows run
+// on registers and the pair is stored once.
+void groupLevel(Scope s,ivec4 level,int iteration){
+ int width=int(gl_WorkGroupSize.x);
+ for(int g=level.x+int(gl_LocalInvocationID.x);g<level.y;g+=width){
+  ivec2 range=groups[g];int count=range.y-range.x;Row held[GROUP_ROWS];
+  // Unconditional (clamped) fetches issue back to back; guarded ones serialize.
+  [[unroll]]for(int k=0;k<GROUP_ROWS;k++)held[k]=rows[range.x+min(k,count-1)];
+  Pair p=loadPair(s,held[0].ids.x,held[0].ids.y);
+  [[unroll]]for(int k=0;k<GROUP_ROWS;k++)if(k<count)solve(s,range.x+k,held[k],iteration,p);
+  storePair(s,held[0],p);
+ }
+}
+
+// Kind 1: the first subgroup takes the run a batch of lanes at a time; rows
+// here may share bodies with their predecessors, so each round-trips through
+// the shared pool.
+void serialLevel(Scope s,ivec4 level,int iteration){
+ if(gl_SubgroupID!=0)return;
+ int lane=int(gl_SubgroupInvocationID),size=int(gl_SubgroupSize);
+ for(int base=level.x;base<level.y;base+=size){
+  int index=base+lane;Row r;if(index<level.y)r=rows[index];
+  int count=min(size,level.y-base);
+  for(int k=0;k<count;k++){
+   if(lane==k){Pair p=loadPair(s,r.ids.x,r.ids.y);solve(s,index,r,iteration,p);storePair(s,r,p);}
+   subgroupBarrier();
+  }
+ }
+}
+
+void level(Scope s,int index,int iteration){ivec4 l=levels[index];if(l.z==0)groupLevel(s,l,iteration);else serialLevel(s,l,iteration);}
+
+void main(){
+ Island island=islands[gl_WorkGroupID.x];
+ int tid=int(gl_LocalInvocationID.x),width=int(gl_WorkGroupSize.x);
+#ifdef MMDHL_PROFILE
+ // Calibration (profiling build): 16 dependent shared loads (a chain through
+ // the pool) and 16 independent ones, timed by thread 0 of workgroup 0.
+ if(chunk.first==0&&tid==0&&gl_WorkGroupID.x==0){
+  for(int k=0;k<32;k++)words[k]=float((k*7+3)&31);
+  uint a=clock2x32ARB().x;int at=0;for(int k=0;k<16;k++)at=int(words[at]);
+  if(at==-5)atomicAdd(clocks[7],1u);
+  uint b=clock2x32ARB().x;float sum=0.0;[[unroll]]for(int k=0;k<16;k++)sum+=words[(k*5)&31];
+  if(sum==-5.0)atomicAdd(clocks[7],1u);
+  uint c=clock2x32ARB().x;clocks[4]=b-a;clocks[5]=c-b;
+ }
+ barrier();
+#endif
+ int rowCount=island.rows.z-island.rows.x;
+ Scope s=Scope(island.rows.w,island.other.z,island.rows.x,island.other.w,9*island.other.z+rowCount<=POOL_WORDS,false,-1);
+ int bodyOffset=s.bodyOffset,bodyCount=s.bodyCount,rowBase=s.rowBase,contactIterations=s.contactIterations;
+ int splitCount=island.other.y!=0?contactIterations:0,first=chunk.first,end=min(chunk.end,splitCount+island.other.x);
+ if(first>=end)return;
+ if(usePool(s))for(int i=tid;i<bodyCount;i+=width)poolWrite(s,i,2,bodies[bodyOffset+i].invMass.xyz);
+ // Split-impulse penetration recovery: contact rows only, contact iterations.
+ if(first<splitCount){
+  s.split=true;
+  if(usePool(s)){
+   for(int i=tid;i<bodyCount;i+=width){poolWrite(s,i,0,bodies[bodyOffset+i].push.xyz);poolWrite(s,i,1,bodies[bodyOffset+i].turn.xyz);}
+   for(int k=tid;k<rowCount;k+=width)words[9*bodyCount+k]=impulses[rowBase+k].y;
+  }
+  syncAll();
+  for(int iteration=first;iteration<min(end,splitCount);iteration++)for(int index=island.levels.y;index<island.levels.z;index++){level(s,index,iteration);sync(s);}
+  if(usePool(s)){
+   for(int i=tid;i<bodyCount;i+=width){bodies[bodyOffset+i].push.xyz=poolRead(s,i,0);bodies[bodyOffset+i].turn.xyz=poolRead(s,i,1);}
+   for(int k=tid;k<rowCount;k+=width)impulses[rowBase+k].y=words[9*bodyCount+k];
+  }
+  syncAll();
+ }
+ if(end<=splitCount)return;
+ s.split=false;
+ if(usePool(s)){
+  for(int i=tid;i<bodyCount;i+=width){poolWrite(s,i,0,bodies[bodyOffset+i].linear.xyz);poolWrite(s,i,1,bodies[bodyOffset+i].angular.xyz);}
+  for(int k=tid;k<rowCount;k+=width)words[9*bodyCount+k]=impulses[rowBase+k].x;
+ }
+ syncAll();
+#ifdef MMDHL_PROFILE
+ // Calibration: 64 back-to-back main-pass solves of this island's first row
+ // on a register-held pair (no global loads), timed by thread 0 of workgroup 0.
+ if(first<=splitCount&&tid==0&&gl_WorkGroupID.x==0&&rowCount>0){
+  Row r=rows[rowBase];Pair p=loadPair(s,r.ids.x,r.ids.y);float keep=loadImpulse(s,rowBase);
+  if(p.la.x+p.ab.z+keep+r.normal.w==-123456.0)atomicAdd(clocks[7],1u);
+  uint a=clock2x32ARB().x;
+  for(int k=0;k<64;k++)solveRow(s,rowBase,r,p);
+  if(p.la.x+p.ab.z==-123456.0||loadImpulse(s,rowBase)==-123456.0)atomicAdd(clocks[7],1u);
+  uint b=clock2x32ARB().x;clocks[6]=(b-a)/64u;
+  storeImpulse(s,rowBase,keep);
+ }
+ barrier();
+#endif
+ // Contact levels only run while iteration < contactIterations.
+ for(int iteration=max(first-splitCount,0);iteration<end-splitCount;iteration++){
+  int last=iteration<contactIterations?island.levels.w:island.levels.y;
+  for(int index=island.levels.x;index<last;index++){
+#ifdef MMDHL_PROFILE
+   uint started=clock2x32ARB().x;
+#endif
+   level(s,index,iteration);sync(s);
+#ifdef MMDHL_PROFILE
+   if(iteration==1&&tid==0)clocks[8+index]=clock2x32ARB().x-started;
+#endif
+  }
+ }
+ if(usePool(s)){
+  for(int i=tid;i<bodyCount;i+=width){bodies[bodyOffset+i].linear.xyz=poolRead(s,i,0);bodies[bodyOffset+i].angular.xyz=poolRead(s,i,1);}
+  for(int k=tid;k<rowCount;k+=width)impulses[rowBase+k].x=words[9*bodyCount+k];
+ }
+}

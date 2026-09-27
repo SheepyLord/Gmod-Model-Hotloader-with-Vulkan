@@ -1,0 +1,21 @@
+{
+  "repositories": {
+    "nanoem": ["hkrn/nanoem", "30acffaa29f5d2eb9e997d69418f2e4b97b5894f"],
+    "glm": ["g-truc/glm", "bf71a834948186f4097caa076cd2663c69a10e1e"],
+    "bullet": ["bulletphysics/bullet3", "2c204c49e56ed15ec5fcfa71d199ab6d6570b3f5"],
+    "garrysmod_common": ["danielga/garrysmod_common", "f77a18d86f780a59ea30e4237016b05b790d4b70"],
+    "sourcesdk": ["danielga/sourcesdk-minimal", "61bf02ea6eaedcabf66784dfb0e54c9e3feefdcc"],
+    "json": ["nlohmann/json", "c41152e62092c16cf4fc4625becacc3eb9d9319f"],
+    "stb": ["nothings/stb", "2c980bb59875b0d32144a71867fbdebb2f77cd20"],
+    "assimp": ["assimp/assimp", "c693cb0d68ce6ed38b8c2c592fec5fb603a35bb6"],
+    "meshoptimizer": ["zeux/meshoptimizer", "3e5156f55309ea789e1d4f3a083de5c7810e29a0"],
+    "vulkan_headers": ["KhronosGroup/Vulkan-Headers", "e3b1eec08173d6b825cd3ac88c885a63b621504a"],
+    "glslang": ["KhronosGroup/glslang", "168d452a4f460d24b588fed08477a81c44ee27a1"]
+  },
+  "coacd": {
+    "version": "1.0.14",
+    "url": "https://files.pythonhosted.org/packages/5f/28/edbc4d6766fb3504bf15dabe7340e5686c72b9e3be030b3c8c40469e7af6/coacd-1.0.14-cp39-abi3-win_amd64.whl",
+    "sha256": "6b548f44d9a4694cde594dc8cc8fefa678fb7c88153583be4e8b2c707de8fbbd",
+    "source_commit": "1401ce2a7ae1ed89c65ab958b48d489350c233c7"
+  }
+}

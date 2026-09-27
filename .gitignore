@@ -1,0 +1,12 @@
+build/
+build-profile/
+build-dxvk/
+vendor/
+dist/
+test-output/
+validation/
+__pycache__/
+build-log.txt
+shaders/include/
+shaders/shaders/
+*.user

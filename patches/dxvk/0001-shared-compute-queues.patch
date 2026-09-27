@@ -1,0 +1,506 @@
+diff --git a/src/d3d9/d3d9.def b/src/d3d9/d3d9.def
+index 96ae240..c0525cf 100644
+--- a/src/d3d9/d3d9.def
++++ b/src/d3d9/d3d9.def
+@@ -24,6 +24,11 @@ EXPORTS
+   DXVK_RegisterAnnotation @28257 NONAME
+   DXVK_UnRegisterAnnotation @28258 NONAME
+ 
++  DXVK_AcquireSharedComputeQueue
++  DXVK_LockSharedComputeQueue
++  DXVK_UnlockSharedComputeQueue
++  DXVK_ReleaseSharedComputeQueue
++
+   Direct3D9ForceHybridEnumeration @16 NONAME PRIVATE
+   
+   Direct3DCreate9On12 @20
+diff --git a/src/d3d9/d3d9.sym b/src/d3d9/d3d9.sym
+index bbfaee0..e4e606d 100644
+--- a/src/d3d9/d3d9.sym
++++ b/src/d3d9/d3d9.sym
+@@ -17,6 +17,10 @@
+     Direct3D9EnableMaximizedWindowedModeShim;
+     DXVK_RegisterAnnotation;
+     DXVK_UnRegisterAnnotation;
++    DXVK_AcquireSharedComputeQueue;
++    DXVK_LockSharedComputeQueue;
++    DXVK_UnlockSharedComputeQueue;
++    DXVK_ReleaseSharedComputeQueue;
+     Direct3D9ForceHybridEnumeration;
+     Direct3DCreate9On12;
+     Direct3DCreate9On12Ex;
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 9b72bb2..7a5cfe7 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -1,4 +1,5 @@
+ #include "d3d9_device.h"
++#include "d3d9_shared_compute.h"
+ 
+ #include "d3d9_annotation.h"
+ #include "d3d9_common_texture.h"
+@@ -151,10 +152,13 @@ namespace dxvk {
+     BindFFUbershader<D3D9ShaderType::PixelShader>();
+ 
+     m_unlockAdditionalFormats = m_parent->HasFormatsUnlocked();
++    D3D9RegisterSharedComputeDevice(this);
+   }
+ 
+ 
+   D3D9DeviceEx::~D3D9DeviceEx() {
++    D3D9UnregisterSharedComputeDevice(this);
++
+     // Avoids hanging when in this state, see comment
+     // in DxvkDevice::~DxvkDevice.
+     if (this_thread::isInModuleDetachment())
+diff --git a/src/d3d9/d3d9_shared_compute.cpp b/src/d3d9/d3d9_shared_compute.cpp
+new file mode 100644
+index 0000000..be97c71
+--- /dev/null
++++ b/src/d3d9/d3d9_shared_compute.cpp
+@@ -0,0 +1,98 @@
++#include "d3d9_device.h"
++#include "d3d9_shared_compute.h"
++
++#include "../dxvk/dxvk_instance.h"
++
++#include <new>
++
++namespace dxvk {
++
++  static dxvk::mutex   g_sharedComputeMutex;
++  static D3D9DeviceEx* g_sharedComputeDevice = nullptr;
++
++  void D3D9RegisterSharedComputeDevice(D3D9DeviceEx* pDevice) {
++    std::lock_guard<dxvk::mutex> lock(g_sharedComputeMutex);
++    g_sharedComputeDevice = pDevice;
++
++    const auto& queues = pDevice->GetDXVKDevice()->queues();
++
++    if (queues.sharedComputeCount) {
++      Logger::info(str::format("D3D9: Shared compute queues: family ", queues.sharedCompute.queueFamily,
++        ", first ", queues.sharedCompute.queueIndex, ", count ", queues.sharedComputeCount));
++    }
++  }
++
++  void D3D9UnregisterSharedComputeDevice(D3D9DeviceEx* pDevice) {
++    std::lock_guard<dxvk::mutex> lock(g_sharedComputeMutex);
++
++    if (g_sharedComputeDevice == pDevice)
++      g_sharedComputeDevice = nullptr;
++  }
++
++  // What Acquire hands out as the owner: a reference on DXVK's device, never
++  // one on the D3D9 device. A D3D9 device whose final Release is already in
++  // its destructor, waiting on the registry lock, must not be AddRef'd back.
++  struct D3D9SharedComputeToken {
++    Rc<DxvkDevice> device;
++  };
++
++  static D3D9SharedComputeToken* SharedComputeToken(void* pOwner) {
++    return static_cast<D3D9SharedComputeToken*>(pOwner);
++  }
++
++}
++
++extern "C" {
++
++  DLLEXPORT HRESULT __stdcall DXVK_AcquireSharedComputeQueue(DXVK_SHARED_COMPUTE_QUEUE* pQueue) {
++    using namespace dxvk;
++
++    if (!pQueue || pQueue->Version != DXVK_SHARED_COMPUTE_QUEUE_VERSION)
++      return D3DERR_INVALIDCALL;
++
++    std::lock_guard<dxvk::mutex> lock(g_sharedComputeMutex);
++
++    if (!g_sharedComputeDevice)
++      return D3DERR_NOTAVAILABLE;
++
++    // A destructor unregisters its device before tearing anything down, and
++    // this lock orders the two, so the device's members are still intact
++    // here. The copied reference then keeps the Vulkan device, its adapter
++    // and instance alive on its own; waitForIdle takes the shared lock.
++    Rc<DxvkDevice> device = g_sharedComputeDevice->GetDXVKDevice();
++    const auto& queues = device->queues();
++
++    if (!queues.sharedComputeCount)
++      return D3DERR_NOTAVAILABLE;
++
++    auto token = new (std::nothrow) D3D9SharedComputeToken { device };
++
++    if (!token)
++      return E_OUTOFMEMORY;
++
++    pQueue->Instance            = device->instance()->handle();
++    pQueue->PhysicalDevice      = device->adapter()->handle();
++    pQueue->Device              = device->handle();
++    pQueue->GetInstanceProcAddr = device->instance()->vki()->getLoaderProc();
++    pQueue->QueueFamilyIndex    = queues.sharedCompute.queueFamily;
++    pQueue->FirstQueueIndex     = queues.sharedCompute.queueIndex;
++    pQueue->QueueCount          = queues.sharedComputeCount;
++    pQueue->Owner               = token;
++    return D3D_OK;
++  }
++
++  DLLEXPORT void __stdcall DXVK_LockSharedComputeQueue(void* pOwner) {
++    if (pOwner)
++      dxvk::SharedComputeToken(pOwner)->device->lockSharedCompute();
++  }
++
++  DLLEXPORT void __stdcall DXVK_UnlockSharedComputeQueue(void* pOwner) {
++    if (pOwner)
++      dxvk::SharedComputeToken(pOwner)->device->unlockSharedCompute();
++  }
++
++  DLLEXPORT void __stdcall DXVK_ReleaseSharedComputeQueue(void* pOwner) {
++    delete dxvk::SharedComputeToken(pOwner);
++  }
++
++}
+diff --git a/src/d3d9/d3d9_shared_compute.h b/src/d3d9/d3d9_shared_compute.h
+new file mode 100644
+index 0000000..d15b6ea
+--- /dev/null
++++ b/src/d3d9/d3d9_shared_compute.h
+@@ -0,0 +1,61 @@
++#pragma once
++
++// Shared compute queues: a process can run its own Vulkan compute work on the
++// VkDevice that renders its D3D9 content, on queues of a dedicated compute
++// family that DXVK creates but never uses. Work there overlaps rendering in
++// one GPU context instead of being time-sliced against a second device.
++//
++//   DXVK_SHARED_COMPUTE_QUEUE q = { DXVK_SHARED_COMPUTE_QUEUE_VERSION };
++//   if (SUCCEEDED(DXVK_AcquireSharedComputeQueue(&q))) {
++//     vkGetDeviceQueue(q.Device, q.QueueFamilyIndex, q.FirstQueueIndex + i, &queue);
++//     DXVK_LockSharedComputeQueue(q.Owner);    // around vkQueueSubmit and
++//     vkQueueSubmit(queue, ...);               // vkQueueWaitIdle only
++//     DXVK_UnlockSharedComputeQueue(q.Owner);
++//     ...
++//     DXVK_ReleaseSharedComputeQueue(q.Owner); // after destroying every object
++//   }                                          // created on q.Device
++//
++// The handles come from the most recently created D3D9 device. Acquire keeps
++// its VkDevice and VkInstance alive until the matching release, even after
++// the D3D9 device itself is destroyed; Owner is an opaque token, not the
++// device. Never destroy the device or instance, and never call
++// vkDeviceWaitIdle on it.
++
++#include <stdint.h>
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#include <vulkan/vulkan.h>
++
++#define DXVK_SHARED_COMPUTE_QUEUE_VERSION 1u
++
++typedef struct DXVK_SHARED_COMPUTE_QUEUE {
++  uint32_t                  Version;          // in: DXVK_SHARED_COMPUTE_QUEUE_VERSION
++  VkInstance                Instance;
++  VkPhysicalDevice          PhysicalDevice;
++  VkDevice                  Device;
++  PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
++  uint32_t                  QueueFamilyIndex;
++  uint32_t                  FirstQueueIndex;
++  uint32_t                  QueueCount;
++  void*                     Owner;            // for Lock/Unlock/Release
++} DXVK_SHARED_COMPUTE_QUEUE;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef HRESULT (__stdcall *PFN_DXVK_AcquireSharedComputeQueue)(DXVK_SHARED_COMPUTE_QUEUE* pQueue);
++typedef void    (__stdcall *PFN_DXVK_SharedComputeQueueOwner)(void* pOwner);
++
++#ifdef __cplusplus
++}
++
++namespace dxvk {
++  class D3D9DeviceEx;
++  void D3D9RegisterSharedComputeDevice(D3D9DeviceEx* pDevice);
++  void D3D9UnregisterSharedComputeDevice(D3D9DeviceEx* pDevice);
++}
++#endif
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+index 53d23a6..1524624 100644
+--- a/src/d3d9/meson.build
++++ b/src/d3d9/meson.build
+@@ -19,6 +19,7 @@ d3d9_src = [
+   'd3d9_adapter.cpp',
+   'd3d9_monitor.cpp',
+   'd3d9_device.cpp',
++  'd3d9_shared_compute.cpp',
+   'd3d9_state.cpp',
+   'd3d9_cursor.cpp',
+   'd3d9_swapchain.cpp',
+diff --git a/src/dxvk/dxvk_adapter.cpp b/src/dxvk/dxvk_adapter.cpp
+index 96dfa5d..1bcd596 100644
+--- a/src/dxvk/dxvk_adapter.cpp
++++ b/src/dxvk/dxvk_adapter.cpp
+@@ -5,6 +5,8 @@
+ #include "dxvk_device.h"
+ #include "dxvk_instance.h"
+ 
++#include "../util/util_env.h"
++
+ namespace dxvk {
+ 
+   DxvkDeviceQueue getDeviceQueue(const Rc<vk::DeviceFn>& vkd, const DxvkDeviceCapabilities& caps, DxvkDeviceQueueIndex queue) {
+@@ -277,9 +279,80 @@ namespace dxvk {
+ 
+     caps.queryDeviceQueues(&queueCount, queues.data());
+ 
++    // Shared compute queues (see DxvkDeviceQueueMapping): run below rendering.
++    // Their family gets a low global priority when DXVK uses none of its queues
++    // (DXVK_SHARED_COMPUTE_PRIORITY: low, the default, medium, high or off),
++    // and VK_NV_compute_occupancy_priority is enabled where available so that
++    // the application can lower its dispatches' SM occupancy priority too.
++    VkDeviceQueueGlobalPriorityCreateInfoKHR sharedPriority = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR };
++    VkPhysicalDeviceComputeOccupancyPriorityFeaturesNV occupancyPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_OCCUPANCY_PRIORITY_FEATURES_NV };
++    const void* deviceNext = features->pNext;
++
++    if (queueMapping.sharedComputeCount) {
++      uint32_t supportedCount = 0u;
++      vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, nullptr);
++      std::vector<VkExtensionProperties> supported(supportedCount);
++      vk->vkEnumerateDeviceExtensionProperties(m_handle, nullptr, &supportedCount, supported.data());
++
++      auto hasExtension = [&] (const char* name, bool fromSupported) {
++        if (fromSupported) {
++          for (const auto& e : supported)
++            if (!std::strcmp(e.extensionName, name)) return true;
++          return false;
++        }
++        for (auto e : extensionNames)
++          if (!std::strcmp(e, name)) return true;
++        return false;
++      };
++
++      auto enableExtension = [&] (const char* name) {
++        if (!hasExtension(name, false))
++          extensionNames.push_back(name);
++      };
++
++      std::string setting = env::getEnvVar("DXVK_SHARED_COMPUTE_PRIORITY");
++      VkQueueGlobalPriorityKHR priority = VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR;
++
++      if (setting == "medium") priority = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
++      if (setting == "high")   priority = VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
++
++      bool exclusive = true;
++
++      for (auto used : { queueMapping.graphics, queueMapping.transfer, queueMapping.sparse })
++        exclusive &= used.family != queueMapping.sharedCompute.family;
++
++      const char* priorityExtension = hasExtension(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME, true) ? VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME
++        : hasExtension(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME, true) ? VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME : nullptr;
++
++      if (setting != "off" && exclusive && priorityExtension) {
++        for (auto& q : queues) {
++          if (q.queueFamilyIndex == queueMapping.sharedCompute.family) {
++            sharedPriority.globalPriority = priority;
++            sharedPriority.pNext = q.pNext;
++            q.pNext = &sharedPriority;
++            enableExtension(priorityExtension);
++            Logger::info(str::format("Shared compute queues: global priority ", uint32_t(priority)));
++          }
++        }
++      }
++
++      if (hasExtension(VK_NV_COMPUTE_OCCUPANCY_PRIORITY_EXTENSION_NAME, true)) {
++        VkPhysicalDeviceFeatures2 query = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
++        query.pNext = &occupancyPriority;
++        vk->vkGetPhysicalDeviceFeatures2(m_handle, &query);
++
++        if (occupancyPriority.computeOccupancyPriority) {
++          occupancyPriority.pNext = const_cast<void*>(deviceNext);
++          deviceNext = &occupancyPriority;
++          enableExtension(VK_NV_COMPUTE_OCCUPANCY_PRIORITY_EXTENSION_NAME);
++          Logger::info("Shared compute queues: compute occupancy priority available");
++        }
++      }
++    }
++
+     // Create the actual Vulkan device
+     VkDeviceCreateInfo deviceInfo = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+-    deviceInfo.pNext = features->pNext;
++    deviceInfo.pNext = deviceNext;
+     deviceInfo.queueCreateInfoCount = queues.size();
+     deviceInfo.pQueueCreateInfos = queues.data();
+     deviceInfo.enabledExtensionCount = extensionNames.size();
+@@ -301,6 +374,8 @@ namespace dxvk {
+     deviceQueues.graphics = getDeviceQueue(vkd, caps, queueMapping.graphics);
+     deviceQueues.transfer = getDeviceQueue(vkd, caps, queueMapping.transfer);
+     deviceQueues.sparse   = getDeviceQueue(vkd, caps, queueMapping.sparse);
++    deviceQueues.sharedCompute = getDeviceQueue(vkd, caps, queueMapping.sharedCompute);
++    deviceQueues.sharedComputeCount = queueMapping.sharedComputeCount;
+ 
+     return new DxvkDevice(m_instance, this, vkd, caps, deviceQueues, DxvkQueueCallback());
+   }
+diff --git a/src/dxvk/dxvk_device.cpp b/src/dxvk/dxvk_device.cpp
+index 0221825..2f0f502 100644
+--- a/src/dxvk/dxvk_device.cpp
++++ b/src/dxvk/dxvk_device.cpp
+@@ -695,8 +695,12 @@ namespace dxvk {
+     m_submissionQueue.waitForIdle();
+     m_submissionQueue.lockDeviceQueue();
+ 
+-    if (m_vkd->vkDeviceWaitIdle(m_vkd->device()) != VK_SUCCESS)
+-      Logger::err("DxvkDevice: waitForIdle: Operation failed");
++    // Applications may be submitting to the shared compute queues.
++    { std::lock_guard<dxvk::mutex> sharedLock(m_sharedComputeMutex);
++
++      if (m_vkd->vkDeviceWaitIdle(m_vkd->device()) != VK_SUCCESS)
++        Logger::err("DxvkDevice: waitForIdle: Operation failed");
++    }
+ 
+     m_submissionQueue.unlockDeviceQueue();
+   }
+diff --git a/src/dxvk/dxvk_device.h b/src/dxvk/dxvk_device.h
+index 7fb070d..26b0bba 100644
+--- a/src/dxvk/dxvk_device.h
++++ b/src/dxvk/dxvk_device.h
+@@ -69,6 +69,9 @@ namespace dxvk {
+     DxvkDeviceQueue graphics;
+     DxvkDeviceQueue transfer;
+     DxvkDeviceQueue sparse;
++    /// First shared compute queue (see DxvkDeviceQueueMapping)
++    DxvkDeviceQueue sharedCompute;
++    uint32_t        sharedComputeCount = 0u;
+   };
+   
+   /**
+@@ -700,6 +703,25 @@ namespace dxvk {
+       m_submissionQueue.unlockDeviceQueue();
+     }
+ 
++    /**
++     * \brief Locks the shared compute queues
++     *
++     * Applications hold this around their own submissions to the
++     * shared compute queues, which DXVK never uses itself; it only
++     * excludes vkDeviceWaitIdle, which needs every queue of the
++     * device to be externally synchronized.
++     */
++    void lockSharedCompute() {
++      m_sharedComputeMutex.lock();
++    }
++
++    /**
++     * \brief Unlocks the shared compute queues
++     */
++    void unlockSharedCompute() {
++      m_sharedComputeMutex.unlock();
++    }
++
+     /**
+      * \brief Increments a given stat counter
+      *
+@@ -775,6 +797,7 @@ namespace dxvk {
+     DxvkRecycler<DxvkCommandList, 16> m_recycledCommandLists;
+ 
+     DxvkSubmissionQueue         m_submissionQueue;
++    dxvk::mutex                 m_sharedComputeMutex;
+ 
+     Rc<DxvkShaderCache>         m_shaderCache;
+ 
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index 63d89d9..f5098f4 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -8,6 +8,8 @@
+ #include "dxvk_instance.h"
+ #include "dxvk_limits.h"
+ 
++#include "../util/util_env.h"
++
+ namespace dxvk {
+ 
+   #define CORE_VERSIONS                            \
+@@ -215,7 +217,8 @@ namespace dxvk {
+     stream << "Queues:" << std::endl
+            << "  Graphics : (" << m_queueMapping.graphics.family << ", " << m_queueMapping.graphics.index << ")" << std::endl
+            << "  Transfer : (" << m_queueMapping.transfer.family << ", " << m_queueMapping.transfer.index << ")" << std::endl
+-           << "  Sparse   : (" << m_queueMapping.sparse.family   << ", " << m_queueMapping.sparse.index   << ")" << std::endl;
++           << "  Sparse   : (" << m_queueMapping.sparse.family   << ", " << m_queueMapping.sparse.index   << ")" << std::endl
++           << "  Shared compute : (" << m_queueMapping.sharedCompute.family << ", " << m_queueMapping.sharedCompute.index << ") x " << m_queueMapping.sharedComputeCount << std::endl;
+ 
+     // Log memory type and heap properties
+     static const std::array<std::pair<VkMemoryPropertyFlagBits, const char*>, 8> s_flags = {{
+@@ -693,11 +696,48 @@ namespace dxvk {
+         VK_QUEUE_SPARSE_BINDING_BIT);
+     }
+ 
++    // Queues for an application's own compute work on this device
++    // (see d3d9_shared_compute.h). Only a dedicated compute family, so
++    // that work overlaps rendering instead of queueing behind it.
++    // DXVK_SHARED_COMPUTE_QUEUES sets the count (default 4, 0 disables).
++    uint32_t sharedRequested = 4u;
++    std::string sharedSetting = env::getEnvVar("DXVK_SHARED_COMPUTE_QUEUES");
++
++    if (!sharedSetting.empty())
++      sharedRequested = uint32_t(std::max(0, std::atoi(sharedSetting.c_str())));
++
++    uint32_t sharedFamily = findQueueFamily(
++      VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
++      VK_QUEUE_COMPUTE_BIT);
++
++    if (sharedRequested && sharedFamily != VK_QUEUE_FAMILY_IGNORED) {
++      uint32_t first = 0u;
++
++      for (auto used : { m_queueMapping.graphics, m_queueMapping.transfer, m_queueMapping.sparse }) {
++        if (used.family == sharedFamily)
++          first = std::max(first, used.index + 1u);
++      }
++
++      uint32_t available = m_queuesAvailable[sharedFamily].core.queueFamilyProperties.queueCount;
++      uint32_t count = available > first ? std::min(sharedRequested, available - first) : 0u;
++
++      if (count) {
++        m_queueMapping.sharedCompute.family = sharedFamily;
++        m_queueMapping.sharedCompute.index = first;
++        m_queueMapping.sharedComputeCount = count;
++      }
++    }
++
+     // Actually enable all the queues
+     enableQueue(m_queueMapping.graphics);
+     enableQueue(m_queueMapping.transfer);
+     enableQueue(m_queueMapping.sparse);
+ 
++    if (m_queueMapping.sharedComputeCount) {
++      enableQueue({ m_queueMapping.sharedCompute.family,
++        m_queueMapping.sharedCompute.index + m_queueMapping.sharedComputeCount - 1u });
++    }
++
+     // Fix up queue priority pointers
+     uint32_t maxQueueCount = 0u;
+ 
+@@ -718,7 +758,7 @@ namespace dxvk {
+ 
+     for (auto& q : m_queuesEnabled) {
+       if (q.queueFamilyIndex == queue.family) {
+-        q.queueCount = queue.index + 1u;
++        q.queueCount = std::max(q.queueCount, queue.index + 1u);
+         return;
+       }
+     }
+diff --git a/src/dxvk/dxvk_device_info.h b/src/dxvk/dxvk_device_info.h
+index 54deab3..0ef19dd 100644
+--- a/src/dxvk/dxvk_device_info.h
++++ b/src/dxvk/dxvk_device_info.h
+@@ -223,6 +223,11 @@ namespace dxvk {
+     DxvkDeviceQueueIndex graphics;
+     DxvkDeviceQueueIndex transfer;
+     DxvkDeviceQueueIndex sparse;
++    /// Queues DXVK never uses itself, created on a dedicated compute
++    /// family for applications that share the device for their own
++    /// compute work: first queue, and the number of queues.
++    DxvkDeviceQueueIndex sharedCompute;
++    uint32_t             sharedComputeCount = 0u;
+   };
+ 
+ 

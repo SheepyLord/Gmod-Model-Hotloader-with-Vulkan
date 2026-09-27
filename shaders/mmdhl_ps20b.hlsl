@@ -1,0 +1,31 @@
+sampler Base:register(s0);sampler Sphere:register(s1);sampler Toon:register(s2);sampler Shadow:register(s3);
+float4 Diffuse:register(c0);float4 Ambient:register(c1);float4 Specular:register(c2);float4 Edge:register(c3);
+float3 Eye:register(c10);
+float4 Controls[4]:register(c11);float4 TextureBlend[4]:register(c15);
+struct Input {float2 uv:TEXCOORD0;float3 normal:TEXCOORD1;float3 world:TEXCOORD2;float4 extra:TEXCOORD3;float2 depth:TEXCOORD4;};
+float4 main(Input i):COLOR0 {
+ float3 n=normalize(i.normal);float3 light=normalize(Controls[0].xyz);
+ float4 base=tex2D(Base,i.uv);base.rgb*=TextureBlend[0].rgb*TextureBlend[0].a;float alpha=base.a*Diffuse.a;clip(alpha-.002);
+ float3 offset=i.world-Controls[3].xyz;
+ float3 shadowForward=-light;float3 shadowRight=normalize(cross(shadowForward,float3(0,0,1)));float3 shadowUp=cross(shadowRight,shadowForward);
+ float2 suv=float2(dot(offset,shadowRight),-dot(offset,shadowUp))/max(1,Controls[2].w)+.5;
+ float depth=dot(offset,shadowForward)/max(1,Controls[3].w);
+ float stored=tex2D(Shadow,suv).r;
+ float inMap=step(0,suv.x)*step(suv.x,1)*step(0,suv.y)*step(suv.y,1);
+ float lit=1-Controls[1].w*inMap*step(stored+.002,depth);
+ float illumination=saturate(dot(n,light))*lit;
+ float3 toon=tex2D(Toon,float2(.5,1-illumination)).rgb*TextureBlend[2].rgb*TextureBlend[2].a;
+ float3 color=base.rgb*saturate(Ambient.rgb+Diffuse.rgb*.6)*toon;
+ float3 view=normalize(Eye-i.world);float spec=pow(saturate(dot(n,normalize(light+view))),max(1,Specular.w))*lit;
+ color+=Specular.rgb*spec;
+ float2 sphereUV=float2(dot(n,Controls[1].xyz),-dot(n,Controls[2].xyz))*.5+.5;
+ sphereUV=lerp(sphereUV,i.extra.xy,step(2.5,Ambient.w));
+ float3 sphere=tex2D(Sphere,sphereUV).rgb*TextureBlend[1].rgb*TextureBlend[1].a;
+ color=lerp(color,color*sphere,step(.5,Ambient.w)*(1-step(1.5,Ambient.w)));
+ color=lerp(color,color+sphere,step(1.5,Ambient.w)*(1-step(2.5,Ambient.w)));
+ color=lerp(color,color*sphere,step(2.5,Ambient.w));
+ float4 result=float4(saturate(color),alpha);
+ result=lerp(result,Edge,step(.5,Controls[0].w)*(1-step(1.5,Controls[0].w)));
+ result=lerp(result,float4(depth,depth,depth,1),step(1.5,Controls[0].w));
+ return result;
+}
