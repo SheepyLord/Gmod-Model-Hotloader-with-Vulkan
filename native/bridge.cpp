@@ -26,7 +26,9 @@ uintptr_t rva(void* object,size_t slot){return reinterpret_cast<uintptr_t>((*rei
 void initialize(){if(physics){auto current=call<void*>(physics,11,0);if(current==environment&&current)return;clearPhysicsBridge();}module=GetModuleHandleW(L"vphysics.dll");if(!module)throw std::runtime_error("VPhysics is not loaded");wchar_t filename[32768];GetModuleFileNameW(module,filename,32768);fingerprint=requireGameBinary(L"vphysics.dll")["observedSHA256"].get<std::string>();
 
     base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));physics=factory("VPhysics031",nullptr);collision=factory("VPhysicsCollision007",nullptr);if(!physics||!collision)throw std::runtime_error("Physics factory unavailable");requireOwnedSlots(physics,L"vphysics.dll",{11,15});requireOwnedSlots(collision,L"vphysics.dll",{8,14,16,41,42,43,44});requireAbiRva(L"vphysics.dll","physics",rva(physics,11));environment=call<void*>(physics,11,0);if(!environment||!matchesAbiRva(L"vphysics.dll","environment",rva(environment,47))){environment=nullptr;throw std::runtime_error("Physics environment not initialized or wrong ABI");}
-    const auto& guards=requireGameBinary(L"vphysics.dll").at("guards");objectTableGuard=reinterpret_cast<void*>(base+guards.at("objectTable").get<uintptr_t>());objectPositionGuard=reinterpret_cast<void*>(base+guards.at("objectPosition").get<uintptr_t>());
+    // An unverified game build has no pinned object guards: checked() learns them from the first scene object.
+    const auto& guards=requireGameBinary(L"vphysics.dll").at("guards");auto pinned=[&](const char* guard)->void*{return guards.contains(guard)?reinterpret_cast<void*>(base+guards.at(guard).get<uintptr_t>()):nullptr;};
+    objectTableGuard=pinned("objectTable");objectPositionGuard=pinned("objectPosition");
 }
 }
 Json probePhysics(){initialize();Json j={{"sha256",fingerprint},{"environmentVtable",reinterpret_cast<uintptr_t>(*reinterpret_cast<void***>(environment))-base},{"objects",Json::array()},{"collisionVtable",Json::array()}};
@@ -136,7 +138,9 @@ Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,doub
   for(auto& r:regions)if(c.x()+e.x()>=r.lower.x()&&c.x()-e.x()<=r.upper.x()&&c.y()+e.y()>=r.lower.y()&&c.y()-e.y()<=r.upper.y()&&c.z()+e.z()>=r.lower.z()&&c.z()-e.z()<=r.upper.z())return true;
   return false;
  };
- auto checked=[&](void* object){if(*reinterpret_cast<void**>(object)!=objectTableGuard||(*reinterpret_cast<void***>(object))[48]!=objectPositionGuard)throw std::runtime_error("Unsupported scene physics object vtable");};
+ auto checked=[&](void* object){auto table=*reinterpret_cast<void***>(object);
+  if(!objectTableGuard&&matchesAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(table)-base)&&matchesAbiRva(L"vphysics.dll","objectPosition",reinterpret_cast<uintptr_t>(table[48])-base)){objectTableGuard=table;objectPositionGuard=table[48];}
+  if(table!=objectTableGuard||table[48]!=objectPositionGuard)throw std::runtime_error("Unsupported scene physics object vtable");};
  // Players can own both standing and crouched shadow bodies; Lua may expose
  // only the active one. GetGameData is the supported VPhysics owner link.
  // Excluded objects are only dereferenced when this environment lists them.

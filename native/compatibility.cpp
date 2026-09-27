@@ -1,6 +1,7 @@
 #include "compatibility.hpp"
 #include "validation_once.hpp"
 #include <windows.h>
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <set>
@@ -13,11 +14,14 @@ std::mutex policyMutex;
 Json policy;
 struct Cached {Json profile;std::string error;};
 std::map<std::wstring,Cached> verified;
+// Guards of unverified builds: the first observation, which later ones must equal.
+std::map<std::string,uintptr_t> learned;
 const std::set<std::string> libraries={"engine.dll","client.dll","vphysics.dll","materialsystem.dll","shaderapidx9.dll","stdshader_dx9.dll","stdshader_dx6.dll"};
+// The render contexts are identified by their RTTI class; profiles may still carry
+// materialsystem.dll's queuedContext/hardwareContext for older native releases.
 const std::map<std::string,std::set<std::string>> guards={
  {"engine.dll",{"lighting"}},
- {"vphysics.dll",{"physics","environment","objectTable","objectPosition","objectForce"}},
- {"materialsystem.dll",{"queuedContext","hardwareContext"}}
+ {"vphysics.dll",{"physics","environment","objectTable","objectPosition","objectForce"}}
 };
 }
 Json peEvidence(const Bytes& b){
@@ -73,22 +77,48 @@ const Json& requireGameBinary(const wchar_t* name){
  try{
   if(policy.is_null())throw std::runtime_error("Compatibility policy not configured");
   wchar_t path[32768];if(!GetModuleFileNameW(module,path,32768))throw std::runtime_error("Cannot locate loaded game library");
-  auto bytes=readFile(path);auto sha=hash(bytes);auto evidence=peEvidence(bytes);
-  for(auto& p:policy["libraries"])if(p["name"]==utf8(name)&&matchesEvidence(p["evidence"],evidence)){
+  auto bytes=readFile(path);auto sha=hash(bytes);Json evidence;
+  try{evidence=peEvidence(bytes);}catch(const std::exception&){}
+  if(!evidence.is_null())for(auto& p:policy["libraries"])if(p["name"]==utf8(name)&&matchesEvidence(p["evidence"],evidence)){
    result.profile=p;result.profile["observedSHA256"]=sha;result.profile["match"]=sha==p["sha256"]?"tested":"abi-evidence";break;
   }
-  if(result.profile.is_null())throw std::runtime_error("Game ABI check failed for "+utf8(name)+" ("+sha+"). Check Workshop for a compatibility update.");
+  // Game updates replace these files. A build no profile describes still runs:
+  // the interface, slot and class checks below guard every private use.
+  if(result.profile.is_null())result.profile={{"name",utf8(name)},{"variant","unverified"},{"guards",Json::object()},{"observedSHA256",sha},{"match","unverified"}};
  }catch(const std::exception& e){result.error=e.what();}
  auto& saved=verified.emplace(name,std::move(result)).first->second;
  if(!saved.error.empty())throw std::runtime_error(saved.error);return saved.profile;
 }
-bool matchesAbiRva(const wchar_t* name,const char* guard,uintptr_t observed){return requireGameBinary(name).at("guards").at(guard).get<uintptr_t>()==observed;}
+bool matchesAbiRva(const wchar_t* name,const char* guard,uintptr_t observed){
+ const auto& pinned=requireGameBinary(name).at("guards");
+ if(pinned.contains(guard))return pinned.at(guard).get<uintptr_t>()==observed;
+ std::lock_guard lock(policyMutex);
+ return learned.emplace(utf8(name)+"/"+guard,observed).first->second==observed;
+}
 void requireAbiRva(const wchar_t* name,const char* guard,uintptr_t observed){if(!matchesAbiRva(name,guard,observed))throw std::runtime_error("Game ABI layout mismatch: "+utf8(name)+" / "+guard);}
 void requireOwnedSlots(void* object,const wchar_t* library,std::initializer_list<size_t> slots){
  requireGameBinary(library);auto owner=GetModuleHandleW(library);MEMORY_BASIC_INFORMATION memory{};
  if(!object||!VirtualQuery(object,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_NOACCESS|PAGE_GUARD)))throw std::runtime_error("Unreadable game interface");
  auto table=*reinterpret_cast<void***>(object);
  for(auto slot:slots){if(!VirtualQuery(table+slot,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_NOACCESS|PAGE_GUARD)))throw std::runtime_error("Unreadable game vtable");auto target=table[slot];if(!VirtualQuery(target,&memory,sizeof(memory))||memory.AllocationBase!=owner||!(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))throw std::runtime_error("Game interface slot replaced or outside expected library");}
+}
+std::string rttiClass(const void* object,const wchar_t* library){
+ auto module=reinterpret_cast<uintptr_t>(GetModuleHandleW(library));if(!module||!object)return {};
+ // Readable bytes from p to the end of its committed region; the vtable, locator
+ // and type name must lie in library, the object itself anywhere.
+ auto readable=[&](const void* p,bool owned=true)->size_t{MEMORY_BASIC_INFORMATION m{};
+  if(!VirtualQuery(p,&m,sizeof(m))||m.State!=MEM_COMMIT||(m.Protect&(PAGE_NOACCESS|PAGE_GUARD))||(owned&&reinterpret_cast<uintptr_t>(m.AllocationBase)!=module))return 0;
+  return reinterpret_cast<uintptr_t>(m.BaseAddress)+m.RegionSize-reinterpret_cast<uintptr_t>(p);};
+ if(readable(object,false)<8)return {};
+ auto table=*reinterpret_cast<const uintptr_t* const*>(object);
+ if(readable(table-1)<8)return {};
+ // x64 complete object locator: signature 1, offsets, then image-relative type, hierarchy and self.
+ auto locator=reinterpret_cast<const uint32_t*>(table[-1]);
+ if(readable(locator)<24||locator[0]!=1||module+locator[5]!=reinterpret_cast<uintptr_t>(locator))return {};
+ auto name=reinterpret_cast<const char*>(module+locator[3]+16);
+ auto size=std::min<size_t>(readable(name),256);
+ auto end=std::find(name,name+size,'\0');
+ return end==name+size?std::string():std::string(name,end);
 }
 static void checkInterfaces(const wchar_t* name){
  // Check once before hooks are installed. Later checks must not mistake our own

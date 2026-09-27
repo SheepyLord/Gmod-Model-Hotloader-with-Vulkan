@@ -409,14 +409,21 @@ void appendCall(SourceCallList* list,SourceFunctor* call){
 }
 }
 static constexpr VertexFormat_t commonFormat=VERTEX_POSITION|VERTEX_NORMAL|VERTEX_COLOR|VERTEX_FORMAT_VERTEX_SHADER|VERTEX_USERDATA_SIZE(4)|(2ULL<<TEX_COORD_SIZE_BIT);
-// The pinned render-context vtables (queuedContext / hardwareContext ABI
-// guards): the calling thread gets the queued context on the main thread in
-// multicore mode, the hardware context otherwise (and on the render thread).
-static void* contextTable(const char* guard){auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"materialsystem.dll"));return reinterpret_cast<void*>(base+requireGameBinary(L"materialsystem.dll").at("guards").at(guard).get<uintptr_t>());}
-static void* queuedContextTable(){static void* table=contextTable("queuedContext");return table;}
-static void* hardwareContextTable(){static void* table=contextTable("hardwareContext");return table;}
-static bool recordsForRenderThread(IMatRenderContext* context){return *reinterpret_cast<void**>(context)==queuedContextTable();}
-static bool drawsDirectly(IMatRenderContext* context){return *reinterpret_cast<void**>(context)==hardwareContextTable();}
+// The calling thread gets the queued context (CMatQueuedRenderContext) on the
+// main thread in multicore mode, the hardware context (CMatRenderContext)
+// otherwise and on the render thread. They are told apart by their RTTI class,
+// which holds across game builds; each class's vtable is remembered once seen.
+static std::atomic<void*> queuedContextTable{nullptr},hardwareContextTable{nullptr};
+static void* contextClass(IMatRenderContext* context){
+    auto table=*reinterpret_cast<void**>(context);
+    if(table==hardwareContextTable.load(std::memory_order_relaxed)||table==queuedContextTable.load(std::memory_order_relaxed))return table;
+    auto name=rttiClass(context,L"materialsystem.dll");
+    if(name==".?AVCMatRenderContext@@")hardwareContextTable=table;
+    else if(name==".?AVCMatQueuedRenderContext@@")queuedContextTable=table;
+    return table;
+}
+static bool recordsForRenderThread(IMatRenderContext* context){return contextClass(context)==queuedContextTable.load(std::memory_order_relaxed);}
+static bool drawsDirectly(IMatRenderContext* context){return contextClass(context)==hardwareContextTable.load(std::memory_order_relaxed);}
 // Source's queued material system hands the main thread a render context that
 // records calls for its render thread. A native draw is recorded there as one
 // call: it runs on the render thread, in order with the calls recorded before
@@ -438,7 +445,9 @@ static Json queueStats(){
     // The calling thread's context, as submit() classifies it.
     if(materials){CMatRenderContextPtr context(materials);const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"materialsystem.dll"));
         out["threadMode"]=int(materials->GetThreadMode());out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
-        out["queuedContextRva"]=reinterpret_cast<uintptr_t>(queuedContextTable())-base;out["hardwareContextRva"]=reinterpret_cast<uintptr_t>(hardwareContextTable())-base;
+        auto rva=[&](void* table){return table?reinterpret_cast<uintptr_t>(table)-base:0;};
+        out["contextClass"]=rttiClass(static_cast<IMatRenderContext*>(context),L"materialsystem.dll");
+        out["queuedContextRva"]=rva(queuedContextTable.load());out["hardwareContextRva"]=rva(hardwareContextTable.load());
         out["recordsForRenderThread"]=recordsForRenderThread(context);out["drawsDirectly"]=drawsDirectly(context);
         if(recordsForRenderThread(context)){
             auto list=reinterpret_cast<SourceCallList*>(context->GetCallQueue());out["callListOffset"]=reinterpret_cast<char*>(list)-reinterpret_cast<char*>(static_cast<IMatRenderContext*>(context));

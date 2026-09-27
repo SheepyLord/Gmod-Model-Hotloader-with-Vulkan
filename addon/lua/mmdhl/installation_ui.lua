@@ -35,6 +35,24 @@ local function messages(detailed)
  if acceptable(server) and not hostsServer() then result[#result+1]=L'install.unverified.server_admin' end
  return result,pending,binary
 end
+-- Dismiss hides the banner and the notice until the unaccepted problems change;
+-- the installation window still lists them.
+local dismissedPath='mmd_hotloader/installation_dismissed.txt'
+local function problemsKey()
+ local parts={}
+ local status,server=M.GetInstallationStatus(),M.serverInstallation
+ for _,v in ipairs(status and status.issues or {}) do if not v.accepted then parts[#parts+1]=tostring(v.code)..'|'..tostring(v.component)..'|'..tostring(v.message) end end
+ for _,v in ipairs(server and server.issues or {}) do if not v.accepted then parts[#parts+1]='server|'..tostring(v.code)..'|'..tostring(v.component)..'|'..tostring(v.message) end end
+ table.sort(parts) return table.concat(parts,'\n')
+end
+function M.InstallationDismissed()
+ local key=problemsKey()
+ return key~='' and file.Read(dismissedPath,'DATA')==key
+end
+function M.DismissInstallation()
+ file.CreateDir('mmd_hotloader') file.Write(dismissedPath,problemsKey())
+ hook.Run('MMDHL.InstallationChanged',M.GetInstallationStatus())
+end
 function M.CanAcceptUnverifiedNative()
  return not not (acceptable(M.GetInstallationStatus()) or (hostsServer() and acceptable(M.serverInstallation)))
 end
@@ -101,15 +119,17 @@ function M.AddInstallationBanner(parent,always)
  local recheck=button(L'install.button.recheck',function() M.CheckInstallation(true) end,90)
  local useAnyway=button(L'install.button.use_anyway',function() M.ConfirmUnverifiedNative() end,120)
  local stopUsing=button(L'install.button.stop_using',function() M.RevokeUnverifiedNative() end,200)
+ -- At the right edge, so a narrow window cannot push it out of view.
+ local dismiss=button(L'install.button.dismiss',function() M.DismissInstallation() end,90) dismiss:Dock(RIGHT) dismiss:DockMargin(8,0,0,0) dismiss:SetTooltip(L'install.button.dismiss_tip')
  local scroll=panel:Add('DScrollPanel') scroll:Dock(FILL) scroll:DockMargin(0,0,0,8)
  local summary=scroll:Add('DLabel') summary:Dock(TOP) summary:SetWrap(true) summary:SetAutoStretchVertical(true) summary:SetFont(bodyFont()) summary:SetDark(true)
  local function refresh()
   if not IsValid(panel) then return end
   local text,versions,details,pending=M.InstallationSummary()
   local mirror=alternative()
-  -- Accepted warnings (Use anyway) stay listed in the installation window only.
-  panel:SetVisible(always or pending>0) panel:SetTall((always and 190 or 150)*scale)
-  alt:SetVisible(mirror~=nil) useAnyway:SetVisible(M.CanAcceptUnverifiedNative()) stopUsing:SetVisible(M.UsingUnverifiedNative()) controls:InvalidateLayout()
+  -- Accepted (Use anyway) and dismissed warnings stay listed in the installation window only.
+  panel:SetVisible(always or (pending>0 and not M.InstallationDismissed())) panel:SetTall((always and 190 or 150)*scale)
+  alt:SetVisible(mirror~=nil) useAnyway:SetVisible(M.CanAcceptUnverifiedNative()) stopUsing:SetVisible(M.UsingUnverifiedNative()) dismiss:SetVisible(not always and pending>0) controls:InvalidateLayout()
   summary:SetText(versions..'\n'..(mirror and L('install.alternative_link',{url=mirror})..'\n' or '')..(text~='' and text or L'install.verified')) summary:SetTooltip(details~='' and details or nil)
   parent:InvalidateLayout(true)
  end
@@ -117,6 +137,7 @@ function M.AddInstallationBanner(parent,always)
  -- Windows stay open across a language switch (the spawn-menu copy is rebuilt with the menu).
  hook.Add('MMDHL.LanguageChanged',panel,function()
   label(get,L'install.button.download') label(alt,L'install.button.download_alternative') label(copy,L'install.button.copy_diagnostics') label(recheck,L'install.button.recheck') label(useAnyway,L'install.button.use_anyway') label(stopUsing,L'install.button.stop_using')
+  label(dismiss,L'install.button.dismiss') dismiss:SetTooltip(L'install.button.dismiss_tip')
   summary:SetFont(bodyFont()) refresh()
  end)
  return panel
@@ -133,9 +154,9 @@ concommand.Add('mmdhl_open_props',function() M.OpenInstallation() end)
 -- The library replaces mmdhl_open once it loads; this one always opens the installation window.
 concommand.Add('mmdhl_installation',function() M.OpenInstallation() end)
 local function notify()
- -- Warnings the player already accepted do not raise the notice.
+ -- Warnings the player already accepted or dismissed do not raise the notice.
  local _,pending,binary=messages()
- if M.installationNoticeShown or pending==0 or not IsValid(LocalPlayer()) then return end
+ if M.installationNoticeShown or pending==0 or M.InstallationDismissed() or not IsValid(LocalPlayer()) then return end
  M.installationNoticeShown=true
  local panel=vgui.Create('DPanel') panel:SetSize(math.min(540,ScrW()-40),92) panel:SetPos(ScrW()-panel:GetWide()-20,40)
  panel:SetMouseInputEnabled(true)

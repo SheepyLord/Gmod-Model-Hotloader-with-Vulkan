@@ -74,12 +74,15 @@ try:
     path=game/'garrysmod/addons/mmd_hotloader/lua/mmdhl/compatibility_policy.lua';policy=lua_policy(path)
     for p in policy['libraries']:
         if p['name']=='engine.dll':p['evidence']['sections'][0]['sha256']='0'*64
+    # A game build no profile describes (every game update) is unverified: it keeps
+    # rendering behind the runtime interface, slot and class checks, without a warning.
     write_policy(path,policy);start();s=settled()
-    assert s['features']['core'] and s['features']['imports'] and not s['features']['rendering'],s
-    assert any(x['code']=='game_incompatible' for x in s['issues'])
-    assert call('client',"local before=GetConVar('mat_queue_mode'):GetInt() for i=1,1000 do local ok=mmdhl.RenderAvailable() assert(not ok) end return before==GetConVar('mat_queue_mode'):GetInt()")
-    report['abiRejected']=s
-    print('PASS: actual game accepts new DLL hash with matching evidence; optional corruption uses simple hull; missing server is communicated; missing client retains UI; failed ABI blocks rendering without changing queue mode')
+    assert s['features']['core'] and s['features']['imports'] and s['features']['rendering'],s
+    assert not any(x['code']=='game_incompatible' for x in s['issues']),s['issues']
+    assert any(x['name']=='engine.dll' and x['match']=='unverified' for x in s['compatibility']['libraries'])
+    assert call('client',"local before=GetConVar('mat_queue_mode'):GetInt() local ok=mmdhl.RenderAvailable() assert(ok) return before==GetConVar('mat_queue_mode'):GetInt()")
+    report['abiUnverified']=s
+    print('PASS: actual game accepts new DLL hash with matching evidence; optional corruption uses simple hull; missing server is communicated; missing client retains UI; an unverified game build keeps rendering without changing queue mode')
 finally:
     stop();replace(engine,original);install()
     (ROOT/'validation/installation-game-failures.json').write_text(json.dumps(report,indent=2),encoding='utf8')

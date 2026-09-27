@@ -27,6 +27,7 @@ function panel()
  return p
 end
 vgui={Create=function() return panel() end}
+FILES={} file={Read=function(p) return FILES[p] end,Write=function(p,c) FILES[p]=c end,CreateDir=function() end}
 mmdhl={serverInstallation=nil}
 ''')
 attach(lua)
@@ -70,8 +71,16 @@ assert(not text:find(binary,1,true) and text:find('z',1,true),text)
 mmdhl.serverInstallation=nil
 -- A verified installation reports nothing.
 S=status({}) assert(mmdhl.InstallationSummary()=='')
+-- Dismiss hides the banner and the notice until the unaccepted problems change.
+S=status({issue('game_incompatible','Game ABI check failed for engine.dll (a)','rendering')})
+assert(not mmdhl.InstallationDismissed()) mmdhl.DismissInstallation() assert(mmdhl.InstallationDismissed())
+S=status({issue('game_incompatible','Game ABI check failed for engine.dll (a)','rendering')}) assert(mmdhl.InstallationDismissed(),'the same problems came back')
+S=status({issue('game_incompatible','Game ABI check failed for engine.dll (b)','rendering')}) assert(not mmdhl.InstallationDismissed(),'a changed problem stayed hidden')
+mmdhl.serverInstallation={issues={issue('missing','z')}} S=status({issue('game_incompatible','Game ABI check failed for engine.dll (a)','rendering')})
+assert(not mmdhl.InstallationDismissed(),'a new server problem stayed hidden') mmdhl.serverInstallation=nil
+S=status({}) assert(not mmdhl.InstallationDismissed(),'nothing to dismiss')
 ''')
-print('PASS: downloadable problems read as one instruction with details kept; platform, accepted and server problems keep their lines')
+print('PASS: downloadable problems read as one instruction with details kept; platform, accepted and server problems keep their lines; Dismiss lasts until the problems change')
 
 # The Download button: only the public repository's releases page or a release on it.
 lua.execute(r'''

@@ -77,21 +77,33 @@ Lua module directory; it does not replace vanilla DLLs. Normal Steam updates
 should retain these separate files. File survival and ABI compatibility are
 independent: retaining an importer DLL does not prove it can use a changed engine.
 
-`compatibility_policy.lua` describes the compiled `source-win64-v1` ABI family.
-Current vanilla and validated RTX profiles include executable and read-only PE
-sections, interface identities and the existing layout/RVA guards. Documented
-DIR64 image-base relocations are normalized while retaining their target RVA.
-PE headers and resources are outside this evidence. Instructions, RIP-relative
-operands, pointed-to read-only data, section layout and function targets are not
-wildcarded. Named factories, relevant vtable slots and function ownership are
-checked before private calls or hooks. Physics environment checks remain deferred
-until that environment exists; missing game libraries are retried after map load.
+Only our own files are verified by hash (above). Game libraries change with
+every Garry's Mod update, usually without changing anything these modules use,
+so their builds are identified but never block the addon (since 2.1.0-native.6).
+`compatibility_policy.lua` describes the builds already audited for the compiled
+`source-win64-v1` ABI family: executable and read-only PE sections (DIR64
+image-base relocations normalized), with the RVAs of the existing guards. A
+library that matches a profile is reported as `tested` or `abi-evidence`; any
+other build is `unverified` (in Copy diagnostics, under `compatibility`) and
+still runs, without a warning.
 
-A previously unseen whole-file hash is accepted if this evidence matches. This
-is deliberately conservative: some ABI-compatible code/data changes still need
-an audited Workshop profile. These checks cannot prove arbitrary future builds
-safe. Lua profiles supply evidence and expected RVAs for existing guards, not
-new native function signatures, slot conventions or structure layouts.
+Every build, audited or not, passes the runtime checks before private calls or
+hooks: named factories and interface versions, and the ownership of each used
+vtable slot by the expected library (a slot another module replaced is refused).
+The render contexts are told apart by their RTTI class (`CMatQueuedRenderContext`,
+`CMatRenderContext`), which does not depend on the build. For an unverified
+build, the remaining guards (engine `lighting`, the vphysics tables and slots) are
+taken from their first observation and every later one must agree. Physics
+environment checks remain deferred until that environment exists; missing game
+libraries are retried after map load.
+
+These checks cannot prove a future build compatible: if Facepunch changes an
+interface layout without a new version string, a feature may fail or the game
+may crash. Remaining problems (a missing interface, a replaced slot) disable
+only the affected feature. Their warning, like every installation warning, can be
+hidden with **Dismiss** until the problems change; the installation window still
+lists them. Native releases up to 2.1.0-native.5 still require a matching
+profile and report other builds as incompatible.
 
 ## Release workflow
 
