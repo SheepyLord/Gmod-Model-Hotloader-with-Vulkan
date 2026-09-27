@@ -16,7 +16,7 @@ There are two packages:
 - `…-win64-vulkan.zip` (default): the native modules plus DXVK (`bin\win64\d3d9.dll`), which runs Garry's Mod's Direct3D 9 renderer on Vulkan. It lowers GPU load and lets the Vulkan physics processor share the renderer's device.
 - `…-win64-opengl-remix.zip`: the native modules only; the game keeps its own Direct3D 9 renderer. Use it if DXVK does not work on your PC, or if you use RTX Remix, ReShade or another `d3d9.dll`, which the `-vulkan` package would replace. Deleting `bin\win64\d3d9.dll` also returns the game to Direct3D 9.
 
-The installation banner (Q > External Models) shows which renderer is active. The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. [Details and measurements](docs/DXVK_PACKAGE.md).
+The installation banner (Q > External Models) shows which renderer is active. The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. 
 
 If cloned with locally built binary modules, run:
 
