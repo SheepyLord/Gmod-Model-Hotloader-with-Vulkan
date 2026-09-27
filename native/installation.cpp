@@ -8,7 +8,11 @@ Json componentIdentity(const char* component,const void* address){
  if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(address),&module)||!GetModuleFileNameW(module,filename,32768))throw std::runtime_error("Cannot locate loaded native component");
  wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto executable=fs::path(exe).parent_path();
  auto root=executable.filename()==L"win64"?executable.parent_path().parent_path():executable;
- auto expected=std::string(component)=="runtime"?executable/L"mmdhl_runtime_win64.dll":root/L"garrysmod"/L"lua"/L"bin"/(std::string(component)=="server"?L"gmsv_mmdhl_win64.dll":L"gmcl_mmdhl_win64.dll");
+ // The x86-64 branch starts bin/win64/gmod.exe; the main branch (since 2026-09-17) starts
+ // gmod_win64.exe in the game folder and loads the engine and this runtime from bin/win64.
+ // srcds_win64.exe and the worker load it from beside themselves.
+ auto runtimeFolder=lstrcmpiW(fs::path(exe).filename().c_str(),L"gmod_win64.exe")==0?executable/L"bin"/L"win64":executable;
+ auto expected=std::string(component)=="runtime"?runtimeFolder/L"mmdhl_runtime_win64.dll":root/L"garrysmod"/L"lua"/L"bin"/(std::string(component)=="server"?L"gmsv_mmdhl_win64.dll":L"gmcl_mmdhl_win64.dll");
  auto bytes=readFile(filename);
  return {{"component",component},{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"},{"path",utf8(filename)},{"expectedPath",utf8(expected.wstring())},{"sha256",hash(bytes)},{"size",bytes.size()}};
 }

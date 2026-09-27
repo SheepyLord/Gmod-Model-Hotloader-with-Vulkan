@@ -16,7 +16,11 @@ servers use the runtime beside `srcds_win64.exe` and do not require client-side
 import components. The previous unversioned installation is recorded as obsolete.
 
 After loading, the native module reports its compiled identity, loaded paths,
-expected paths and hashes. A contained worker process checks startup, runtime
+expected paths and hashes. Both 64-bit branches load the client runtime from
+`bin\win64`: the x86-64 branch starts `bin\win64\gmod.exe`, and the main branch
+(since 2026-09-17) starts `gmod_win64.exe` in the game folder. Native builds up
+to 2.1.0-native.5 expect the runtime beside the executable, so Lua also accepts
+the runtime file it checked under the loaded module's game folder. A contained worker process checks startup, runtime
 identity and optional CoACD exports. It runs asynchronously with a 10-second
 deadline. Invalid CoACD is never loaded by the self-test; requested detailed
 collision falls back to a simple hull. A failed worker disables imports while
@@ -41,9 +45,15 @@ modified or damaged files, a mixed installation, or a known release that is no
 longer approved) are reported as *unverified*. The banner then offers
 **Use anyway…**, which explains the risk (crashes, damaged saves, unpredictable
 behaviour) and asks for confirmation. After the next map load or game restart
-the native module loads and every feature works; the problems stay in the
-banner marked "(warning accepted)", and the pop-up notice is no longer shown.
+the native module loads and every feature works. The accepted problems leave the
+External Models banner and the pop-up notice; the installation window
+(Utilities → User → Character Models → **Model Hotloader — installation**, or
+`mmdhl_installation`) still lists them marked "(warning accepted)", and its
 **Stop using unverified files** withdraws the acceptance.
+
+A loaded module or runtime that differs from the checked files, or was loaded
+from another path, is unverified in the same way: **Use anyway…** accepts the
+checked files together with the size and SHA-256 of the loaded module and runtime.
 
 The acceptance is stored in `data/mmd_hotloader/unverified_native.json` as a
 per-realm fingerprint of the exact size and SHA-256 of every checked file, so any
@@ -54,8 +64,8 @@ administrator uses `mmdhl_accept_unverified_native` (or
 
 Accepting never overrides missing or unreadable files, unsupported platforms,
 releases without installation verification (`installApi` 0), a module whose
-native API differs from this Lua, a module loaded from an unexpected path, or
-game compatibility (ABI) checks. After loading, accepted files are identified
+native API differs from this Lua, or game compatibility (ABI) checks. After
+loading, accepted files are identified
 by their bytes on disk instead of by release: the loaded module and runtime must
 still equal the files that were checked, and the import worker must match its
 own runtime.

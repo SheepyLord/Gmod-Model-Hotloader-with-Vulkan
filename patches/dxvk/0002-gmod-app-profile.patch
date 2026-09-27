@@ -9,7 +9,7 @@ index 2b7ced4..945246c 100644
 +    /* Garry's Mod (x86-64) - crashes right after *
 +     * device creation with descriptor heaps      *
 +     * (NVIDIA 610.88; MMDHL shipped build)       */
-+    { R"(\\gmod\.exe$)", {{
++    { R"(\\gmod(_win64)?\.exe$)", {{
 +      { "dxvk.enableDescriptorHeap",       "False" },
 +    }} },
      /* Sonic Adventure 2                          */

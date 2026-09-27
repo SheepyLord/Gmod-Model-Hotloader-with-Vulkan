@@ -410,8 +410,9 @@ function T.Show(kind,id,name)
  local topics=T.Analyze(record) topicLine(frame,topics,s,f)
  documentTabs(frame,record,s,f)
 end
--- The library's button text for a model with something to read, whether the
--- texts mention restrictions, and every topic they mention (for the tooltip).
+-- A summary of a model's record (nil without one; the library offers Terms of use
+-- in its right-click menu only then), whether the texts mention restrictions, and
+-- every topic they mention.
 function T.Summary(kind,id)
  local record=recordFor(kind,id) if not record then return nil end
  local topics=topicsOf(record)

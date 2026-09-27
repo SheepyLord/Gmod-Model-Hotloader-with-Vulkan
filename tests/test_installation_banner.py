@@ -54,10 +54,15 @@ assert(not mmdhl.Localize(text):find(binary,1,true))
 S=status({issue('unsupported_platform',L'install.error.unsupported_platform'),issue('missing',L('install.error.file_missing',{path='x'}))})
 text=mmdhl.Localize(mmdhl.InstallationSummary())
 assert(text:find(binary,1,true)==1 and text:find(mmdhl.Localize(L'install.error.unsupported_platform'),1,true),text)
--- A problem the player accepted keeps its own line with the accepted tag, and no instruction.
+-- A problem the player accepted keeps its own line with the accepted tag, and no instruction;
+-- with nothing pending, the External Models banner hides (the installation window still lists it).
 S=status({issue('damaged_or_unrecognized',L('install.error.file_unrecognized',{path='y'}),'core',true)},{acceptedIssues=true})
+local _,_,_,pending=mmdhl.InstallationSummary()
 text=mmdhl.Localize(mmdhl.InstallationSummary())
 assert(not text:find(binary,1,true) and text:find(mmdhl.Localize(L'install.accepted_tag'),1,true),text)
+assert(pending==0,'an accepted problem is still pending')
+S=status({issue('restart_required',L'install.error.loaded_runtime_mismatch')})
+_,_,_,pending=mmdhl.InstallationSummary() assert(pending==1)
 -- The server's problems are the administrator's.
 S=status({}) mmdhl.serverInstallation={issues={issue('missing',L('install.error.file_missing',{path='z'}))}}
 text=mmdhl.Localize(mmdhl.InstallationSummary())

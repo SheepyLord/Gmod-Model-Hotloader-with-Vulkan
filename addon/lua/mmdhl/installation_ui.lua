@@ -64,13 +64,14 @@ local function rendererLine(status)
  if r.kind=='dxvk' then return r.current and L'install.renderer.dxvk' or L('install.renderer.dxvk_release',{release=tostring(r.release)}) end
  return r.kind=='d3d9' and L'install.renderer.d3d9' or L'install.renderer.other'
 end
+-- Also returns how many problems the player has not accepted.
 function M.InstallationSummary()
  local status=M.GetInstallationStatus()
- local issues=messages()
+ local issues,pending=messages()
  local versions=L('install.native_release',{version=tostring(status and status.installed or L'install.not_verified')})..'   '..L('install.recommended_release',{version=tostring(status and status.recommended or L'install.unknown_version')})
  local renderer=rendererLine(status)
  if renderer then versions=versions..'   '..renderer end
- return table.concat(issues,'\n'),versions,table.concat(messages(true),'\n')
+ return table.concat(issues,'\n'),versions,table.concat(messages(true),'\n'),pending
 end
 -- The Download button opens only the public repository's releases page (or a release on it).
 local releases='https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases'
@@ -104,9 +105,10 @@ function M.AddInstallationBanner(parent,always)
  local summary=scroll:Add('DLabel') summary:Dock(TOP) summary:SetWrap(true) summary:SetAutoStretchVertical(true) summary:SetFont(bodyFont()) summary:SetDark(true)
  local function refresh()
   if not IsValid(panel) then return end
-  local text,versions,details=M.InstallationSummary()
+  local text,versions,details,pending=M.InstallationSummary()
   local mirror=alternative()
-  panel:SetVisible(always or text~='') panel:SetTall((always and 190 or 150)*scale)
+  -- Accepted warnings (Use anyway) stay listed in the installation window only.
+  panel:SetVisible(always or pending>0) panel:SetTall((always and 190 or 150)*scale)
   alt:SetVisible(mirror~=nil) useAnyway:SetVisible(M.CanAcceptUnverifiedNative()) stopUsing:SetVisible(M.UsingUnverifiedNative()) controls:InvalidateLayout()
   summary:SetText(versions..'\n'..(mirror and L('install.alternative_link',{url=mirror})..'\n' or '')..(text~='' and text or L'install.verified')) summary:SetTooltip(details~='' and details or nil)
   parent:InvalidateLayout(true)
@@ -128,8 +130,10 @@ function M.OpenInstallation()
 end
 concommand.Add('mmdhl_open',function() M.OpenInstallation() end)
 concommand.Add('mmdhl_open_props',function() M.OpenInstallation() end)
+-- The library replaces mmdhl_open once it loads; this one always opens the installation window.
+concommand.Add('mmdhl_installation',function() M.OpenInstallation() end)
 local function notify()
- -- Warnings the player already accepted stay in the banner but do not raise the notice.
+ -- Warnings the player already accepted do not raise the notice.
  local _,pending,binary=messages()
  if M.installationNoticeShown or pending==0 or not IsValid(LocalPlayer()) then return end
  M.installationNoticeShown=true

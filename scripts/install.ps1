@@ -21,10 +21,12 @@ foreach($name in $names){
     $source=Join-Path $package $name
     if((Get-Item -LiteralPath $source).Length -ne $entry[0].size -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $entry[0].sha256){throw "Native package checksum mismatch: $name"}
 }
-$client=Test-Path -LiteralPath (Join-Path $game 'bin\win64\gmod.exe')
+# The x86-64 branch has bin\win64\gmod.exe; the main branch (since 2026-09-17) has
+# gmod_win64.exe in the game folder. Both load the runtime from bin\win64.
+$client=(Test-Path -LiteralPath (Join-Path $game 'bin\win64\gmod.exe')) -or (Test-Path -LiteralPath (Join-Path $game 'gmod_win64.exe'))
 $server=Test-Path -LiteralPath (Join-Path $game 'srcds_win64.exe')
 if(-not $client -and -not $server){throw 'Expected Windows x64 GMod client or dedicated server installation'}
-$running=Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('gmod.exe','srcds_win64.exe','srcds_console_win64.exe','mmdhl_worker.exe') -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($game+'\'),[StringComparison]::OrdinalIgnoreCase)}
+$running=Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('gmod.exe','gmod_win64.exe','srcds_win64.exe','srcds_console_win64.exe','mmdhl_worker.exe') -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith(($game+'\'),[StringComparison]::OrdinalIgnoreCase)}
 if($running){throw 'Close this GMod installation and its workers before installing native binaries'}
 $addons=Join-Path $game 'garrysmod\addons'
 $addon=Join-Path $addons 'mmd_hotloader'

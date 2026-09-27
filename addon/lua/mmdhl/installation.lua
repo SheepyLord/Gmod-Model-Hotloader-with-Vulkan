@@ -70,7 +70,9 @@ function M.EvaluateInstallation(policy,reader,env)
   parts[#parts+1]=check[1]..'='..(actual and actual.size..':'..actual.sha256 or 'missing')
  end
  s.fingerprint=s.realm..';'..table.concat(parts,';')
- s.unverifiedAccepted=type(env.accepted)=='string' and env.accepted==s.fingerprint or nil
+ -- Loading anyway extends the accepted fingerprint with the loaded files (CheckInstallation).
+ local accepted=type(env.accepted)=='string' and env.accepted or ''
+ s.unverifiedAccepted=(accepted==s.fingerprint or accepted:sub(1,#s.fingerprint+8)==s.fingerprint..';loaded:') or nil
  -- Releases without installation verification (installApi 0) cannot be checked after loading.
  if known and (known.installApi~=1 or not approved(policy,s.installed)) then issue(s,(known.installApi~=1 or olderRelease(s.installed,policy.recommended)) and 'outdated' or 'unapproved_release','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}),nil,known.installApi==1) end
  for _,check in ipairs(checks) do
@@ -211,19 +213,50 @@ else
  end)
 end
 local function normalize(path) return tostring(path or ''):gsub('\\','/'):gsub('/+','/'):lower() end
+-- Where a loaded file may be. The x86-64 branch starts bin/win64/gmod.exe; since
+-- 2026-09-17 the main branch starts gmod_win64.exe in the game folder and still
+-- loads the engine, and this runtime, from bin/win64. Native builds up to
+-- 2.1.0-native.5 expect the runtime beside the executable, so the runtime may also
+-- be the file this check read, under the game folder of the loaded module.
+local function expectedPaths(key,info)
+ local paths={normalize(info[key].expectedPath)}
+ local root=key=='runtime' and info.module and normalize(info.module.expectedPath):match('^(.+)/garrysmod/lua/bin/[^/]+$')
+ if root and status.files.runtime then paths[2]=root..'/'..normalize(status.files.runtime.relative) end
+ return paths
+end
+-- The loaded files that loading anyway accepts, appended to the installation fingerprint.
+local function loadedFingerprint(info)
+ local parts={}
+ for _,key in ipairs({'module','runtime'}) do local found=info and info[key] or {} parts[#parts+1]=key..'='..tostring(found.size)..':'..tostring(found.sha256) end
+ return ';loaded:'..table.concat(parts,',')
+end
+-- On a mismatch, also returns whether the player may load anyway: another
+-- interface never loads; other bytes or another location may, once accepted.
 local function identitiesMatch(info)
  for _,key in ipairs({'module','runtime'}) do
   local record=status.files[key=='module' and status.realm or 'runtime']
   local found=info and info[key]
-  local valid=found and found.installApi==1 and found.api==status.expected.api and found.platform=='win64' and normalize(found.path)==normalize(found.expectedPath)
+  local message=key=='module' and L'install.error.loaded_module_mismatch' or L'install.error.loaded_runtime_mismatch'
+  if not (found and found.installApi==1 and found.api==status.expected.api and found.platform=='win64') then return false,message,false end
+  local valid=false
+  for _,path in ipairs(expectedPaths(key,info)) do if normalize(found.path)==path then valid=true end end
   -- Accepted unverified files are identified by their bytes on disk, not by a release.
   if valid and status.unverifiedAccepted then valid=record.actual~=nil and found.sha256==record.actual.sha256
   elseif valid then valid=found.release==status.expected.release and found.build==status.expected.build and found.sha256==record.expected.sha256 end
-  if not valid then
-   return false,key=='module' and L'install.error.loaded_module_mismatch' or L'install.error.loaded_runtime_mismatch'
-  end
+  if not valid then return false,message,true end
  end
  return true
+end
+-- A loaded file that does not match stops the addon until the player accepts
+-- exactly these loaded files (Use anyway); true when loading may continue.
+local function checkLoaded(info)
+ local ok,message,overridable=identitiesMatch(info)
+ if ok then return true end
+ if not overridable then issue(status,'restart_required','module',message) return false end
+ status.fingerprint=status.fingerprint..loadedFingerprint(info)
+ status.unverifiedAccepted=acceptedFingerprints()[status.realm]==status.fingerprint or nil
+ issue(status,'loaded_mismatch','module',message,nil,true)
+ return status.features.core
 end
 local function removeIssues(feature)
  for i=#status.issues,1,-1 do if status.issues[i].feature==feature then table.remove(status.issues,i) end end
@@ -295,19 +328,15 @@ function M.CheckInstallation(recheck)
  if recheck then
   status.loaded=loadedIdentity
   if not rawNative or not status.features.core then issue(status,'restart_required','module',L'install.error.restart_to_load')
-  else
-   local ok,err=identitiesMatch(loadedIdentity)
-   if not ok then issue(status,'restart_required','module',err)
-   elseif previous then
-    -- Runtime failures are carried over below; valid files alone do not mean a restart repairs them.
-    local runtime={}
-    for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then runtime[v.feature]=true end end
-    for key,allowed in pairs(previous.features) do
-     if not allowed and status.features[key] and not runtime[key] then issue(status,'restart_required',key,L('install.error.restart_to_enable',{feature=featureName(key)}),key) end
-     status.features[key]=status.features[key] and allowed
-    end
-    for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then status.issues[#status.issues+1]=v end end
+  elseif checkLoaded(loadedIdentity) and previous then
+   -- Runtime failures are carried over below; valid files alone do not mean a restart repairs them.
+   local runtime={}
+   for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then runtime[v.feature]=true end end
+   for key,allowed in pairs(previous.features) do
+    if not allowed and status.features[key] and not runtime[key] then issue(status,'restart_required',key,L('install.error.restart_to_enable',{feature=featureName(key)}),key) end
+    status.features[key]=status.features[key] and allowed
    end
+   for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then status.issues[#status.issues+1]=v end end
   end
   if status.features.core and rawNative then M.RefreshGameCompatibility() end
   notifyChanged() return status
@@ -318,8 +347,7 @@ function M.CheckInstallation(recheck)
  rawNative=mmdhl_native
  if not rawNative.GetInstallationInfo or not rawNative.ConfigureCompatibility or not rawNative.CheckCompatibility then issue(status,'outdated','module',L('install.error.no_verification',{recommended=tostring(policy.recommended)})) notifyChanged() return false end
  loadedIdentity=decode(rawNative.GetInstallationInfo())
- local valid,why=identitiesMatch(loadedIdentity)
- if not valid then issue(status,'restart_required','module',why) notifyChanged() return false end
+ if not checkLoaded(loadedIdentity) then notifyChanged() return false end
  local compat=include('mmdhl/compatibility_policy.lua')
  local configured,configError=decode(rawNative.ConfigureCompatibility(util.TableToJSON(compat)))
  if not configured then issue(status,'policy_invalid','compatibility',tostring(configError)) notifyChanged() return false end

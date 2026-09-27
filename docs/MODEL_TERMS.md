@@ -85,11 +85,11 @@ fallback. Line endings are normalized and control characters removed.
 After a successful import the texts are saved to
 `garrysmod/data/mmd_hotloader/terms/<asset id>.json` with the file name, the
 topics found and when the player accepted. A saved prop preset uses its
-original prop's record. Deleting a model deletes its record. The library shows
-a **Terms of use** button under a model with a record, orange when its texts
-mention restrictions (the tooltip lists every topic), and opens the same tabs
-read-only. Characters imported before this version show their VRM licence
-there when they have one.
+original prop's record. Deleting a model deletes its record. The player already
+acknowledged the terms at import, so the library shows no banner above the
+preview: **Terms of use** in a model's right-click menu (present when it has a
+record) opens the same tabs read-only. Characters imported before this version
+show their VRM licence there when they have one.
 
 ## Workshop packages
 

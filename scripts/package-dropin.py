@@ -95,7 +95,8 @@ def stage(output, name, release, native_dir, renderer=None, dxvk=ROOT/'vendor/dx
     for native in NATIVE:
         shutil.copyfile(native_dir/native, lua_bin/native)
     shutil.copyfile(native_dir/'native-release.json', lua_bin/'mmdhl-native-release.json')
-    # Windows resolves the runtime beside the executable, bin/win64/gmod.exe.
+    # The game loads the runtime from bin/win64: beside bin/win64/gmod.exe on the
+    # x86-64 branch, and from the engine folder for the main branch's gmod_win64.exe.
     # Dedicated servers need it beside srcds_win64.exe instead; that is left to
     # the server owner rather than shipping a second, unused copy in the root.
     (game/'bin/win64').mkdir(parents=True)

@@ -23,7 +23,7 @@ The "Build drop-in package" workflow (`.github/workflows/package.yml`) runs in t
    | Patch | Change |
    |---|---|
    | `patches/dxvk/0001-shared-compute-queues.patch` | Compute queues shared with the Vulkan solver ([VULKAN_COMPUTE.md](VULKAN_COMPUTE.md)). |
-   | `patches/dxvk/0002-gmod-app-profile.patch` | A built-in profile for `gmod.exe` that turns descriptor heaps off. |
+   | `patches/dxvk/0002-gmod-app-profile.patch` | A built-in profile for `gmod.exe` and `gmod_win64.exe` that turns descriptor heaps off. |
 
 3. It records the DXVK build with `scripts/native_manifest.py --renderer`.
 4. `scripts/package-dropin.py --renderer` stages two artifacts:
@@ -44,8 +44,10 @@ The "Build drop-in package" workflow (`.github/workflows/package.yml`) runs in t
 **The `gmod.exe` profile.**
 - **The crash:** DXVK 3.1.1 turns descriptor heaps on for NVIDIA drivers from 595.84. With them, Garry's Mod crashes
   right after device creation on 610.88 ([upstream-DXVK test](DXVK_VANILLA.md)).
-- **The fix:** the profile turns descriptor heaps off for `\gmod.exe`, which needs no `dxvk.conf` in the game's working
-  directory and no environment variable. A user `dxvk.conf` can still override it.
+- **The fix:** the profile turns descriptor heaps off for `\gmod.exe` (the x86-64 branch's `bin\win64\gmod.exe`) and
+  `\gmod_win64.exe` (the main branch's 64-bit executable since 2026-09-17), which needs no `dxvk.conf` in the game's
+  working directory and no environment variable. A user `dxvk.conf` can still override it. Renderers built before
+  `gmod_win64.exe` was added (up to 2.1.0-native.5) leave descriptor heaps on in the main branch.
 - **In-game check:** a session with neither logged `Found built-in config: dxvk.enableDescriptorHeap = False` and ran
   normally.
 

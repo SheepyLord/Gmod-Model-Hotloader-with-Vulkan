@@ -242,6 +242,11 @@ function PANEL:Init()
    if row.entry and row.entry.source~='' and not row.entry.shared then menu:AddOption(L'ui.menu.reimport',function() self:ReimportProp() end) end
   end
   if self.mode=='scene' then menu:AddOption(L'ui.menu.edit_character',function() mmdhl.OpenEntityEditor(row.entity) end) end
+  -- Terms of use were acknowledged at import; they stay readable here, not above the preview.
+  local entry=self.selected and self:Lib().entries[self.selected]
+  if entry and mmdhl.terms and (self.mode=='library' or self.mode=='static') and mmdhl.terms.Summary(kindOf(self.mode),entry.id) then
+   local terms=menu:AddOption(L'terms.button',function() mmdhl.terms.Show(kindOf(self.mode),entry.id,entry.name) end) terms:SetIcon('icon16/page_white_text.png') terms:SetTooltip(L'terms.button_tip')
+  end
   if self.mode=='library' or self.mode=='static' then menu:AddOption(L'ui.menu.export',function() self:ExportSelected() end):SetIcon('icon16/package_go.png') end
   menu:AddOption(self.mode=='scene' and L'ui.menu.remove_characters' or L'ui.manage.delete_selected',function() self:DeleteSelected() end)
   if row.entry and row.entry.source~='' then menu:AddOption(L'ui.menu.copy_source',function() SetClipboardText(row.entry.source) end) end menu:Open()
@@ -250,8 +255,6 @@ function PANEL:Init()
  self.Name=label(self.Right,L'ui.select_model',f.Title,s(36)) self.Name:Dock(TOP)
  self.Details=label(self.Right,L'ui.details.intro',f.Small,s(40)) self.Details:Dock(TOP) self.Details:SetWrap(true) self.Details:SetTextColor(muted)
  self.Warnings=button(self.Right,'',function() local entry=self:Lib().entries[self.selected] if entry then mmdhl.ShowWarnings(entry.name,entry.info.warnings) end end,s(30),f.Small,'warning') self.Warnings:Dock(TOP) self.Warnings:SetVisible(false) self.Warnings:DockMargin(0,0,0,s(6))
- self.Terms=button(self.Right,'',function() local lib=self:Lib() local entry=self.selected and lib.entries[self.selected] if entry and mmdhl.terms then mmdhl.terms.Show(kindOf(self.mode),entry.id,entry.name) end end,s(30),f.Small)
- self.Terms:Dock(TOP) self.Terms:SetVisible(false) self.Terms:DockMargin(0,0,0,s(6)) self.Terms:SetTooltip(L'terms.button_tip')
  self.Origin=self.Right:Add('DPanel') self.Origin:Dock(TOP) self.Origin:SetTall(s(34)) self.Origin:DockMargin(0,0,0,s(6)) self.Origin:SetVisible(false)
  self.Origin.Paint=function(_,w,h) draw.RoundedBox(5,0,0,w,h,Color(222,233,247)) end
  -- The button is OriginButton: a field named OriginAction would hide PANEL:OriginAction.
@@ -577,7 +580,7 @@ function PANEL:Refresh()
  if IsValid(self.FaceCamera) then self.FaceCamera:SetVisible(not static) end
  self.ShowCollision:SetVisible(static)
  if kept then self:Choose(kept) else
-  self.selected=nil self.entity=nil self.deletedRow=nil releasePreview(self) self:EnableActions(false) self.Name:SetText(static and L'ui.select_prop' or L'ui.select_model') self.Warnings:SetVisible(false) self.Origin:SetVisible(false) self.Terms:SetVisible(false)
+  self.selected=nil self.entity=nil self.deletedRow=nil releasePreview(self) self:EnableActions(false) self.Name:SetText(static and L'ui.select_prop' or L'ui.select_model') self.Warnings:SetVisible(false) self.Origin:SetVisible(false)
   self.Details:SetText(#rows==0 and (self.mode=='scene' and L'ui.empty.scene' or deletedView and L'ui.empty.deleted_workshop' or self.folder==WORKSHOP and L'ui.empty.workshop' or static and L'ui.empty.props' or L'ui.empty.models') or L'ui.select_row')
  end
  self.Delete:SetEnabled(#self.Models:GetSelected()>0) self.Rename:SetEnabled(self.selected~=nil) self.Favorite:SetEnabled(self.selected~=nil) self.Move:SetEnabled(self.selected~=nil)
@@ -590,7 +593,7 @@ function PANEL:Choose(row)
   self.Delete:SetEnabled(true) self.Export:SetEnabled(false) self.Warnings:SetVisible(false)
   self.Name:SetText(row.entry.name) self.Name:SetTooltip(row.entry.name)
   self.Details:SetText(L'ui.details.deleted_workshop') self.Details:SetTooltip('')
-  self:ShowOrigin(row.entry.workshop,true) self.Terms:SetVisible(false)
+  self:ShowOrigin(row.entry.workshop,true)
   return
  end
  self.deletedRow=nil
@@ -598,10 +601,6 @@ function PANEL:Choose(row)
  self.Delete:SetEnabled(true) self.Rename:SetEnabled(entry~=nil) self.Favorite:SetEnabled(entry~=nil) self.Export:SetEnabled(entry~=nil and not entry.shared)
  if changed then releasePreview(self) self.previewError=nil end
  self:ShowOrigin(entry and entry.workshop,false)
- -- Terms of use: orange when they mention restrictions.
- local terms,restricted,topics if entry and mmdhl.terms and self.mode~='scene' then terms,restricted,topics=mmdhl.terms.Summary(kindOf(self.mode),entry.id) end
- self.Terms:SetVisible(terms~=nil)
- if terms then self.Terms:SetText(terms) self.Terms.Style=restricted and 'warning' or 'secondary' self.Terms:SetTooltip((topics and topics..'\n' or '')..L'terms.button_tip') end
  if entry then
   -- Notes alone keep the neutral style; only real warnings turn the bar orange.
   local warnings,notes=mmdhl.SplitWarnings(entry.info.warnings)
@@ -953,6 +952,7 @@ hook.Add('PopulateToolMenu','MMDHL.Menu',function()
  spawnmenu.AddToolMenuOption('Utilities','User','MMDHL',L'ui.toolmenu.characters','','',function(panel)
   panel:Help(L'ui.toolmenu.characters_help')
   panel:Button(L'ui.toolmenu.open_library','mmdhl_open')
+  panel:Button(L'install.window_title','mmdhl_installation')
   mmdhl.BindLanguageChoice(panel:ComboBox(L'ui.toolmenu.language'))
   panel:ControlHelp(L'ui.toolmenu.language_help')
   panel:CheckBox(L'terms.setting_import','mmdhl_terms_warning_import')

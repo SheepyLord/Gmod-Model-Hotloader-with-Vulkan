@@ -151,4 +151,25 @@ assert validator(convert(unverified)) is True
 for key,field,value in [('module','sha256','5'*64),('runtime','api',99),('module','path','C:/shadow/module.dll')]:
     broken=deepcopy(unverified);broken[key][field]=value
     assert validator(convert(broken))[0] is False
-print(f'PASS: {count} installation policy scenarios (including accepted unverified files), nine loaded-identity checks and all addon Lua syntax')
+# Both 64-bit branches load the runtime from bin/win64. The main branch starts
+# gmod_win64.exe in the game folder, where builds up to 2.1.0-native.5 expect it.
+lua.globals().TEST_STATUS=valid
+validator=lua.execute('local status=TEST_STATUS\n'+part+'\nreturn identitiesMatch')
+game='H:\\SteamLibrary\\steamapps\\common\\GarrysMod\\'
+layouts=deepcopy(info)
+layouts['module'].update(path=game.lower()+'garrysmod\\lua\\bin\\'+release['files']['client']['name'],expectedPath=game+'garrysmod\\lua\\bin\\'+release['files']['client']['name'])
+for expected in ('bin\\win64\\','',):  # x86-64 branch (bin\win64\gmod.exe), main branch (gmod_win64.exe)
+    layouts['runtime'].update(path=game+'bin\\win64\\'+release['files']['runtime']['name'],expectedPath=game+expected+release['files']['runtime']['name'])
+    assert validator(convert(layouts)) is True,expected
+# Elsewhere, or other bytes, the player may load anyway; another interface never loads.
+for key,field,value,overridable in [('runtime','path',game+'shadow\\'+release['files']['runtime']['name'],True),('runtime','sha256','6'*64,True),
+                                     ('module','build','other',True),('module','api',99,False),('runtime','installApi',0,False)]:
+    broken=deepcopy(layouts);broken[key][field]=value
+    ok,message,allowed=validator(convert(broken))
+    assert ok is False and allowed is overridable and 'does not match' in message,(key,field)
+# Loading anyway extends the accepted fingerprint; it still accepts the checked files.
+files=installed();files[client]['sha256']='2'*64
+s,_=evaluate(files);s,_=evaluate(files,accepted=s.fingerprint+';loaded:module=1:x,runtime=2:y')
+assert s.features.core and s.unverifiedAccepted and all(v.accepted for v in s.issues.values())
+s,_=evaluate(files,accepted=s.fingerprint+';other');assert not s.features.core and not s.unverifiedAccepted
+print(f'PASS: {count} installation policy scenarios (including accepted unverified files), sixteen loaded-identity checks (both 64-bit layouts) and all addon Lua syntax')
