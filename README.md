@@ -2,6 +2,9 @@
 
 This is a binary module based addon for Garry's Mod. With this installed, 3D assets stored in common formats can be hotloaded directly into *Garry's Mod*. This plugin is implemented entirely within GMod, no external executable like [GSCMI](https://github.com/SheepyLord/Gmod-Simple-Character-Model-Importer) is required. Gmod must be ran using the x64 version. Also, it replaces the rendering API of Garry's Mod from OpenGL to Vulkan for the Vulkan ridigbody physics resolver. The performance of the game at complex scenes should increase while halves the GPU use than Vanilla. 
 
+Preview video: 
+[Gmod Model Hotloader and Softbody Simulation - Addon Preview](https://www.youtube.com/watch?v=IvpritG_aKQ)
+
 Unlike most modern sandbox games, in *Garry's Mod* you must first convert models or characters to the Source Engine format before you can actually use them. While being able to provide a Source engine native asset, this process is usually tedious and time consuming. We're pleased to introduce the GSCMI-SS which bypasses all limitations of the Source Engine compiler (include bone, material, physics rigidbody, shapekey count) by writing runtime model information directly into the game memory and the rendering pipeline, thereby completely resolving this issue by hotloading models into the game. The imported model is algorithmically identical to a normally spawned model in game, at least at the engine level, making the model porting process obsolete with moderate performance tradeoff when multiple models are processed in the player's view. For models with PBR textures, [Advanced Material Editor](https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326) could allow further finetune of the rendering of the model in game. 
 
 <img width="3840" height="2160" alt="20260924000541_1" src="https://github.com/user-attachments/assets/7d783459-ea74-42f5-a42b-1914ca347b0e" />
