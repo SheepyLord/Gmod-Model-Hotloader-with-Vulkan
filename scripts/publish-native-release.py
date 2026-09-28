@@ -5,33 +5,42 @@ Workshop policy that accepts it.
   python scripts/publish-native-release.py supersede <older-label> --note note.md
 
 publish:
- 1. The run must have succeeded on a commit that is on origin/main, and the local
-    main must equal origin/main with a clean working tree.
+ 1. The run must have succeeded on a commit that is on origin/main. origin must
+    fetch from and push to this repository only, and the local main must equal
+    origin/main, with no uncommitted changes and no untracked files in addon/.
+    (Main may also be one unpushed publication commit of this release ahead: its
+    push failed, and it is pushed.)
  2. Its two packages (-vulkan, -opengl-remix) are downloaded. Both must carry the
     same mmdhl-native-release.json, every native file must match that record, the
     Vulkan package's d3d9.dll its renderer record, and the other must have none.
- 3. Each package is zipped and the GitHub release <label> is created at the run's
-    commit with both zips. --notes holds the "What's new" list; the rest of the
-    notes (requirements, packages, install, checksums) is standard. An existing tag
-    is never replaced or deleted: publishing stops, unless that release targets the
-    same commit with both packages (an interrupted publish), which is kept as it is.
- 4. The record is appended to addon/lua/mmdhl/native_policy.lua with the release
+    Each package is zipped with fixed file times and modes: a rerun makes the same
+    bytes.
+ 3. The record is appended to addon/lua/mmdhl/native_policy.lua with the release
     link and the recommended release's alternative link, approved and made the
-    recommended release. Earlier records and approvals stay.
- 5. The policy is evaluated for every approved release (client and server must
-    load without issues), check-i18n.py and check-lua-tests.py run, and addon.gma
-    is rebuilt with gmad and checked against the addon folder.
- 6. native_policy.lua and addon.gma are committed and pushed to main.
+    recommended release. Earlier records and approvals stay. The policy is evaluated
+    for every approved release (client and server must load without issues),
+    check-i18n.py and check-lua-tests.py run, and addon.gma is built with gmad from
+    the committed addon folder (files git does not track never reach it) and checked
+    against it. If any of this fails, GitHub and the repository stay as they were.
+ 4. The GitHub release <label> is created at the run's commit with both zips.
+    --notes holds the "What's new" list; the rest of the notes (requirements,
+    packages, install, checksums) is standard. A release or tag is never replaced or
+    deleted: an existing tag must name the run's commit and an existing release may
+    hold only these zips, byte for byte. A release an interrupted publish left as a
+    draft, or without a zip, gets the missing zip and is published.
+ 5. native_policy.lua and addon.gma (when its files changed) are committed and
+    pushed to main. Should anything fail before the commit, both files are put back:
+    a rerun then finds the release it published and completes the publication.
 
---dry-run does steps 1 and 2, prints the notes and the policy change, and leaves
-GitHub and the repository alone.
+--dry-run does steps 1 to 3 without changing the repository (addon.gma is built in
+the work folder), prints the notes and the policy change, and leaves GitHub alone.
 
 supersede prepends a note (Markdown, shown as a quote) to an older release's
 notes, once; its files stay as they are.
 
 Uploading addon.gma to the Workshop and the packages to the mirror stays manual.
 """
-import argparse, hashlib, json, pathlib, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
+import argparse, hashlib, io, json, pathlib, re, shutil, struct, subprocess, sys, tarfile, tempfile, zipfile, zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPO = 'SheepyLord/Gmod-Model-Hotloader-with-Vulkan'
@@ -41,6 +50,7 @@ WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3808939802'
 POLICY = ROOT / 'addon/lua/mmdhl/native_policy.lua'
 GMA = ROOT / 'addon.gma'
 VARIANTS = ('vulkan', 'opengl-remix')
+SUBJECT = 'Approve and recommend native release '
 NOTES = '''Native files for **Model Hotloader**, Windows x64 (the 64-bit Garry's Mod: the default branch's `gmod_win64.exe` or the x86-64 beta).
 
 **What's new in {label}**
@@ -90,16 +100,48 @@ def sha256(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
+def origin_repositories():
+    """The GitHub repositories origin fetches from and pushes to (pushurl and
+    insteadOf/pushInsteadOf rewrites applied)."""
+    urls = run('git', 'remote', 'get-url', '--all', 'origin').stdout.split() + run('git', 'remote', 'get-url', '--push', '--all', 'origin').stdout.split()
+    def repository(url):
+        match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?/?', url, re.I)
+        return match.group(1) if match else url
+    return sorted({repository(url) for url in urls})
+
+
 def check_repository(dry_run):
+    """The label of the unpushed publication commit main is, if it is one."""
     run('git', 'fetch', '-q', 'origin')
+    origins = origin_repositories()
     branch = run('git', 'branch', '--show-current').stdout.strip()
-    dirty = [line for line in run('git', 'status', '--porcelain').stdout.splitlines() if not line.startswith('??')]
+    # gmad packages whatever the addon folder holds: untracked files there would
+    # reach the Workshop without being in any commit.
+    entries = iter(run('git', 'status', '--porcelain', '-z', '--untracked-files=all').stdout.split('\0'))
+    dirty, untracked = [], []
+    for entry in entries:
+        if not entry: continue
+        code, path = entry[:2], entry[3:]
+        if code[0] in 'RC': next(entries, None)  # a rename's or copy's original path follows
+        if code != '??': dirty.append(path)
+        elif path.startswith('addon/'): untracked.append(path)
     head, remote = (run('git', 'rev-parse', ref).stdout.strip() for ref in ('HEAD', 'origin/main'))
-    problems = [p for p, bad in ((f'on branch {branch}, not main', branch != 'main'), ('uncommitted changes: ' + ', '.join(dirty), dirty),
-                                 ('main differs from origin/main', head != remote)) if bad]
+    pending = None
+    if head != remote and run('git', 'rev-parse', 'HEAD^', check=False).stdout.strip() == remote:
+        # One publication commit on origin/main whose push failed may be pushed again.
+        subject = run('git', 'log', '-1', '--format=%s').stdout.strip()
+        changed = set(run('git', 'diff', '--name-only', 'HEAD^', 'HEAD').stdout.split())
+        if subject.startswith(SUBJECT) and changed <= {POLICY.relative_to(ROOT).as_posix(), GMA.name}:
+            pending = subject[len(SUBJECT):]
+    problems = [p for p, bad in ((f'origin is {", ".join(origins)}, not {REPO}', [o.lower() for o in origins] != [REPO.lower()]),
+                                 (f'on branch {branch}, not main', branch != 'main'), ('uncommitted changes: ' + ', '.join(dirty), dirty),
+                                 ('untracked files in addon/: ' + ', '.join(untracked), untracked),
+                                 ('main differs from origin/main', head != remote and not pending)) if bad]
     if problems and not dry_run:
         raise SystemExit('The repository must be main, clean and equal to origin/main: ' + '; '.join(problems))
     for p in problems: print('note:', p)
+    if pending: print(f'note: main is the unpushed publication commit of {pending}')
+    return pending
 
 
 def check_run(run_id):
@@ -136,11 +178,18 @@ def download(run_id, work):
     return record, packages
 
 
-def zip_package(folder, out):
+def zip_package(folder, out, build):
     target = out / (folder.name + '.zip')
-    with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        for p in sorted(folder.rglob('*')):
-            if p.is_file(): z.write(p, p.relative_to(folder).as_posix())
+    # The build's time and one mode for every file: the same package makes the same
+    # bytes, so a rerun can tell its own zips on a release from other files.
+    stamp = re.search(r'-(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$', build)
+    when = tuple(int(x) for x in stamp.groups()) if stamp else (1980, 1, 1, 0, 0, 0)
+    files = sorted((p.relative_to(folder).as_posix(), p) for p in folder.rglob('*') if p.is_file())
+    with zipfile.ZipFile(target, 'w') as z:
+        for name, p in files:
+            info = zipfile.ZipInfo(name, when)
+            info.compress_type, info.create_system, info.external_attr = zipfile.ZIP_DEFLATED, 3, 0o100644 << 16
+            z.writestr(info, p.read_bytes(), compresslevel=9)
     with zipfile.ZipFile(target) as z:
         if z.testzip() is not None: raise SystemExit(f'{target} is damaged')
     return target
@@ -155,10 +204,10 @@ def read_policy():
     return policy, (head, tail, crlf)
 
 
-def write_policy(policy, layout):
+def policy_bytes(policy, layout):
     head, tail, crlf = layout
     text = head + '[==[\n' + json.dumps(policy, indent=2, ensure_ascii=False) + '\n]==]' + tail
-    POLICY.write_bytes((text.replace('\n', '\r\n') if crlf else text).encode('utf-8'))
+    return (text.replace('\n', '\r\n') if crlf else text).encode('utf-8')
 
 
 def add_release(policy, record, url):
@@ -238,34 +287,92 @@ def game_tool(game_root, name):
     raise SystemExit(f'{name} not found under {game_root}; pass --game-root')
 
 
-def package_addon(game_root, work):
+def package_addon(game_root, work, policy):
+    """addon.gma of the committed addon folder with this policy (files git does not
+    track never reach it), or None when it holds the committed addon.gma's files: then
+    those bytes stay, with their timestamp."""
+    tree = work / 'addon'
+    shutil.rmtree(tree, ignore_errors=True)
+    archive = subprocess.run(['git', 'archive', '--format=tar', 'HEAD', 'addon'], cwd=ROOT, capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar: tar.extractall(work, filter='data')
+    (tree / POLICY.relative_to(ROOT / 'addon')).write_bytes(policy)
     out = work / 'addon.gma'
     out.unlink(missing_ok=True)
-    run(game_tool(game_root, 'gmad.exe'), 'create', '-folder', ROOT / 'addon', '-out', out)
+    run(game_tool(game_root, 'gmad.exe'), 'create', '-folder', tree, '-out', out)
     old, new = parse_gma(GMA), parse_gma(out)
     if old['header'] != new['header']: raise SystemExit('addon.gma header (title, description, author) differs from the committed one')
     for path_, data in new['files'].items():
-        if (ROOT / 'addon' / path_).read_bytes() != data: raise SystemExit(f'addon.gma: {path_} differs from the addon folder')
+        if (tree / path_).read_bytes() != data: raise SystemExit(f'addon.gma: {path_} differs from the addon folder')
     changed = sorted(p for p in new['files'] if old['files'].get(p) != new['files'][p])
     removed = sorted(set(old['files']) - set(new['files']))
     print(f'addon.gma: {len(new["files"])} files; changed {changed}; removed {removed}')
-    shutil.copyfile(out, GMA)
+    return out if changed or removed else None
+
+
+def remote_tag(label):
+    """The commit the repository's tag <label> names, or None."""
+    result = run('gh', 'api', f'repos/{REPO}/git/ref/tags/{label}', check=False)
+    if result.returncode:
+        if 'HTTP 404' in result.stderr: return None
+        raise SystemExit(f'Reading tag {label} failed:\n{result.stdout}{result.stderr}')
+    target = json.loads(result.stdout)['object']
+    if target['type'] == 'tag': target = json.loads(run('gh', 'api', f'repos/{REPO}/git/tags/{target["sha"]}').stdout)['object']
+    return target['sha']
+
+
+def view_release(label):
+    result = run('gh', 'release', 'view', label, '--repo', REPO, '--json', 'isDraft,targetCommitish,assets', check=False)
+    if result.returncode == 0: return json.loads(result.stdout)
+    if 'release not found' in (result.stdout + result.stderr).lower(): return None
+    raise SystemExit(f'Reading release {label} failed:\n{result.stdout}{result.stderr}')
+
+
+def ensure_release(label, commit, zips, notes):
+    """The published release <label> at the run commit with exactly these zips: created,
+    or completed where an interrupted publish left it a draft or without a zip."""
+    expected = {z.name: 'sha256:' + sha256(z) for z in zips}
+    tag = remote_tag(label)
+    # gh release create --target only applies to a new tag.
+    if tag and tag != commit: raise SystemExit(f'Tag {label} names {tag}, not the run commit {commit}; it is left as it is')
+    info = view_release(label)
+    if info is None:
+        run('gh', 'release', 'create', label, '--repo', REPO, '--target', commit, '--title', f'Model Hotloader native {label}', '--notes-file', notes, *zips)
+        print('release created:', f'{REPO_URL}/releases/tag/{label}')
+    else:
+        assets = {a['name']: a.get('digest') for a in info['assets']}
+        other = sorted(name for name, digest in assets.items() if expected.get(name) != digest)
+        if other or (not tag and info['targetCommitish'] != commit):
+            raise SystemExit(f'Release {label} exists already for other files or another commit ({", ".join(other) or info["targetCommitish"]}); it is left as it is')
+        missing = [z for z in zips if z.name not in assets]
+        if missing: run('gh', 'release', 'upload', label, '--repo', REPO, *missing)
+        if info['isDraft']: run('gh', 'release', 'edit', label, '--repo', REPO, '--draft=false')
+        print(f'release {label}:', 'completed and published' if missing or info['isDraft'] else 'exists for this build; kept as it is')
+    info, tag = view_release(label), remote_tag(label)
+    held = {a['name']: a.get('digest') for a in info['assets']} if info else {}
+    if not info or info['isDraft'] or tag != commit or held != expected:
+        raise SystemExit(f'Release {label} is not published at {commit} with both zips: draft {info and info["isDraft"]}, tag {tag}, assets {held}')
+
+
+def push():
+    run('git', 'push', 'origin', 'main')
+    print('pushed', run('git', 'log', '--oneline', '-1').stdout.strip(), '| addon.gma sha256', sha256(GMA))
 
 
 def publish(args):
     run_id, work = str(args.run), ROOT / 'build' / f'release-run-{args.run}'
-    check_repository(args.dry_run)
+    pending = check_repository(args.dry_run)
     commit = check_run(run_id)
     record, packages = download(run_id, work / 'packages')
     label, build = record['release'], record['build']
     if not commit.startswith(build.split('-')[0]): raise SystemExit(f'The build {build} is not the run commit {commit}')
+    if pending and pending != label: raise SystemExit(f'main is the unpushed publication commit of {pending}, not {label}')
     url = f'{REPO_URL}/releases/tag/{label}'
-    zips = {v: zip_package(d, work) for v, d in packages.items()}
+    zips = [zip_package(packages[v], work, build) for v in VARIANTS]
     policy, layout = read_policy()
     alt = policy['releases'].get(policy.get('recommended'), {}).get('altUrl')
     notes = NOTES.format(label=label, whats_new=args.notes.read_text(encoding='utf-8').strip(), workshop=WORKSHOP, repo=REPO_URL, run=run_id, build=build,
                          mirror=f'\n中国大陆请访问 **[alternative download]({alt})**.\n' if alt else '',
-                         zip_vulkan=zips['vulkan'].name, zip_remix=zips['opengl-remix'].name, sha_vulkan=sha256(zips['vulkan']), sha_remix=sha256(zips['opengl-remix']))
+                         zip_vulkan=zips[0].name, zip_remix=zips[1].name, sha_vulkan=sha256(zips[0]), sha_remix=sha256(zips[1]))
     (work / 'notes.md').write_text(notes, encoding='utf-8')
     updated, added = add_release(policy, record, url)
     print(f'{label} (build {build}, commit {commit[:12]}): packages verified; notes in {work / "notes.md"}')
@@ -273,37 +380,44 @@ def publish(args):
         print(notes)
         print('policy:', 'unchanged' if not added else f'approved {updated["approved"]}, recommended {updated["recommended"]}')
         evaluate(updated, label)
+        package_addon(args.game_root, work, policy_bytes(updated, layout))
         return
-    existing = run('gh', 'release', 'view', label, '--repo', REPO, '--json', 'targetCommitish,assets', check=False)
-    if existing.returncode == 0:
-        info = json.loads(existing.stdout)
-        if info['targetCommitish'] != commit or sorted(a['name'] for a in info['assets']) != sorted(z.name for z in zips.values()):
-            raise SystemExit(f'Release {label} exists already for other files; it is left as it is')
-        print(f'release {label} exists for this build; kept as it is')
-    else:
-        run('gh', 'release', 'create', label, '--repo', REPO, '--target', commit, '--title', f'Model Hotloader native {label}', '--notes-file', work / 'notes.md', *zips.values())
-        assets = {a['name']: a['digest'] for a in json.loads(run('gh', 'release', 'view', label, '--repo', REPO, '--json', 'assets').stdout)['assets']}
-        for z in zips.values():
-            if assets.get(z.name) != 'sha256:' + sha256(z): raise SystemExit(f'{z.name} on the release does not match the local file')
-        print('release created:', url)
-    if added: write_policy(updated, layout)
-    evaluate(read_policy()[0], label)
-    for script in ('check-i18n.py', 'check-lua-tests.py'):
-        result = run(sys.executable, ROOT / 'scripts' / script, check=False)
-        print(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else script)
-        if result.returncode: raise SystemExit(f'{script} failed:\n{result.stdout}{result.stderr}')
-    package_addon(args.game_root, work)
-    run('git', 'add', POLICY, GMA)
-    if not run('git', 'diff', '--cached', '--name-only').stdout.strip():
-        print('nothing to commit'); return
-    message = (f'Approve and recommend native release {label}\n\nRecord build {build} (Actions run {run_id},\nrelease {url})\n'
+    if pending:
+        # The publication commit exists; only its push failed.
+        if added: raise SystemExit(f'The unpushed publication commit lacks the record of {label}')
+        evaluate(policy, label)
+        if package_addon(args.game_root, work, POLICY.read_bytes()): raise SystemExit('The unpushed addon.gma differs from its addon folder')
+        ensure_release(label, commit, zips, work / 'notes.md')
+        push()
+        return
+    # Everything local first: a failing check or a missing gmad.exe must not leave a
+    # release without its policy. Until the commit is made, a failure puts both files
+    # back, so a rerun finds a clean main and the release it may have published.
+    message = (f'{SUBJECT}{label}\n\nRecord build {build} (Actions run {run_id},\nrelease {url})\n'
                'in native_policy.lua with the existing alternative download link, approve it\nand make it the recommended release; earlier approvals stay. Repackage\naddon.gma.\n')
     if args.commit_note: message += '\n' + args.commit_note.read_text(encoding='utf-8').strip() + '\n'
     if args.trailer: message += '\n' + '\n'.join(args.trailer) + '\n'
     (work / 'commit.txt').write_text(message, encoding='utf-8')
-    run('git', 'commit', '-q', '-F', work / 'commit.txt')
-    run('git', 'push', 'origin', 'main')
-    print('pushed', run('git', 'log', '--oneline', '-1').stdout.strip(), '| addon.gma sha256', sha256(GMA))
+    original = POLICY.read_bytes(), GMA.read_bytes()
+    try:
+        if added: POLICY.write_bytes(policy_bytes(updated, layout))
+        evaluate(read_policy()[0], label)
+        for script in ('check-i18n.py', 'check-lua-tests.py'):
+            result = run(sys.executable, ROOT / 'scripts' / script, check=False)
+            print(result.stdout.strip().splitlines()[-1] if result.stdout.strip() else script)
+            if result.returncode: raise SystemExit(f'{script} failed:\n{result.stdout}{result.stderr}')
+        gma = package_addon(args.game_root, work, POLICY.read_bytes())
+        if gma: shutil.copyfile(gma, GMA)
+        ensure_release(label, commit, zips, work / 'notes.md')
+        run('git', 'add', POLICY, GMA)
+        if not run('git', 'diff', '--cached', '--name-only').stdout.strip():
+            print('nothing to commit'); return
+        run('git', 'commit', '-q', '-F', work / 'commit.txt')
+    except BaseException:
+        run('git', 'reset', '-q', '--', POLICY, GMA, check=False)
+        POLICY.write_bytes(original[0]); GMA.write_bytes(original[1])
+        raise
+    push()
 
 
 def supersede(args):

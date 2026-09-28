@@ -138,12 +138,17 @@ libraries are retried after map load.
    Lua and its policy. Lua-only releases retain native approvals. The scripts
    above do not upload anything. For a release built by the "Build drop-in
    package" Action, `python scripts/publish-native-release.py publish --run <id>
-   --notes whats-new.md` checks the run's packages against their record, creates
-   the GitHub release, appends it to `native_policy.lua` as the recommended
-   release, runs the policy and Lua checks, rebuilds `addon.gma` and pushes main
-   (`--dry-run` only checks and prints). It never replaces or deletes an existing
-   release or record. `supersede <label> --note note.md` puts a note at the top of
-   an older release. Uploading `addon.gma` to the Workshop stays manual.
+   --notes whats-new.md` checks the run's packages against their record, appends
+   it to `native_policy.lua` as the recommended release, runs the policy and Lua
+   checks and builds `addon.gma` from the committed addon folder; only then does
+   it create the GitHub release (zips with fixed times, so a rerun makes the same
+   bytes) and push main (`--dry-run` only checks, builds and prints). It never
+   replaces or deletes an existing release, tag or record: an existing tag must
+   name the run's commit, and a release an interrupted publish left (a draft or
+   one without a zip) is completed only when it holds nothing else. A rerun after
+   a failed push pushes the publication commit. `supersede <label> --note
+   note.md` puts a note at the top of an older release. Uploading `addon.gma` to
+   the Workshop stays manual.
 
 For an engine-only update, `validate-render-abi.py --emit-profile` can emit a
 profile when the renderer audit and the additional VPhysics/material/shader
