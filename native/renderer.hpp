@@ -23,10 +23,13 @@ void drawNative(uint64_t instance,unsigned part,const std::string& material,bool
 // Draws each (part, material) pair with its own bind, as one render call.
 void drawInstanceNativeBatch(Instance&,std::span<const std::pair<unsigned,std::string>> parts,RenderTint tint);
 // Under Source's queued (multicore) material system native draws run on its
-// render thread. drainRenderQueue executes every call still queued (before the
-// worker pool or this module goes away); takeAsyncRenderError returns and
-// clears the last error such a call raised.
+// render thread. drainRenderQueue leaves no call of this module queued (before
+// the worker pool or the render buffers go away): the render thread finishes
+// the calls it has, and the frame being recorded loses its draws and runs the
+// rest now. closeRenderQueue drains when the module closes. takeAsyncRenderError
+// returns and clears the last error such a call raised.
 void drainRenderQueue();
+void closeRenderQueue();
 std::string takeAsyncRenderError();
 bool materialIsTranslucent(const std::string& material);
 std::string rendererStatus();std::string rendererStats();void pruneRenderCache(bool all=false);

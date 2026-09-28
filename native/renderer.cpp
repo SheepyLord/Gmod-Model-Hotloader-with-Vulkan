@@ -108,7 +108,7 @@ static Json takeDrawCounters(){
         {"drawBinds",frameBinds.exchange(0)},{"drawCalls",frameDrawCalls.exchange(0)},{"spansTotal",frameSpans.exchange(0)},{"spansDirty",frameDirtySpans.exchange(0)},{"skinBatches",frameSkinBatches.exchange(0)},{"boneLoads",frameBoneLoads.exchange(0)}});
 }
 static std::mutex publishedMutex;static Json publishedCounters=Json::object();static bool countersOnRenderThread=false;
-static bool submit(std::function<void()> work);static bool recordsForRenderThread(IMatRenderContext* context);
+static bool submit(std::function<void()> work,bool draw);static bool recordsForRenderThread(IMatRenderContext* context);
 // At the start of each frame (PrepareFrame) the previous frame's draw counters
 // are published. In queued mode this runs as a call on the render thread, in
 // order after the previous frame's draws, so the published figures are the
@@ -116,7 +116,7 @@ static bool submit(std::function<void()> work);static bool recordsForRenderThrea
 void beginRenderFrame(){
     ++renderFrame;prepareMs=0;frameQueued=0;
     auto publish=[]{auto counters=takeDrawCounters();std::lock_guard lock(publishedMutex);publishedCounters=std::move(counters);};
-    if(materials)countersOnRenderThread=submit(publish);else publish();
+    if(materials)countersOnRenderThread=submit(publish,false);else publish();
 }
 // Mode 0 reports this frame's draws so far; queued mode the last frame the
 // render thread finished (its draws run after this frame's main-thread work).
@@ -189,7 +189,7 @@ bool materialIsTranslucent(const std::string& name){
     if(material->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT)||material->GetMaterialVarFlag(MATERIAL_VAR_ALPHATEST)||material->GetMaterialVarFlag(MATERIAL_VAR_ADDITIVE))return true;
     bool found=false;auto alpha=material->FindVar("$alpha",&found,false);return found&&alpha->GetFloatValue()<1;
 }
-static bool submit(std::function<void()> work);
+static bool submit(std::function<void()> work,bool draw);
 // Staleness is decided on the main thread from the live instances; the buffers
 // are released on the thread that draws with them (queued after this frame's
 // draws in queued mode).
@@ -212,7 +212,7 @@ void pruneRenderCache(bool all){
         for(auto it=skinMeshes.begin();it!=skinMeshes.end();){
             if(all||!skinning||stale(it->first.first,it->second.lastSequence)){for(auto& slot:it->second.slots)for(auto mesh:slot.meshes)context->DestroyStaticMesh(mesh);it=skinMeshes.erase(it);}else ++it;
         }
-    });
+    },false);
 }
 static Json skinningStats(){
     size_t bytes=0,buffers=0;for(auto& [key,item]:skinMeshes)for(auto& slot:item.slots){bytes+=slot.bytes;buffers+=slot.meshes.size();}
@@ -379,25 +379,34 @@ struct DrawJob {
 // Failures and errors of draws that ran on the render thread, for the main thread.
 std::mutex asyncMutex;std::string asyncError;std::vector<std::pair<uint64_t,std::string>> gpuFailures;
 std::atomic<int64_t> outstandingCalls{0};std::atomic<uint64_t> queuedCallsTotal{0};
+// Bumped when the module closes with calls still queued somewhere (see
+// closeRenderQueue): calls of an earlier session no longer run their work.
+std::atomic<uint64_t> callSession{0};
 // ABI mirror of tier1's CFunctor: IRefCounted AddRef/Release, virtual
 // destructor, operator() (vtable slot 3).
 struct SourceFunctor {virtual int AddRef()=0;virtual int Release()=0;virtual ~SourceFunctor(){}virtual void operator()()=0;unsigned userId=0;};
+// This module's vtable for RenderThreadCall, which tells its calls apart from
+// Source's in a render queue.
+std::atomic<const void*> renderCallTable{nullptr};
 // One native call for the render thread. The queue runs operator() once and
 // then drops the element without destroying or releasing it (Source resets its
-// per-frame arenas), so the call frees itself when it has run.
+// per-frame arenas), so the call frees itself when it has run. A draw may be
+// dropped instead (discard) when the queue has to be emptied early.
 class RenderThreadCall final:public SourceFunctor {
-    std::function<void()> work;
+    std::function<void()> work;uint64_t session=callSession.load();
 public:
-    explicit RenderThreadCall(std::function<void()> w):work(std::move(w)){outstandingCalls++;}
+    const bool draw;
+    RenderThreadCall(std::function<void()> w,bool isDraw):work(std::move(w)),draw(isDraw){outstandingCalls++;renderCallTable=*reinterpret_cast<const void* const*>(this);}
     ~RenderThreadCall()override{outstandingCalls--;}
     int AddRef()override{return 1;}
     int Release()override{return 1;}
     // Called by Source's render thread; nothing may escape into it.
     void operator()()override{
-        {std::lock_guard lock(renderMutex);
+        if(session==callSession.load()){std::lock_guard lock(renderMutex);
          try{work();}catch(const std::exception& e){std::lock_guard l(asyncMutex);asyncError=e.what();}catch(...){std::lock_guard l(asyncMutex);asyncError="Native render call failed";}}
         delete this;
     }
+    void discard(){delete this;}
 };
 // What GMod's IMatRenderContext::GetCallQueue returns on the queued context
 // (this+0x2B0): not tier1's virtual ICallQueue but the context's concrete call
@@ -410,18 +419,40 @@ struct SourceCallList {QueueElement* head;QueueElement* tail;uint8_t* next;uint8
 static_assert(offsetof(SourceCallList,next)==0x10&&offsetof(SourceCallList,buffer)==0x18);
 constexpr size_t CallListCapacity=0x1000000;
 constexpr ptrdiff_t CallListOffset=0x2B0;
+bool insideCallList(const SourceCallList* list,const void* p){auto b=static_cast<const uint8_t*>(p);return b>=list->buffer&&b<list->buffer+CallListCapacity;}
+bool callListValid(const SourceCallList* list){
+    return list->next&&list->next>=list->buffer&&list->next<=list->buffer+CallListCapacity&&(list->head==nullptr)==(list->tail==nullptr)
+        &&(!list->head||(insideCallList(list,list->head)&&insideCallList(list,list->tail)));
+}
 void appendCall(SourceCallList* list,SourceFunctor* call){
-    uint8_t* begin=list->buffer;uint8_t* end=begin+CallListCapacity;
-    auto inside=[&](const void* p){auto b=static_cast<const uint8_t*>(p);return b>=begin&&b<end;};
     // Fail closed on anything but the layout the pinned builds have.
-    if(!list->next||list->next<begin||list->next>end||(list->head==nullptr)!=(list->tail==nullptr)||(list->head&&(!inside(list->head)||!inside(list->tail))))
-        throw std::runtime_error("Unexpected Source render queue layout");
+    if(!callListValid(list))throw std::runtime_error("Unexpected Source render queue layout");
+    uint8_t* end=list->buffer+CallListCapacity;
     auto at=reinterpret_cast<uint8_t*>((reinterpret_cast<uintptr_t>(list->next)+7)&~uintptr_t(7));
     if(at+sizeof(QueueElement)>end)throw std::runtime_error("Source render queue is full");
     auto element=reinterpret_cast<QueueElement*>(at);list->next=at+sizeof(QueueElement);
     element->next=nullptr;element->functor=call;
     if(list->tail)list->tail->next=element;else list->head=element;
     list->tail=element;
+}
+// Unlinks this module's calls from a call list, in queue order; Source's own
+// calls stay queued as they were. Elements stay in the list's arena, which
+// Source resets when it runs the list.
+std::vector<RenderThreadCall*> takeCalls(SourceCallList* list){
+    std::vector<RenderThreadCall*> taken;auto table=renderCallTable.load();
+    if(!table||!callListValid(list))return taken;
+    QueueElement* previous=nullptr;size_t visited=0;
+    for(auto element=list->head;element;){
+        if(!insideCallList(list,element)||++visited>CallListCapacity/sizeof(QueueElement))break;
+        auto next=element->next;
+        if(element->functor&&*reinterpret_cast<const void* const*>(element->functor)==table){
+            taken.push_back(static_cast<RenderThreadCall*>(element->functor));
+            if(previous)previous->next=next;else list->head=next;
+            if(list->tail==element)list->tail=previous;
+        }else previous=element;
+        element=next;
+    }
+    return taken;
 }
 }
 static constexpr VertexFormat_t commonFormat=VERTEX_POSITION|VERTEX_NORMAL|VERTEX_COLOR|VERTEX_FORMAT_VERTEX_SHADER|VERTEX_USERDATA_SIZE(4)|(2ULL<<TEX_COORD_SIZE_BIT);
@@ -446,13 +477,14 @@ static bool drawsDirectly(IMatRenderContext* context){return contextClass(contex
 // it (lighting, flashlight state, clip planes), where the thread's context is
 // the hardware one, so buffers are created, filled and drawn directly as in
 // mat_queue_mode 0. Otherwise the work runs now. Returns true when queued.
-static bool submit(std::function<void()> work){
+// A draw (draw=true) may be dropped when the queue is emptied early.
+static bool submit(std::function<void()> work,bool draw){
     initialize();CMatRenderContextPtr context(renderContext());
     if(drawsDirectly(context)){std::lock_guard lock(renderMutex);work();return false;}
     if(!recordsForRenderThread(context))throw std::runtime_error("Unrecognized Source render context");
     auto list=reinterpret_cast<SourceCallList*>(context->GetCallQueue());
     if(reinterpret_cast<char*>(list)-reinterpret_cast<char*>(static_cast<IMatRenderContext*>(context))!=CallListOffset)throw std::runtime_error("Unexpected Source render queue");
-    auto call=new RenderThreadCall(std::move(work));
+    auto call=new RenderThreadCall(std::move(work),draw);
     try{appendCall(list,call);}catch(...){delete call;throw;}
     queuedCallsTotal++;frameQueued++;return true;
 }
@@ -472,15 +504,37 @@ static Json queueStats(){
         }}
     return out;
 }
-// Runs every call still queued for the render thread: IMaterialSystem::Lock
-// waits for the render thread and executes the calls recorded so far. Needed
-// before anything a queued draw uses goes away (worker pool, this module).
+// Leaves no call of this module queued for the render thread. Needed before
+// anything a queued call uses goes away (worker pool, render buffers, this
+// module). IMaterialSystem::Lock waits for the render thread to finish the
+// calls handed to it (the previous frame) and makes the hardware context the
+// calling thread's, but the frame the main thread is recording stays queued:
+// Source runs it at the end of the frame, or when it leaves multicore mode, as
+// disconnecting does after the client Lua state (and this module) is gone.
+// So this module's calls are taken out of that queue and, while locked, run
+// here in order; draws are dropped (the frame is incomplete), the rest (buffer
+// releases, counters) runs.
 void drainRenderQueue(){
     if(!materials||outstandingCalls.load()<=0)return;
+    SourceCallList* list=nullptr;
+    {CMatRenderContextPtr context(renderContext());
+     if(recordsForRenderThread(context)){auto calls=reinterpret_cast<SourceCallList*>(context->GetCallQueue());
+         if(reinterpret_cast<char*>(calls)-reinterpret_cast<char*>(static_cast<IMatRenderContext*>(context))==CallListOffset)list=calls;}}
     using Lock=decltype(std::declval<IMaterialSystem*>()->Lock());
     static const size_t lockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Lock();});
     static const size_t unlockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Unlock(Lock());});
-    callMaterials<void>(unlockSlot,callMaterials<Lock>(lockSlot));
+    auto lock=callMaterials<Lock>(lockSlot);
+    for(auto call:list?takeCalls(list):std::vector<RenderThreadCall*>{}){if(call->draw)call->discard();else (*call)();}
+    callMaterials<void>(unlockSlot,lock);
+}
+// Module close: drains the queue; should a call of this module still be queued
+// where the drain cannot reach it, the module stays loaded until the process
+// exits so that Source can still run the call, which then does nothing.
+void closeRenderQueue(){
+    drainRenderQueue();
+    if(outstandingCalls.load()<=0)return;
+    callSession++;HMODULE self=nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,reinterpret_cast<LPCWSTR>(&closeRenderQueue),&self);
 }
 std::string takeAsyncRenderError(){std::lock_guard lock(asyncMutex);std::string error;error.swap(asyncError);return error;}
 // A hardware-path failure reported by an earlier draw returns the instance to
@@ -555,7 +609,7 @@ static void drawPrepared(Instance& instance,bool edges,RenderTint tint,bool shad
     auto job=std::make_shared<DrawJob>();
     {Measure time{prepareMs};if(!prepareDraw(instance,*job,edges,tint))return;job->shadow=shadow;job->alphaScale=alphaScale;fill(*job);}
     if(job->items.empty()||!job->snapshot)return;
-    if(!submit([job]{executeJob(*job);}))applyGpuFailures(instance);
+    if(!submit([job]{executeJob(*job);},true))applyGpuFailures(instance);
 }
 void drawNative(uint64_t id,unsigned part,const std::string& name,bool edges,RenderTint tint){
     drawInstanceNative(world().get(id),part,name,edges,tint);

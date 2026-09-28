@@ -69,10 +69,23 @@ CPU skinning. Detailed multi-model scenes exhausted the arena.
      thread) and `queuedDraws`.
 5. **Lifetime.**
    - A queued call deletes itself after running.
-   - `drainRenderQueue()` (`IMaterialSystem::Lock`/`Unlock`, which waits for the
-     render thread and runs all recorded calls) runs before the worker pool is
-     rebuilt (`SetWorkers`) and at module close, both before and after the final
-     prune.
+   - `drainRenderQueue()` leaves no call of this module queued. It runs before
+     the worker pool is rebuilt (`SetWorkers`) and at module close, both before
+     and after the final prune. `IMaterialSystem::Lock` waits for the render
+     thread to finish the calls handed to it (the previous frame) and makes the
+     hardware context the caller's, but it does not run the frame the main
+     thread is recording. So, while locked, the drain unlinks this module's
+     calls from that call list (recognized by their vtable; Source's own calls
+     stay queued) and runs them in order on the main thread. Draws are dropped;
+     the prune and the counter marker run.
+   - Before 2.1.0-native.9 the drain relied on `Lock` alone. At "Exit to main
+     menu" the final prune and the frame's draws stayed queued. Source ran them
+     when disconnecting took it out of multicore mode (`materialsystem.dll`
+     `0x2FFDD` on the default branch), after the client Lua state had closed and
+     unloaded the module, and the game crashed.
+   - Should a call still be outstanding after the close-time drain,
+     `closeRenderQueue()` pins the module until the process exits and the call
+     skips its work.
    - A recycled snapshot is fenced against a render-thread reader that just
      released it.
 

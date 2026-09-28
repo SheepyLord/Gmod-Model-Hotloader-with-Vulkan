@@ -527,9 +527,9 @@ GMOD_MODULE_OPEN(){
 GMOD_MODULE_CLOSE(){
 shutdownProps();
 #ifndef MMDHL_SERVER
-// Queued draws run this module's code on Source's render thread: execute them
-// all before the shadow hooks, the buffers and the module go away.
-drainRenderQueue();shutdownSourceShadows();pruneRenderCache(true);drainRenderQueue();
+// Queued calls run this module's code on Source's render thread: none may stay
+// queued once the shadow hooks, the buffers and the module go away.
+drainRenderQueue();shutdownSourceShadows();pruneRenderCache(true);closeRenderQueue();
 #endif
 if(context){
 #ifdef MMDHL_SERVER
