@@ -16,6 +16,8 @@ std::vector<SceneRegion> sceneInterest(){
  for(auto it=interests.begin();it!=interests.end();){if(now-it->second.refreshed>std::chrono::seconds(2))it=interests.erase(it);else{out.push_back(it->second.region);++it;}}
  return out;
 }
+std::shared_ptr<SceneFrame> newSceneFrame(){return std::make_shared<SceneFrame>();}
+std::shared_ptr<SceneGeometry> newSceneGeometry(){return std::make_shared<SceneGeometry>();}
 void publishScene(std::shared_ptr<const SceneFrame> frame){latest.store(std::move(frame));}
 std::shared_ptr<const SceneFrame> readScene(World* host){if(host){auto local=host->externalScene.load();if(local)return local;}return latest.load();}
 }

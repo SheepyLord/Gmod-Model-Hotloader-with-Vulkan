@@ -55,6 +55,14 @@ cost. The per-world sync was about 0.02 ms.
   second of its own velocity and tested against the regions. That is a superset
   of each world's own cull (bounds + 48, velocity × 0.1). Every object stays
   tracked, so its geometry is still read only once.
+- **Ownership across realms.** In single player the client's secondary worlds
+  mirror the frames the server module captures, so they can hold them after
+  that module is unloaded; quitting unloads it before the client closes. A
+  `std::make_shared` in the server module left the `shared_ptr` control blocks'
+  code there, and dropping the last reference then crashed the game on quit
+  (2.1.0-native.9 and earlier). Since 2.1.0-native.10 frames and geometry come
+  from the runtime (`newSceneFrame`, `newSceneGeometry` in `native/scene.cpp`),
+  which outlives both realm modules.
 - **Cheaper per-object work.** The two ABI guards (object vtable, position
   function) are resolved to addresses once per environment. Objects are walked
   in list order, and a generation sweep replaces the `std::set`.

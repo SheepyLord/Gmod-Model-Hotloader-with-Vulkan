@@ -20,6 +20,13 @@ struct SceneObject {
  bool isStatic=false;
 };
 struct SceneFrame {uint64_t sequence=0;double timestamp=0,captureMs=0;unsigned ownedObjects=0;std::vector<SceneObject> objects;};
+// Frames and geometry cross realms: the client's secondary worlds keep what the
+// server captured (bridge.cpp, in the server module). A shared_ptr's control
+// block runs the code of the module that made it when the last reference goes,
+// and quitting unloads the server module before the client drops its mirrors.
+// These make them here, in the runtime, which outlives both realm modules.
+std::shared_ptr<SceneFrame> newSceneFrame();
+std::shared_ptr<SceneGeometry> newSceneGeometry();
 void publishScene(std::shared_ptr<const SceneFrame>);
 std::shared_ptr<const SceneFrame> readScene(World* host=nullptr);
 // Where the scene's consumers need objects (Source units). Each secondary world

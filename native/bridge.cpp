@@ -135,7 +135,7 @@ void clearSecondaryScene(){sceneTracked.clear();publishScene(nullptr);}
 Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,double timestamp,const std::unordered_set<void*>& excluded){
  auto started=std::chrono::steady_clock::now();initialize();int count=0;auto list=call<void**>(environment,47,&count);
  if(count<0||count>100000)throw std::runtime_error("Invalid scene object count");
- auto frame=std::make_shared<SceneFrame>();frame->sequence=++sceneSequence;frame->timestamp=timestamp;const uint64_t generation=frame->sequence;
+ auto frame=newSceneFrame();frame->sequence=++sceneSequence;frame->timestamp=timestamp;const uint64_t generation=frame->sequence;
  unsigned triangles=0,excludedLiving=0,outside=0;
  const auto regions=sceneInterest();
  auto reachable=[&](const btVector3& c,const btVector3& e){
@@ -159,7 +159,7 @@ Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,doub
   bool isStatic=call<bool>(object,objectMethod(1));auto collide=call<void*>(object,objectMethod(74));float radius=call<float>(object,objectMethod(42));V center;call<void>(object,objectMethod(45),&center);
   if(it!=sceneTracked.end()&&(it->second.collide!=collide||it->second.radius!=radius)){sceneTracked.erase(it);it=sceneTracked.end();}
   if(it==sceneTracked.end()){
-   auto g=std::make_shared<SceneGeometry>();g->minimum={BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT};g->maximum=-g->minimum;
+   auto g=newSceneGeometry();g->minimum={BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT};g->maximum=-g->minimum;
    auto append=[&](V value){value=subtract(value,center);if(!finite(value))throw std::runtime_error("Invalid scene geometry");btVector3 v(value.x,value.y,value.z);g->vertices.push_back(v);g->minimum.setMin(v);g->maximum.setMax(v);};
    if(radius>0){g->kind=SceneGeometry::Sphere;g->radius=radius;g->minimum={-radius,-radius,-radius};g->maximum=-g->minimum;}
    else if(collide&&isStatic){V* vertices=nullptr;int n=call<int>(collision,collisionMethod(41),collide,&vertices);if(n<0||n>12000000||n%3)throw std::runtime_error("Invalid scene triangle buffer");for(int i=0;i<n;i++)append(vertices[i]);if(vertices)call<void>(collision,collisionMethod(42),n,vertices);if(!n)continue;g->kind=SceneGeometry::Triangles;triangles+=n/3;}
