@@ -29,6 +29,17 @@ size_t appSystemShift(void* object, const wchar_t* library, size_t compiledLengt
 constexpr size_t MaterialSystemVtableLength = 151, PhysicsVtableLength = 17;
 // Slot shifts found so far, per library, for the compatibility report.
 Json appSystemShifts();
+// Entries of object's vtable: consecutive pointers to code of library.
+size_t vtableLength(void* object, const wchar_t* library);
+// The default branch's vphysics.dll of 2026-09-17 also lacks
+// IPhysicsCollision::VPhysicsKeyParserCreate(vcollide_t*) (slot 38) and six trailing
+// methods (52 slots instead of 59), and IPhysicsObject::SetSphereRadius (slot 43):
+// the later methods of those two interfaces sit one slot lower.
+constexpr size_t CollisionVtableLength = 59;
+// True when physics (VPhysics031) and collision (VPhysicsCollision007) have that layout.
+bool olderPhysicsLayout(void* physics, void* collision);
+inline size_t collisionSlot(size_t compiled, bool older) { return older && compiled > 38 ? compiled - 1 : compiled; }
+inline size_t physicsObjectSlot(size_t compiled, bool older) { return older && compiled > 43 ? compiled - 1 : compiled; }
 namespace probe {
 inline thread_local size_t hit = ~size_t(0);
 template<size_t I> void stub() { hit = I; }

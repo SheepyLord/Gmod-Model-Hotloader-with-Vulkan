@@ -100,9 +100,14 @@ functions there: `GetRenderContext` landed on a method that waits for a render j
 and the model preview hung the game. From 2.1.0-native.7 the modules measure those
 vtables at startup and call `IMaterialSystem`/`IPhysics` methods at the running
 layout's slots: the compiled slot of each method, found by calling it on a probe
-object, less the measured shift (reported as `layout` in Copy diagnostics). A
-change in the middle of an interface cannot be recognized this way; it needs a
-native update.
+object, less the measured shift (reported as `layout` in Copy diagnostics). The same
+build's `vphysics.dll` also lacks `IPhysicsCollision::VPhysicsKeyParserCreate(vcollide_t*)`
+and six trailing methods (52 slots instead of 59) and `IPhysicsObject::SetSphereRadius`;
+2.1.0-native.7 called `DestroyQueryModel` where it meant `CreateQueryModel`, and
+spawning a model corrupted the heap. From 2.1.0-native.8 the physics bridge
+recognizes that layout (13 and 52 slots) and calls collision methods after slot 38
+and physics-object methods after slot 43 one slot lower. Any other change in the
+middle of an interface cannot be recognized this way; it needs a native update.
 
 Every build also passes the runtime checks before private calls or hooks: named
 factories and interface versions, and the ownership of each used vtable slot by

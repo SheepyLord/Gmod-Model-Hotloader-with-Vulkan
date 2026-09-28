@@ -14,6 +14,8 @@ namespace {
 // VPhysics031 methods by slot, at the running layout (see appSystemShift):
 // GetActiveEnvironmentByIndex and FindCollisionSet.
 size_t physicsShift=0;size_t activeEnvironmentSlot(){return 11-physicsShift;}size_t collisionSetSlot(){return 15-physicsShift;}
+// IPhysicsCollision and IPhysicsObject methods at the running layout (olderPhysicsLayout).
+bool olderPhysics=false;size_t collisionMethod(size_t compiled){return collisionSlot(compiled,olderPhysics);}size_t objectMethod(size_t compiled){return physicsObjectSlot(compiled,olderPhysics);}
 HMODULE module=nullptr;uintptr_t base=0;void* physics=nullptr;void* environment=nullptr;void* collision=nullptr;std::string fingerprint;
 // objectTable / objectPosition ABI guards as addresses (every scene object is checked each tick).
 void* objectTableGuard=nullptr;void* objectPositionGuard=nullptr;
@@ -28,7 +30,7 @@ template<typename R,typename... Args> R call(void* object,size_t slot,Args... ar
 uintptr_t rva(void* object,size_t slot){return reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(object))[slot])-base;}
 void initialize(){if(physics){auto current=call<void*>(physics,activeEnvironmentSlot(),0);if(current==environment&&current)return;clearPhysicsBridge();}module=GetModuleHandleW(L"vphysics.dll");if(!module)throw std::runtime_error("VPhysics is not loaded");wchar_t filename[32768];GetModuleFileNameW(module,filename,32768);fingerprint=requireGameBinary(L"vphysics.dll")["observedSHA256"].get<std::string>();
 
-    base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));physics=factory("VPhysics031",nullptr);collision=factory("VPhysicsCollision007",nullptr);if(!physics||!collision)throw std::runtime_error("Physics factory unavailable");physicsShift=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength);requireOwnedSlots(physics,L"vphysics.dll",{activeEnvironmentSlot(),collisionSetSlot()});requireOwnedSlots(collision,L"vphysics.dll",{8,14,16,41,42,43,44});requireAbiRva(L"vphysics.dll","physics",rva(physics,activeEnvironmentSlot()));environment=call<void*>(physics,activeEnvironmentSlot(),0);if(!environment||!matchesAbiRva(L"vphysics.dll","environment",rva(environment,47))){environment=nullptr;throw std::runtime_error("Physics environment not initialized or wrong ABI");}
+    base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));physics=factory("VPhysics031",nullptr);collision=factory("VPhysicsCollision007",nullptr);if(!physics||!collision)throw std::runtime_error("Physics factory unavailable");physicsShift=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength);olderPhysics=olderPhysicsLayout(physics,collision);requireOwnedSlots(physics,L"vphysics.dll",{activeEnvironmentSlot(),collisionSetSlot()});requireOwnedSlots(collision,L"vphysics.dll",{collisionMethod(8),collisionMethod(14),collisionMethod(16),collisionMethod(41),collisionMethod(42),collisionMethod(43),collisionMethod(44)});requireAbiRva(L"vphysics.dll","physics",rva(physics,activeEnvironmentSlot()));environment=call<void*>(physics,activeEnvironmentSlot(),0);if(!environment||!matchesAbiRva(L"vphysics.dll","environment",rva(environment,47))){environment=nullptr;throw std::runtime_error("Physics environment not initialized or wrong ABI");}
     // An unverified game build has no pinned object guards: checked() learns them from the first scene object.
     const auto& guards=requireGameBinary(L"vphysics.dll").at("guards");auto pinned=[&](const char* guard)->void*{return guards.contains(guard)?reinterpret_cast<void*>(base+guards.at(guard).get<uintptr_t>()):nullptr;};
     objectTableGuard=pinned("objectTable");objectPositionGuard=pinned("objectPosition");
@@ -84,12 +86,12 @@ Bytes carrierPhysics(const Rig& rig){
         }
         poly.pVertices=vertices.data();poly.pLines=lines.data();poly.pIndices=indices.data();poly.pPolygons=polygons.data();
         poly.iVertexCount=static_cast<unsigned short>(vertices.size());poly.iLineCount=static_cast<unsigned short>(lines.size());poly.iIndexCount=static_cast<unsigned short>(indices.size());poly.iPolygonCount=static_cast<unsigned short>(polygons.size());
-        void* convex=call<void*>(collision,8,&poly);if(!convex)throw std::runtime_error("VPhysics rejected fitted collision topology");
-        void* collide=call<void*>(collision,14,&convex,1);if(!collide)throw std::runtime_error("VPhysics convex conversion failed");
+        void* convex=call<void*>(collision,collisionMethod(8),&poly);if(!convex)throw std::runtime_error("VPhysics rejected fitted collision topology");
+        void* collide=call<void*>(collision,collisionMethod(14),&convex,1);if(!collide)throw std::runtime_error("VPhysics convex conversion failed");
         // Validate the actual engine hull before caching a .phy. Surface support
         // tests tolerate triangulation changes without accepting simplification.
         try {
-            void* query=call<void*>(collision,43,collide);if(!query)throw std::runtime_error("VPhysics collision query failed");
+            void* query=call<void*>(collision,collisionMethod(43),collide);if(!query)throw std::runtime_error("VPhysics collision query failed");
             float error=0;
             try {
                 if(call<int>(query,1)!=1)throw std::runtime_error("Expected one convex per physics body");
@@ -103,12 +105,12 @@ Bytes carrierPhysics(const Rig& rig){
                 };
                 for(size_t t=0;t<actual.size();t+=3)check(actual[t],actual[t+1],actual[t+2],body.hull);
                 for(const auto& face:rig.manifest["bodies"][index]["faces"])for(size_t k=1;k+1<face.size();k++)check(body.hull[face[0].get<size_t>()],body.hull[face[k].get<size_t>()],body.hull[face[k+1].get<size_t>()],actual);
-            }catch(...){call<void>(collision,44,query);throw;}
-            call<void>(collision,44,query);
+            }catch(...){call<void>(collision,collisionMethod(44),query);throw;}
+            call<void>(collision,collisionMethod(44),query);
             if(error>.01f*rig.scale/ScmiSourceUnitsPerPmx+.0001f)throw std::runtime_error("VPhysics distorted body "+std::to_string(index)+" by "+std::to_string(error)+" Source units");
-        }catch(...){call<void>(collision,16,collide);throw;}
-        try {int n=call<int>(collision,17,collide);if(n<16||n>4*1024*1024)throw std::runtime_error("Invalid serialized collision size");size_t at=result.size();result.resize(at+4+n);integer(at,n);int written=call<int>(collision,18,result.data()+at+4,collide,false);if(written!=n)throw std::runtime_error("Collision serialization size mismatch");}
-        catch(...){call<void>(collision,16,collide);throw;}call<void>(collision,16,collide);
+        }catch(...){call<void>(collision,collisionMethod(16),collide);throw;}
+        try {int n=call<int>(collision,collisionMethod(17),collide);if(n<16||n>4*1024*1024)throw std::runtime_error("Invalid serialized collision size");size_t at=result.size();result.resize(at+4+n);integer(at,n);int written=call<int>(collision,collisionMethod(18),result.data()+at+4,collide,false);if(written!=n)throw std::runtime_error("Collision serialization size mismatch");}
+        catch(...){call<void>(collision,collisionMethod(16),collide);throw;}call<void>(collision,collisionMethod(16),collide);
     }
     std::ostringstream kv;float bias=0;for(auto& b:rig.bodies)bias+=b.massBias;
     for(size_t i=0;i<rig.bodies.size();i++){auto& b=rig.bodies[i];kv<<"solid {\n\"index\" \""<<i<<"\"\n\"name\" \""<<rig.bones[b.bone].name<<"\"\n";if(b.parent>=0)kv<<"\"parent\" \""<<rig.bones[rig.bodies[b.parent].bone].name<<"\"\n";
@@ -142,33 +144,33 @@ Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,doub
   return false;
  };
  auto checked=[&](void* object){auto table=*reinterpret_cast<void***>(object);
-  if(!objectTableGuard&&matchesAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(table)-base)&&matchesAbiRva(L"vphysics.dll","objectPosition",reinterpret_cast<uintptr_t>(table[48])-base)){objectTableGuard=table;objectPositionGuard=table[48];}
-  if(table!=objectTableGuard||table[48]!=objectPositionGuard)throw std::runtime_error("Unsupported scene physics object vtable");};
+  if(!objectTableGuard&&matchesAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(table)-base)&&matchesAbiRva(L"vphysics.dll","objectPosition",reinterpret_cast<uintptr_t>(table[objectMethod(48)])-base)){objectTableGuard=table;objectPositionGuard=table[objectMethod(48)];}
+  if(table!=objectTableGuard||table[objectMethod(48)]!=objectPositionGuard)throw std::runtime_error("Unsupported scene physics object vtable");};
  // Players can own both standing and crouched shadow bodies; Lua may expose
  // only the active one. GetGameData is the supported VPhysics owner link.
  // Excluded objects are only dereferenced when this environment lists them.
  std::unordered_set<void*> excludedOwners;
- if(!excluded.empty())for(int i=0;i<count;i++)if(excluded.contains(list[i])){checked(list[i]);if(auto owner=call<void*>(list[i],17))excludedOwners.insert(owner);}
+ if(!excluded.empty())for(int i=0;i<count;i++)if(excluded.contains(list[i])){checked(list[i]);if(auto owner=call<void*>(list[i],objectMethod(17)))excludedOwners.insert(owner);}
  frame->objects.reserve(size_t(std::min(count,1024)));
  for(int i=0;i<count;i++){void* object=list[i];checked(object);
   auto it=sceneTracked.find(object);if(it!=sceneTracked.end())it->second.seen=generation;
-  if(!excludedOwners.empty()&&(excluded.contains(object)||excludedOwners.contains(call<void*>(object,17)))){excludedLiving++;continue;}
-  if(call<bool>(object,3)||call<bool>(object,4)||!call<bool>(object,6))continue;
-  bool isStatic=call<bool>(object,1);auto collide=call<void*>(object,74);float radius=call<float>(object,42);V center;call<void>(object,45,&center);
+  if(!excludedOwners.empty()&&(excluded.contains(object)||excludedOwners.contains(call<void*>(object,objectMethod(17))))){excludedLiving++;continue;}
+  if(call<bool>(object,objectMethod(3))||call<bool>(object,objectMethod(4))||!call<bool>(object,objectMethod(6)))continue;
+  bool isStatic=call<bool>(object,objectMethod(1));auto collide=call<void*>(object,objectMethod(74));float radius=call<float>(object,objectMethod(42));V center;call<void>(object,objectMethod(45),&center);
   if(it!=sceneTracked.end()&&(it->second.collide!=collide||it->second.radius!=radius)){sceneTracked.erase(it);it=sceneTracked.end();}
   if(it==sceneTracked.end()){
    auto g=std::make_shared<SceneGeometry>();g->minimum={BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT};g->maximum=-g->minimum;
    auto append=[&](V value){value=subtract(value,center);if(!finite(value))throw std::runtime_error("Invalid scene geometry");btVector3 v(value.x,value.y,value.z);g->vertices.push_back(v);g->minimum.setMin(v);g->maximum.setMax(v);};
    if(radius>0){g->kind=SceneGeometry::Sphere;g->radius=radius;g->minimum={-radius,-radius,-radius};g->maximum=-g->minimum;}
-   else if(collide&&isStatic){V* vertices=nullptr;int n=call<int>(collision,41,collide,&vertices);if(n<0||n>12000000||n%3)throw std::runtime_error("Invalid scene triangle buffer");for(int i=0;i<n;i++)append(vertices[i]);if(vertices)call<void>(collision,42,n,vertices);if(!n)continue;g->kind=SceneGeometry::Triangles;triangles+=n/3;}
-   else if(collide){auto query=call<void*>(collision,43,collide);if(!query)continue;try{int n=call<int>(query,1);if(n<0||n>8192)throw std::runtime_error("Invalid scene convex count");for(int h=0;h<n;h++){int t=call<int>(query,2,h);if(t<0||t>100000)throw std::runtime_error("Invalid scene convex triangles");if(!t)continue;g->hullCounts.push_back(t*3);for(int j=0;j<t;j++){V v[3];call<void>(query,4,h,j,v);for(auto p:v)append(p);}triangles+=t;}}catch(...){call<void>(collision,44,query);throw;}call<void>(collision,44,query);if(g->vertices.empty())continue;g->kind=SceneGeometry::Convexes;}
+   else if(collide&&isStatic){V* vertices=nullptr;int n=call<int>(collision,collisionMethod(41),collide,&vertices);if(n<0||n>12000000||n%3)throw std::runtime_error("Invalid scene triangle buffer");for(int i=0;i<n;i++)append(vertices[i]);if(vertices)call<void>(collision,collisionMethod(42),n,vertices);if(!n)continue;g->kind=SceneGeometry::Triangles;triangles+=n/3;}
+   else if(collide){auto query=call<void*>(collision,collisionMethod(43),collide);if(!query)continue;try{int n=call<int>(query,1);if(n<0||n>8192)throw std::runtime_error("Invalid scene convex count");for(int h=0;h<n;h++){int t=call<int>(query,2,h);if(t<0||t>100000)throw std::runtime_error("Invalid scene convex triangles");if(!t)continue;g->hullCounts.push_back(t*3);for(int j=0;j<t;j++){V v[3];call<void>(query,4,h,j,v);for(auto p:v)append(p);}triangles+=t;}}catch(...){call<void>(collision,collisionMethod(44),query);throw;}call<void>(collision,collisionMethod(44),query);if(g->vertices.empty())continue;g->kind=SceneGeometry::Convexes;}
    else continue;
    it=sceneTracked.emplace(object,SceneTracked{sceneNext++,collide,radius,center,std::move(g),generation}).first;
   }
-  float matrix[12];call<void>(object,49,matrix);for(float v:matrix)if(!std::isfinite(v))throw std::runtime_error("Non-finite scene transform");
+  float matrix[12];call<void>(object,objectMethod(49),matrix);for(float v:matrix)if(!std::isfinite(v))throw std::runtime_error("Non-finite scene transform");
   btMatrix3x3 rotation(matrix[0],matrix[1],matrix[2],matrix[4],matrix[5],matrix[6],matrix[8],matrix[9],matrix[10]);
   btTransform transform(rotation,rotation*btVector3(center.x,center.y,center.z)+btVector3(matrix[3],matrix[7],matrix[11]));
-  V linear,angular;call<void>(object,52,&linear,&angular);if(!finite(linear)||!finite(angular))throw std::runtime_error("Non-finite scene velocity");
+  V linear,angular;call<void>(object,objectMethod(52),&linear,&angular);if(!finite(linear)||!finite(angular))throw std::runtime_error("Non-finite scene velocity");
   const auto& g=*it->second.geometry;
   if(!reachable(transform*((g.minimum+g.maximum)*.5f),rotation.absolute()*((g.maximum-g.minimum)*.5f)+btVector3(linear.x,linear.y,linear.z).absolute()*.25f)){outside++;continue;}
   SceneObject item;item.id=it->second.id;item.geometry=it->second.geometry;item.isStatic=isStatic;item.transform=transform;
@@ -186,24 +188,24 @@ Json capturePhysics(){
     std::unordered_map<uint64_t,void*> targets;for(auto& [object,t]:tracked)targets[t.id]=object;
     auto impulses=w.takeImpulses();unsigned applied=0,added=0,skipped=0,triangles=0;
     for(auto& entry:impulses){auto it=targets.find(entry["id"]);if(it==targets.end())continue;void* object=it->second;requireAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(*reinterpret_cast<void***>(object))-base);
-        if(!call<bool>(object,10)||!call<bool>(object,6))continue;
+        if(!call<bool>(object,objectMethod(10))||!call<bool>(object,objectMethod(6)))continue;
         auto a=entry["linear"],b=entry["angular"];V linear{a[0],a[1],a[2]},angular{b[0],b[1],b[2]};
         if(!finite(linear)||!finite(angular))throw std::runtime_error("Rejected non-finite Bullet feedback before Source physics");
-        call<void>(object,60,&linear);call<void>(object,62,&angular);applied++;
+        call<void>(object,objectMethod(60),&linear);call<void>(object,objectMethod(62),&angular);applied++;
     }
     for(void* object:alive){
-        if(!matchesAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(*reinterpret_cast<void***>(object))-base)||!matchesAbiRva(L"vphysics.dll","objectPosition",rva(object,48))||!matchesAbiRva(L"vphysics.dll","objectForce",rva(object,60)))throw std::runtime_error("Unsupported physics object vtable");
-        bool isStatic=call<bool>(object,1),moveable=call<bool>(object,10);
-        if(call<bool>(object,3)||call<bool>(object,4)||!call<bool>(object,6)){
+        if(!matchesAbiRva(L"vphysics.dll","objectTable",reinterpret_cast<uintptr_t>(*reinterpret_cast<void***>(object))-base)||!matchesAbiRva(L"vphysics.dll","objectPosition",rva(object,objectMethod(48)))||!matchesAbiRva(L"vphysics.dll","objectForce",rva(object,objectMethod(60))))throw std::runtime_error("Unsupported physics object vtable");
+        bool isStatic=call<bool>(object,objectMethod(1)),moveable=call<bool>(object,objectMethod(10));
+        if(call<bool>(object,objectMethod(3))||call<bool>(object,objectMethod(4))||!call<bool>(object,objectMethod(6))){
             auto it=tracked.find(object);if(it!=tracked.end()){w.removeMirror(it->second.id);tracked.erase(it);}skipped++;continue;
         }
-        void* collide=call<void*>(object,74);float radius=call<float>(object,42);V center;call<void>(object,45,&center);
+        void* collide=call<void*>(object,objectMethod(74));float radius=call<float>(object,objectMethod(42));V center;call<void>(object,objectMethod(45),&center);
         auto it=tracked.find(object);if(it!=tracked.end()&&(it->second.collide!=collide||it->second.radius!=radius||!w.mirrors.contains(it->second.id))){w.removeMirror(it->second.id);tracked.erase(it);it=tracked.end();}
         Json spec;std::vector<float> geometry;
-        float mass=moveable&&!isStatic?call<float>(object,29):0;
-        V inertia,velocity,angular;call<void>(object,31,&inertia);call<void>(object,52,&velocity,&angular);
+        float mass=moveable&&!isStatic?call<float>(object,objectMethod(29)):0;
+        V inertia,velocity,angular;call<void>(object,objectMethod(31),&inertia);call<void>(object,objectMethod(52),&velocity,&angular);
         if(!finite(inertia)||!finite(velocity)||!finite(angular)||!std::isfinite(mass))throw std::runtime_error("Source supplied non-finite physics state");
-        float matrix[12];call<void>(object,49,matrix);
+        float matrix[12];call<void>(object,objectMethod(49),matrix);
         btMatrix3x3 basis(matrix[0],matrix[1],matrix[2],matrix[4],matrix[5],matrix[6],matrix[8],matrix[9],matrix[10]);btQuaternion q;basis.getRotation(q);
         auto com=basis*btVector3(center.x,center.y,center.z)+btVector3(matrix[3],matrix[7],matrix[11]);
         spec={{"mass",mass},{"inertia",xyz(inertia)},{"velocity",xyz(velocity)},{"angularVelocity",xyz(angular)},{"position",{com.x(),com.y(),com.z()}},{"rotation",{q.x(),q.y(),q.z(),q.w()}}};
@@ -211,15 +213,15 @@ Json capturePhysics(){
             auto append=[&](V v){v=subtract(v,center);if(!std::isfinite(v.x)||!std::isfinite(v.y)||!std::isfinite(v.z))throw std::runtime_error("Invalid Source collision coordinate");geometry.insert(geometry.end(),{v.x,v.y,v.z});};
             if(radius>0){spec["shape"]="sphere";spec["radius"]=radius;}
             else if(collide&&isStatic){
-                V* vertices=nullptr;int n=call<int>(collision,41,collide,&vertices);
+                V* vertices=nullptr;int n=call<int>(collision,collisionMethod(41),collide,&vertices);
                 if(n<0||n>12000000||n%3)throw std::runtime_error("Invalid Source triangle buffer");
-                for(int k=0;k<n;k++)append(vertices[k]);if(vertices)call<void>(collision,42,n,vertices);
+                for(int k=0;k<n;k++)append(vertices[k]);if(vertices)call<void>(collision,collisionMethod(42),n,vertices);
                 if(!n){skipped++;continue;}spec["shape"]="triangles";triangles+=n/3;
             }else if(collide){
-                void* query=call<void*>(collision,43,collide);if(!query){skipped++;continue;}
+                void* query=call<void*>(collision,collisionMethod(43),collide);if(!query){skipped++;continue;}
                 try{int hulls=call<int>(query,1);if(hulls<0||hulls>8192)throw std::runtime_error("Invalid convex count");spec["shape"]="compound";spec["hulls"]=Json::array();
                     for(int h=0;h<hulls;h++){int n=call<int>(query,2,h);if(n<0||n>100000)throw std::runtime_error("Invalid convex triangle count");if(!n)continue;spec["hulls"].push_back(n*3);for(int k=0;k<n;k++){V vertices[3];call<void>(query,4,h,k,vertices);for(auto v:vertices)append(v);}triangles+=n;}
-                }catch(...){call<void>(collision,44,query);throw;}call<void>(collision,44,query);if(geometry.empty()){skipped++;continue;}
+                }catch(...){call<void>(collision,collisionMethod(44),query);throw;}call<void>(collision,collisionMethod(44),query);if(geometry.empty()){skipped++;continue;}
             }else {skipped++;continue;}
             Tracked t{nextMirror++,collide,radius,center};w.setMirror(t.id,spec,geometry);tracked.emplace(object,t);added++;
         }else w.setMirror(it->second.id,spec);

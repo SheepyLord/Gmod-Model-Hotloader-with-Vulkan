@@ -124,7 +124,7 @@ namespace {
 std::mutex shiftMutex;
 Json shifts=Json::object();
 }
-size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength){
+size_t vtableLength(void* object,const wchar_t* library){
  auto module=GetModuleHandleW(library);if(!module||!object)return 0;
  // The vtable ends at the first entry that is not code of library: the next
  // table's RTTI locator (materialsystem.dll) or other data (vphysics.dll).
@@ -135,10 +135,20 @@ size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength)
   auto target=table[length];
   if(!VirtualQuery(target,&memory,sizeof(memory))||memory.AllocationBase!=module||!(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))break;
  }
+ return length;
+}
+size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength){
+ auto length=vtableLength(object,library);
  // Any other length keeps the compiled slots: a later build that only appends methods.
  size_t shift=length+4==compiledLength?4:0;
  std::lock_guard lock(shiftMutex);shifts[utf8(library)]={{"slotShift",shift},{"vtableLength",length},{"compiledLength",compiledLength}};
  return shift;
+}
+bool olderPhysicsLayout(void* physics,void* collision){
+ auto length=vtableLength(collision,L"vphysics.dll");
+ bool older=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength)==4&&length+7==CollisionVtableLength;
+ std::lock_guard lock(shiftMutex);auto& entry=shifts["vphysics.dll"];entry["collisionVtableLength"]=length;entry["olderPhysics"]=older;
+ return older;
 }
 Json appSystemShifts(){std::lock_guard lock(shiftMutex);return shifts;}
 static void checkInterfaces(const wchar_t* name){
@@ -161,9 +171,12 @@ static void checkInterfaces(const wchar_t* name){
   }else if(library==L"client.dll")get("VClientEntityList003",{3,4});
   else if(library==L"materialsystem.dll")appSystemShift(get("VMaterialSystem080",{0}),name,MaterialSystemVtableLength);
   else if(library==L"vphysics.dll"){
-   // GetActiveEnvironmentByIndex and FindCollisionSet, at the running layout's slots.
-   auto physics=get("VPhysics031",{0});auto shift=appSystemShift(physics,name,PhysicsVtableLength);
-   requireOwnedSlots(physics,name,{11-shift,15-shift});get("VPhysicsCollision007",{8,14,16,41,42,43,44});
+   // GetActiveEnvironmentByIndex and FindCollisionSet, and the collision methods the
+   // bridge calls, at the running layout's slots.
+   auto physics=get("VPhysics031",{0});auto collision=get("VPhysicsCollision007",{0});
+   auto older=olderPhysicsLayout(physics,collision);auto shift=appSystemShift(physics,name,PhysicsVtableLength);
+   requireOwnedSlots(physics,name,{11-shift,15-shift});
+   requireOwnedSlots(collision,name,{collisionSlot(8,older),collisionSlot(14,older),collisionSlot(16,older),collisionSlot(41,older),collisionSlot(42,older),collisionSlot(43,older),collisionSlot(44,older)});
    requireAbiRva(name,"physics",reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(physics))[11-shift])-reinterpret_cast<uintptr_t>(module));
   }
  });
