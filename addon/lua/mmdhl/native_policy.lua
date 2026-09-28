@@ -10,7 +10,8 @@ return util.JSONToTable([==[
     "2.1.0-native.8",
     "2.1.0-native.9",
     "2.1.0-native.10",
-    "2.1.0-native.11"
+    "2.1.0-native.11",
+    "2.1.0-native.12"
   ],
   "releases": {
     "2.1.0-native.1": {
@@ -504,8 +505,55 @@ return util.JSONToTable([==[
       },
       "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.1.0-native.11",
       "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
+    },
+    "2.1.0-native.12": {
+      "api": 1,
+      "build": "05253837f514-20260928T115210Z",
+      "installApi": 1,
+      "platform": "win64",
+      "release": "2.1.0-native.12",
+      "files": {
+        "client": {
+          "name": "gmcl_mmdhl_win64.dll",
+          "size": 2745856,
+          "sha256": "5afe9c7dfcf44236a27a797c741fea86cef4eedeb791a2562d82f0b9b8a6db8f"
+        },
+        "server": {
+          "name": "gmsv_mmdhl_win64.dll",
+          "size": 1810944,
+          "sha256": "b2118b3edfb8af6ae69093d64f3fabd7698c1eb122590f399db77fbe441475f3"
+        },
+        "runtime": {
+          "name": "mmdhl_runtime_win64.dll",
+          "size": 9404928,
+          "sha256": "5284077de81b69a911a5b6eaa9634f56f8bcefe7e436a2ab904a0da3a6cd3d0b"
+        },
+        "worker": {
+          "name": "mmdhl_worker.exe",
+          "size": 3035648,
+          "sha256": "831f4260a3be3438614da26f69cc29b22cae5618f9e9d126def654914acbc751"
+        },
+        "coacd": {
+          "name": "lib_coacd.dll",
+          "size": 6169600,
+          "sha256": "a32e801d260b774ebc723edfc05e45e179c09d0d2355592c64cbff490698e806"
+        }
+      },
+      "renderer": {
+        "name": "d3d9.dll",
+        "size": 4042752,
+        "sha256": "8755920df25e4780a35cc2062785ae44f67d7ab1bbecef73b8ccf042d2dd59e9",
+        "kind": "dxvk",
+        "dxvk": "v3.1.1",
+        "patches": [
+          "0001-shared-compute-queues.patch",
+          "0002-gmod-app-profile.patch"
+        ]
+      },
+      "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.1.0-native.12",
+      "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
     }
   },
-  "recommended": "2.1.0-native.11"
+  "recommended": "2.1.0-native.12"
 }
 ]==])
