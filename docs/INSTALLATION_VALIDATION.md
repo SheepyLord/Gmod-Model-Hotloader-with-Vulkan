@@ -135,8 +135,15 @@ libraries are retried after map load.
    running games/workers. Recognized loose addons are backed up outside mounted
    addons; conflicting or ambiguous folders are left intact with instructions.
 5. Publish the matching immutable GitHub release first, then publish Workshop
-   Lua and its policy. Lua-only releases retain native approvals. Publication is
-   a separate maintainer action; these scripts do not upload anything.
+   Lua and its policy. Lua-only releases retain native approvals. The scripts
+   above do not upload anything. For a release built by the "Build drop-in
+   package" Action, `python scripts/publish-native-release.py publish --run <id>
+   --notes whats-new.md` checks the run's packages against their record, creates
+   the GitHub release, appends it to `native_policy.lua` as the recommended
+   release, runs the policy and Lua checks, rebuilds `addon.gma` and pushes main
+   (`--dry-run` only checks and prints). It never replaces or deletes an existing
+   release or record. `supersede <label> --note note.md` puts a note at the top of
+   an older release. Uploading `addon.gma` to the Workshop stays manual.
 
 For an engine-only update, `validate-render-abi.py --emit-profile` can emit a
 profile when the renderer audit and the additional VPhysics/material/shader
