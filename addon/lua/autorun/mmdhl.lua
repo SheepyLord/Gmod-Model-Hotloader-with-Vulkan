@@ -55,6 +55,12 @@ function mmdhl.MountPackage(path)
     if mountedPackages[path] then return true end
     local prefix='data/mmd_hotloader/'
     if not isstring(path) or path:sub(1,#prefix)~=prefix then return false end
+    -- In single player and on a listen server the server has already mounted the
+    -- carrier in this process and the model is loaded. Mounting it again makes the
+    -- game reload it: its server ragdolls briefly take models/error.mdl, and
+    -- C_ServerRagdoll prints "models/error.mdl missing vcollide data".
+    local key=CLIENT and path:match('^data/mmd_hotloader/rigs/(%x+)/carrier%.gma$')
+    if key and #file.Find('models/mmd/'..key:sub(1,16)..'/*.mdl','GAME')>0 then mountedPackages[path]=true return true end
     local mount,err=mmdhl.native.GetMountablePackage(path:sub(#prefix+1))
     if not mount then return false,err end
     local ok=game.MountGMA(mount)
