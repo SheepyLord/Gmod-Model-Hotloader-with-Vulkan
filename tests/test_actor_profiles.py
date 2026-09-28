@@ -28,7 +28,21 @@ for _,role in ipairs({'citizen','combine','player','arms'})do for _,gender in ip
  assert(options.animationReference.attachments[1]==mesh and options.animationReference.ikChains[1]==mesh,'Actor attachment/IK metadata lost')
  assert(options.animationSource==mesh)
 end end
-assert(mmdhl.ActorOptions({role='ragdoll'}).animationReference==nil)
+-- A ragdoll takes the Citizen reference; its carrier adds the player and Citizen packs.
+for _,gender in ipairs({'female','male'})do
+ local options=mmdhl.ActorOptions({role='ragdoll',gender=gender})
+ assert(options.role=='ragdoll' and options.gender==gender)
+ assert(options.animationSource==mmdhl.actorProfiles.citizen[gender],'Ragdoll lost the Citizen donor')
+ assert(options.animationReference.bones[1]==mmdhl.actorAnimationReferences.citizen[gender],'Ragdoll proportions use a mesh bind')
+end
+assert(mmdhl.ActorOptions({role='ragdoll'}).gender=='female')
+-- Without a readable reference a ragdoll still spawns, as before; an actor cannot.
+local read=file.Read file.Read=function(path) if path=='models/missing.mdl' then return nil end return read(path) end
+local saved=mmdhl.actorProfiles.citizen.female mmdhl.actorProfiles.citizen.female='models/missing.mdl'
+local plain=mmdhl.ActorOptions({role='ragdoll',animationSource='stale',animationReference={}})
+assert(plain and plain.animationReference==nil and plain.animationSource==nil,'Ragdoll without a reference failed or kept a stale one')
+assert(mmdhl.ActorOptions({role='citizen'})==nil,'Citizen without its donor was accepted')
+mmdhl.actorProfiles.citizen.female=saved file.Read=read
 assert(mmdhl.ActorOptions({role='invalid'})==nil)
 ''')
-print('PASS: Citizen, Combine, male/female player animation references; actor attachments/IK preserved')
+print('PASS: Citizen, Combine, male/female player and ragdoll animation references; actor attachments/IK preserved')

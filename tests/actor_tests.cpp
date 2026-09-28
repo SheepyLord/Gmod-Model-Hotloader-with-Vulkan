@@ -126,6 +126,38 @@ int main(int argc,char** argv){try{
   }else{auto stem=actor.path.substr(0,actor.path.size()-4);auto& vvd=package.at(stem+".vvd");if(read<int>(vvd,16)<=0)throw std::runtime_error("Arms have no native vertices");}
   auto archive=makeGma(package,"test");validateSharedFile("rigs/"+actor.key+"/carrier.gma",archive);
  }
+ // A ragdoll given an animation reference keeps its bind, bodies, spawn pose and
+ // Reference, and includes the stock player and Citizen packs of its style.
+ for(std::string gender:{"female","male"}){
+  auto animated=fitRig(*model,{{"role","ragdoll"},{"gender",gender},{"animationSource","models/reference.mdl"},{"animationReference",reference}});
+  if(animated.key==rag.key)throw std::runtime_error("Animated ragdoll aliases the plain ragdoll carrier");
+  if(animated.manifest.contains("meshYaw")||animated.manifest.contains("actorOrigin"))throw std::runtime_error("Animated ragdoll changed its mesh bind");
+  for(size_t i=0;i<animated.bones.size();i++)if((animated.bones[i].rest.getOrigin()-rag.bones[i].rest.getOrigin()).length()>1e-5f||btFabs(animated.bones[i].rest.getRotation().dot(rag.bones[i].rest.getRotation()))<.99999f)throw std::runtime_error("Animated ragdoll moved a fitted bone");
+  for(size_t i=0;i<animated.bodies.size();i++)if(animated.bodies[i].hull!=rag.bodies[i].hull)throw std::runtime_error("Animated ragdoll changed a collision hull");
+  std::string player=gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl",citizen="models/humans/"+gender+"_";
+  Json includes={player,citizen+"shared.mdl",citizen+"ss.mdl",citizen+"gestures.mdl",citizen+"postures.mdl"};
+  if(animated.manifest["animation"]["includes"]!=includes||animated.manifest["animation"]["profile"]!="ragdoll_"+gender)throw std::runtime_error("Animated ragdoll does not include the stock player and Citizen packs");
+  auto package=carrierFiles(animated);auto& mdl=package.at(animated.path);auto parsed=readAnimationModel(mdl);
+  if(read<int>(mdl,188)!=4||parsed["includes"]!=includes||parsed["ikChains"]!=reference["ikChains"])throw std::runtime_error("Animated ragdoll header lacks its sequences, includes or IK chains");
+  auto bones=read<int>(mdl,160),anims=read<int>(mdl,184);
+  for(int sequence=0;sequence<3;sequence++){
+   size_t a=anims+sequence*100+read<int>(mdl,anims+sequence*100+56),d=anims+300+read<int>(mdl,anims+300+56);
+   std::vector<btTransform> world(animated.bones.size());
+   for(size_t i=0;i<animated.bones.size();i++){
+    auto [position,q]=decode(mdl,bones+i*216,a,false);auto [offset,rotation]=decode(mdl,bones+i*216,d,true);auto& bone=animated.bones[i];auto expected=bone.parent<0?bone.rest:animated.bones[bone.parent].rest.inverse()*bone.rest;
+    btTransform local(q,position);world[i]=bone.parent<0?local:world[bone.parent]*local;
+    // The server builds the ragdoll's bodies and joints from sequence 0 without
+    // the client-only proportion layer: there its physics bones land on their bind.
+    if(sequence==0&&bone.physics>=0){if((world[i].getOrigin()-bone.rest.getOrigin()).length()>.003||btFabs(world[i].getRotation().dot(bone.rest.getRotation()))<.99999f)throw std::runtime_error("The server would build the animated ragdoll's bodies off its bind");}
+    // Clients pose its other bones, and every bone of Reference, with the layer.
+    else if((position+offset-expected.getOrigin()).length()>.003||btFabs((rotation*q).dot(expected.getRotation()))<.99999f)throw std::runtime_error("Animated ragdoll's spawn or Reference pose is not its bind");
+    a+=read<int16_t>(mdl,a+2);d+=read<int16_t>(mdl,d+2);
+   }
+  }
+  validateSharedFile("rigs/"+animated.key+"/carrier.gma",makeGma(package,"test"));
+ }
+ // Without a reference a ragdoll is the plain carrier it always was.
+ if(fitRig(*model,{{"role","ragdoll"},{"gender","female"}}).key!=rag.key)throw std::runtime_error("A ragdoll without an animation reference changed identity");
  bool rejected=false;try{sharedPath("cache","../lua/autorun/payload.lua");}catch(...){rejected=true;}if(!rejected)throw std::runtime_error("Unsafe transfer path accepted");
  rejected=false;try{validateSharedFile("rigs/test/carrier.gma",makeGma({{"lua/autorun/payload.lua",{'x'}}},"bad"));}catch(...){rejected=true;}if(!rejected)throw std::runtime_error("Executable archive accepted");
  auto frame=std::make_shared<SceneFrame>();frame->sequence=9;frame->timestamp=1;auto geometry=std::make_shared<SceneGeometry>();geometry->kind=SceneGeometry::Sphere;geometry->radius=1;geometry->minimum={-1,-1,-1};geometry->maximum={1,1,1};SceneObject object;object.id=1;object.geometry=geometry;frame->objects.push_back(object);publishScene(frame);

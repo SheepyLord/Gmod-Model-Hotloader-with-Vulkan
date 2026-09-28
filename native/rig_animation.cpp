@@ -35,20 +35,28 @@ Json readAnimationModel(std::span<const unsigned char> bytes){
 }
 void configureAnimations(Rig& r,const Json& options){
  std::string role=options.value("role",std::string("ragdoll"));if(role!="ragdoll"&&role!="citizen"&&role!="combine"&&role!="player"&&role!="arms")throw std::runtime_error("Unknown actor variant");r.manifest["role"]=role;
- if(role=="ragdoll")return;
+ // A ragdoll keeps its bind and spawn pose. Given an animation reference it also
+ // includes the player and Citizen animation packs of that style (below), so
+ // animation tools can pose it with their sequences.
+ const bool ragdoll=role=="ragdoll";
+ if(ragdoll&&!options.contains("animationReference"))return;
  // Source's human/player animation REFERENCE faces -Y. Its animated idle
  // already turns that reference to the entity's +X forward. Using +X here
  // applies that turn twice and makes actors walk/fire sideways. This is
  // SCMI's reference basis; ragdolls retain their established mesh convention.
- r.manifest["meshYaw"]=90;r.manifest["actorOrigin"]=role=="arms"?0.f:2.4f;
- auto facing=rigMeshBind(r);
- for(size_t i=0;i<r.bones.size();i++){r.bones[i].rest=facing*r.bones[i].rest;r.manifest["bones"][i].update(pose(r.bones[i].rest));}
+ // (Included animations place every bone, so a ragdoll's own facing does not
+ // change how they look; only its Reference and spawn pose follow the bind.)
+ if(!ragdoll){
+  r.manifest["meshYaw"]=90;r.manifest["actorOrigin"]=role=="arms"?0.f:2.4f;
+  auto facing=rigMeshBind(r);
+  for(size_t i=0;i<r.bones.size();i++){r.bones[i].rest=facing*r.bones[i].rest;r.manifest["bones"][i].update(pose(r.bones[i].rest));}
+ }
  auto donor=options.at("animationReference");auto gender=options.value("gender",std::string("female"));if(gender!="female"&&gender!="male")throw std::runtime_error("Unknown player animation profile");
  std::map<std::string,Json> named;for(auto& b:donor.at("bones"))named.emplace(b.at("name").get<std::string>(),b);
  Json reference=Json::array();int matched=0;
  std::vector<btTransform> donorGlobal;std::map<std::string,btTransform> globals;
  for(auto& b:donor.at("bones")){int parent=b.at("parent");if(parent>=int(donorGlobal.size()))throw std::runtime_error("Reference bones are not in parent order");auto local=transform(b);auto g=parent<0?local:donorGlobal[parent]*local;donorGlobal.push_back(g);globals.emplace(b.at("name").get<std::string>(),g);}
- if(role!="arms"){
+ if(role!="arms"&&!ragdoll){
   // The skin/physics bind must keep its fitted limb frames. Source's IK pass
   // aligns rotations to the fitted segments even in Reference; replacing the
   // bind with an animation pack's generic axes creates a second deformation.
@@ -76,6 +84,16 @@ void configureAnimations(Rig& r,const Json& options){
  Json includes=donor.value("includes",Json::array());
  if(role=="player"){includes=Json::array();std::string prefix=gender=="male"?"models/m_":"models/f_";for(auto suffix:{"anm","gst","pst","shd","ss"})includes.push_back(prefix+suffix+".mdl");}
  else if(role=="arms")includes=Json::array();
+ else if(ragdoll){
+  // The stock player pack and the Citizen packs of the style. Their skeletons are
+  // the same reference (f_anm/female_shared, m_anm/male_shared) with the same IK
+  // chain order, so one proportion layer and chain list serve both. Only files
+  // every installation has: a missing include adds an error-model sequence, and
+  // server and clients would disagree on sequence indices.
+  includes=Json::array({gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl"});
+  std::string citizen=gender=="male"?"models/humans/male_":"models/humans/female_";
+  for(auto pack:{"shared","ss","gestures","postures"})includes.push_back(citizen+pack+".mdl");
+ }
  else if(includes.empty())throw std::runtime_error("NPC profile has no animation-only include models");
  // Include animation packs, never the donor's visible/physical model. Its
  // ragdoll metadata must not participate in the fitted carrier's bone map.
@@ -110,15 +128,30 @@ void writeAnimations(StudioWriter& w,const Rig& r,size_t bones,const btVector3& 
   w.vec(bones+i*216+72,{.001f,.001f,.001f});w.vec(bones+i*216+84,{.0001f,.0001f,.0001f});
  }
  displayReference=reference;
+ // The server builds a ragdoll's physics (bodies and joints) from its first
+ // sequence and applies no autoplay layer there; only clients add the
+ // proportion layer. In a ragdoll carrier's first sequence the other bones keep
+ // the reference that layer corrects (clients pose them from the sequence), and
+ // each physics bone is placed so that, below those uncorrected parents, it
+ // lands on its bind.
+ std::vector<btTransform> spawn=reference;
+ if(animated&&r.manifest["role"]=="ragdoll"){
+  std::vector<btTransform> world(r.bones.size());
+  for(size_t i=0;i<r.bones.size();i++){
+   auto& b=r.bones[i];if(b.physics>=0)spawn[i]=b.parent<0?b.rest:world[b.parent].inverse()*b.rest;
+   world[i]=b.parent<0?spawn[i]:world[b.parent]*spawn[i];
+  }
+ }
  for(size_t i=0;i<r.bones.size();i++){
   auto& b=r.bones[i];auto bind=b.parent<0?b.rest:r.bones[b.parent].rest.inverse()*b.rest;
-  if(animated&&r.manifest["role"]!="arms"&&b.parent<0){
+  // A ragdoll's Reference stays its bind, as before it had animations.
+  if(animated&&r.manifest["role"]!="arms"&&r.manifest["role"]!="ragdoll"&&b.parent<0){
    // Included idles turn their animation reference by a quarter turn. Our
    // explicit tool reference must already face the entity's +X direction.
    btTransform turn(btQuaternion(btVector3(0,0,1),SIMD_HALF_PI),btVector3(0,0,0));auto desired=turn*bind;
    displayReference[i]=btTransform(delta[i].getRotation().inverse()*desired.getRotation(),desired.getOrigin()-delta[i].getOrigin());
   }
-  auto maximum=delta[i].getOrigin().absolute();maximum.setMax((displayReference[i].getOrigin()-bind.getOrigin()).absolute());
+  auto maximum=delta[i].getOrigin().absolute();maximum.setMax((displayReference[i].getOrigin()-bind.getOrigin()).absolute());maximum.setMax((spawn[i].getOrigin()-bind.getOrigin()).absolute());
   btVector3 scale;for(int j=0;j<3;j++)scale[j]=std::max(.001f,maximum[j]/32000.f);positionScale.push_back(scale);w.vec(bones+i*216+72,scale);
  }
  const char* names[]={"ragdoll","Reference","Referencef","proportions"};
@@ -127,7 +160,7 @@ void writeAnimations(StudioWriter& w,const Rig& r,size_t bones,const btVector3& 
   size_t first=0,previous=0;
   for(size_t i=0;i<r.bones.size();i++){
    auto& b=r.bones[i];auto bind=b.parent<0?b.rest:r.bones[b.parent].rest.inverse()*b.rest;
-   auto& ref=(index==1||index==2)?displayReference[i]:reference[i];
+   const btTransform ref=(index==1||index==2)?displayReference[i]:index==0?spawn[i]:reference[i];
    auto pos=correction?delta[i].getOrigin():ref.getOrigin()-bind.getOrigin();
    auto angles=correction?euler(delta[i].getRotation()):euler(ref.getRotation())-euler(bind.getRotation());
    for(int j=0;j<3;j++){while(angles[j]>SIMD_PI)angles[j]-=SIMD_2_PI;while(angles[j]<-SIMD_PI)angles[j]+=SIMD_2_PI;}

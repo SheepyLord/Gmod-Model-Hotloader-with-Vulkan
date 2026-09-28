@@ -185,29 +185,43 @@ if SERVER then
   end)
  end)
  local references={}
- function mmdhl.ActorOptions(options)
-  options=table.Copy(options or {}) local role=options.role or 'ragdoll'
-  if options.armsParts~=nil then options.armsParts=mmdhl.CleanArmsParts(options.armsParts) end
-  if role=='ragdoll' then return options end
-  local profile=mmdhl.actorProfiles[role] if not profile then return nil,L'actors.error.unknown_type' end
-  options.gender=options.gender=='male' and 'male' or 'female'
-  local source=profile[options.gender]
+ -- The model's metadata; nil and no error when the game lacks the file.
+ local function readReference(source)
   if not references[source] then
-   local bytes=file.Read(source,'GAME') if not bytes then return nil,L('actors.error.missing_animation_reference',{path=source}) end
+   local bytes=file.Read(source,'GAME') if not bytes then return nil end
    local raw,err=native.ReadAnimationModel(bytes) if not raw then return nil,err end
    references[source]=util.JSONToTable(raw)
   end
-  options.animationSource=source options.animationReference=table.Copy(references[source])
-  local animationProfile=mmdhl.actorAnimationReferences[role]
+  return references[source]
+ end
+ function mmdhl.ActorOptions(options)
+  options=table.Copy(options or {}) local role=options.role or 'ragdoll'
+  if options.armsParts~=nil then options.armsParts=mmdhl.CleanArmsParts(options.armsParts) end
+  -- A ragdoll takes the Citizen reference: its carrier then also includes the
+  -- player and Citizen animation packs of the chosen style (native
+  -- configureAnimations), so animation tools can pose it with their sequences.
+  local profileRole=role=='ragdoll' and 'citizen' or role
+  local profile=mmdhl.actorProfiles[profileRole] if not profile then return nil,L'actors.error.unknown_type' end
+  options.gender=options.gender=='male' and 'male' or 'female'
+  local source=profile[options.gender]
+  local animationProfile=mmdhl.actorAnimationReferences[profileRole]
   local referenceSource=animationProfile and animationProfile[options.gender] or source
-  if not references[referenceSource] then
-   local bytes=file.Read(referenceSource,'GAME') if not bytes then return nil,L('actors.error.missing_animation_skeleton',{path=referenceSource}) end
-   local raw,err=native.ReadAnimationModel(bytes) if not raw then return nil,err end
-   references[referenceSource]=util.JSONToTable(raw)
+  local donor,err=readReference(source)
+  if not donor and not err then err=L('actors.error.missing_animation_reference',{path=source}) end
+  local skeleton
+  if donor then
+   skeleton,err=readReference(referenceSource)
+   if not skeleton and not err then err=L('actors.error.missing_animation_skeleton',{path=referenceSource}) end
   end
-  options.animationReference.bones=references[referenceSource].bones
+  if not skeleton then
+   -- The animations are an addition to a ragdoll: without them it spawns as before.
+   if role=='ragdoll' then options.animationSource=nil options.animationReference=nil return options end
+   return nil,err
+  end
+  options.animationSource=source options.animationReference=table.Copy(donor)
+  options.animationReference.bones=skeleton.bones
   options.animationReference.referenceSource=referenceSource
-  options.animationReference.referenceHash=references[referenceSource].sha256
+  options.animationReference.referenceHash=skeleton.sha256
   return options
  end
  -- The registration message alone, for catalogs; PublishActor also registers and approves.

@@ -36,8 +36,9 @@ local variants={}
 local function rigForClass(rig,class,state)
  local role=class=='npc_citizen' and 'citizen' or class=='npc_combine_s' and 'combine'
  if not role or rig.role==role then return rig,optionsFor(rig,state) end
- -- A ragdoll carrier intentionally has no locomotion/combat animation packs.
- -- Convert the model before the caller's NPC:Spawn(), retaining its real class.
+ -- A ragdoll carrier keeps the PMX bind facing -X (its packs are there for
+ -- animation tools); an NPC needs its actor variant's Source reference facing
+ -- and profile. Convert the model before the caller's NPC:Spawn(), retaining its real class.
  local gender=(state and state.options and state.options.gender) or
   (rig.animation and rig.animation.profile:find('_male$') and 'male') or 'female'
  local key=rig.key..':'..role..':'..gender
