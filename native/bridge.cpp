@@ -11,6 +11,9 @@
 #include "mathlib/polyhedron.h"
 namespace mmd {
 namespace {
+// VPhysics031 methods by slot, at the running layout (see appSystemShift):
+// GetActiveEnvironmentByIndex and FindCollisionSet.
+size_t physicsShift=0;size_t activeEnvironmentSlot(){return 11-physicsShift;}size_t collisionSetSlot(){return 15-physicsShift;}
 HMODULE module=nullptr;uintptr_t base=0;void* physics=nullptr;void* environment=nullptr;void* collision=nullptr;std::string fingerprint;
 // objectTable / objectPosition ABI guards as addresses (every scene object is checked each tick).
 void* objectTableGuard=nullptr;void* objectPositionGuard=nullptr;
@@ -23,9 +26,9 @@ V subtract(V a,V b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
 bool finite(V v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
 template<typename R,typename... Args> R call(void* object,size_t slot,Args... args){auto table=*reinterpret_cast<void***>(object);auto f=reinterpret_cast<R(*)(void*,Args...)>(table[slot]);return f(object,args...);}
 uintptr_t rva(void* object,size_t slot){return reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(object))[slot])-base;}
-void initialize(){if(physics){auto current=call<void*>(physics,11,0);if(current==environment&&current)return;clearPhysicsBridge();}module=GetModuleHandleW(L"vphysics.dll");if(!module)throw std::runtime_error("VPhysics is not loaded");wchar_t filename[32768];GetModuleFileNameW(module,filename,32768);fingerprint=requireGameBinary(L"vphysics.dll")["observedSHA256"].get<std::string>();
+void initialize(){if(physics){auto current=call<void*>(physics,activeEnvironmentSlot(),0);if(current==environment&&current)return;clearPhysicsBridge();}module=GetModuleHandleW(L"vphysics.dll");if(!module)throw std::runtime_error("VPhysics is not loaded");wchar_t filename[32768];GetModuleFileNameW(module,filename,32768);fingerprint=requireGameBinary(L"vphysics.dll")["observedSHA256"].get<std::string>();
 
-    base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));physics=factory("VPhysics031",nullptr);collision=factory("VPhysicsCollision007",nullptr);if(!physics||!collision)throw std::runtime_error("Physics factory unavailable");requireOwnedSlots(physics,L"vphysics.dll",{11,15});requireOwnedSlots(collision,L"vphysics.dll",{8,14,16,41,42,43,44});requireAbiRva(L"vphysics.dll","physics",rva(physics,11));environment=call<void*>(physics,11,0);if(!environment||!matchesAbiRva(L"vphysics.dll","environment",rva(environment,47))){environment=nullptr;throw std::runtime_error("Physics environment not initialized or wrong ABI");}
+    base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));physics=factory("VPhysics031",nullptr);collision=factory("VPhysicsCollision007",nullptr);if(!physics||!collision)throw std::runtime_error("Physics factory unavailable");physicsShift=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength);requireOwnedSlots(physics,L"vphysics.dll",{activeEnvironmentSlot(),collisionSetSlot()});requireOwnedSlots(collision,L"vphysics.dll",{8,14,16,41,42,43,44});requireAbiRva(L"vphysics.dll","physics",rva(physics,activeEnvironmentSlot()));environment=call<void*>(physics,activeEnvironmentSlot(),0);if(!environment||!matchesAbiRva(L"vphysics.dll","environment",rva(environment,47))){environment=nullptr;throw std::runtime_error("Physics environment not initialized or wrong ABI");}
     // An unverified game build has no pinned object guards: checked() learns them from the first scene object.
     const auto& guards=requireGameBinary(L"vphysics.dll").at("guards");auto pinned=[&](const char* guard)->void*{return guards.contains(guard)?reinterpret_cast<void*>(base+guards.at(guard).get<uintptr_t>()):nullptr;};
     objectTableGuard=pinned("objectTable");objectPositionGuard=pinned("objectPosition");
@@ -40,7 +43,7 @@ Json probeCarrierCollisions(unsigned modelIndex){
     initialize();if(modelIndex==0||modelIndex>65535)throw std::runtime_error("Invalid model index");
     // Read the engine's actual parsed collision set, not our serialized intent.
     // VPhysics031::FindCollisionSet and IPhysicsCollisionSet::ShouldCollide.
-    auto set=call<void*>(physics,15,modelIndex);if(!set)throw std::runtime_error("No native collision set for this model");
+    auto set=call<void*>(physics,collisionSetSlot(),modelIndex);if(!set)throw std::runtime_error("No native collision set for this model");
     Json pairs=Json::array();for(int a=0;a<18;a++)for(int b=a+1;b<18;b++)if(call<bool>(set,2,a,b))pairs.push_back({a,b});
     return {{"modelIndex",modelIndex},{"enabledPairs",pairs},{"count",pairs.size()}};
 }

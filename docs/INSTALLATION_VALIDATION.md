@@ -84,19 +84,25 @@ the compiled `source-win64-v1` ABI family: executable and read-only PE sections
 A library that matches a profile is reported as `tested` or `abi-evidence`; any
 other build is `unverified`.
 
-An unverified build keeps model rendering (client) or physics (server) off, with
-the message "This Garry's Mod build is not supported yet", which **Dismiss** can
-hide. Imports, the library and every other feature keep working. 2.1.0-native.6
-itself would run unverified builds behind runtime checks (interface versions,
-slot ownership, RTTI class names, guards learned from their first observation),
-but the default branch's 64-bit build of 2026-09-17 showed those checks are not
-enough: its `IAppSystem` has four fewer methods than the x86-64 branch's, so the
-unchanged `VMaterialSystem080` and `VPhysics031` interfaces have every later
-method four slots lower. The compiled `IMaterialSystem::GetRenderContext` call
-landed on a function that waits for a render job, and the model preview hung the
-game. The Lua therefore disables those features for unverified builds; supporting
-another build needs its profile and, when its layout differs, native code built
-for it. Native releases up to 2.1.0-native.5 reject unverified builds themselves.
+An unverified build still runs: every feature stays on, and the player gets one
+warning ("This Garry's Mod build has not been tested with this native release"),
+which disables nothing and which **Dismiss** hides until the builds change. Our own
+code never stops itself over a game build; only a real failure (a missing
+interface, a slot another module replaced) turns the affected feature off.
+
+Game updates can still change what the compiled modules call. The default branch's
+64-bit build of 2026-09-17 keeps the `VMaterialSystem080` and `VPhysics031`
+version strings but lacks the four newer `IAppSystem` methods of the x86-64 build
+these modules are compiled against, so every later method of those two interfaces
+sits four slots lower (`CMaterialSystem`'s vtable has 147 entries instead of 151,
+the `VPhysics031` object's 13 instead of 17). 2.1.0-native.6 called the wrong
+functions there: `GetRenderContext` landed on a method that waits for a render job,
+and the model preview hung the game. From 2.1.0-native.7 the modules measure those
+vtables at startup and call `IMaterialSystem`/`IPhysics` methods at the running
+layout's slots: the compiled slot of each method, found by calling it on a probe
+object, less the measured shift (reported as `layout` in Copy diagnostics). A
+change in the middle of an interface cannot be recognized this way; it needs a
+native update.
 
 Every build also passes the runtime checks before private calls or hooks: named
 factories and interface versions, and the ownership of each used vtable slot by

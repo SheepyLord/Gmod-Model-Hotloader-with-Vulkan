@@ -1,9 +1,9 @@
 """Game builds without a matching profile: installation.lua runs against a simulated
 game and a native module whose compatibility report marks libraries "unverified"
-(2.1.0-native.6 reports them instead of refusing). Rendering and physics stay off
-for them, since the default branch's 64-bit build of 2026-09-17 shifted the
-IMaterialSystem/IPhysics slots and the model preview hung; the reason a feature is
-off is never a warning the player accepted."""
+(native releases from 2.1.0-native.6 report them instead of refusing). They keep
+running: rendering and physics stay on, with one warning that disables nothing and
+that Dismiss hides. Neither an accepted warning nor a plain warning is ever given
+as the reason a feature is off."""
 from pathlib import Path
 import json, sys
 from lupa import LuaRuntime
@@ -17,7 +17,7 @@ policy = lua_policy(ROOT / 'addon/lua/mmdhl/native_policy.lua')
 release = policy['releases'][policy['recommended']]
 
 
-def session(server, libraries, accepted=None, loaded_path=None):
+def session(server, libraries, accepted=None, loaded_path=None, ready=True, issues=()):
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(f'unpack=table.unpack; mmdhl={{}}; SERVER={"true" if server else "false"} CLIENT=not SERVER')
     attach(lua); lua.execute('L=mmdhl.L')
@@ -41,7 +41,7 @@ def session(server, libraries, accepted=None, loaded_path=None):
     runtime = dict(module, size=release['files']['runtime']['size'], sha256=release['files']['runtime']['sha256'],
                    path=loaded_path or game + 'bin\\win64\\mmdhl_runtime_win64.dll', expectedPath=game + 'bin\\win64\\mmdhl_runtime_win64.dll')
     g.PY_INFO = json.dumps(dict(module=module, runtime=runtime))
-    g.PY_REPORT = json.dumps(dict(ready=True, pending=False, issues=[], libraries=[dict(name=n, sha256='0' * 64, match=m) for n, m in libraries]))
+    g.PY_REPORT = json.dumps(dict(ready=ready, pending=False, issues=list(issues), libraries=[dict(name=n, sha256='0' * 64, match=m) for n, m in libraries]))
     lua.execute(r'''
 util={JSONToTable=function(s) return PY_DECODE(s) end,TableToJSON=function(t) return PY_ENCODE(t) end,AddNetworkString=function() end}
 file={}
@@ -72,24 +72,29 @@ function require() mmdhl_native={GetInstallationInfo=function() return PY_INFO e
 
 
 client = ['engine.dll', 'client.dll', 'materialsystem.dll', 'shaderapidx9.dll', 'stdshader_dx9.dll']
-# Audited builds: rendering on, no game issue.
+warnings = lambda s: [v for v in s.issues.values() if v.code == 'game_unverified']
+# Audited builds: rendering on, no warning.
 _, M, s = session(False, [(n, 'tested') for n in client])
-assert s.features.core and s.features.rendering and not any(v.code == 'game_incompatible' for v in s.issues.values())
-# One unverified library: rendering off with one message naming it; the core and imports stay on.
+assert s.features.core and s.features.rendering and not warnings(s)
+# An unverified library: rendering stays on, with one warning naming it.
 _, M, s = session(False, [(n, 'unverified' if n == 'materialsystem.dll' else 'abi-evidence') for n in client])
-issues = [v for v in s.issues.values() if v.code == 'game_incompatible']
-assert s.features.core and not s.features.rendering and len(issues) == 1 and issues[0].feature == 'rendering'
-assert 'materialsystem.dll' in M.Localize(issues[0].message) and 'engine.dll' not in M.Localize(issues[0].message)
-ok, why = M.FeatureAvailable('rendering')
-assert not ok and why == issues[0].message
-# The server: an unverified vphysics.dll keeps physics (spawning) off.
+w = warnings(s)
+assert s.features.core and s.features.rendering and len(w) == 1 and w[0].warning and not s.blocked and not s.unverified
+assert 'materialsystem.dll' in M.Localize(w[0].message) and 'engine.dll' not in M.Localize(w[0].message)
+assert M.FeatureAvailable('rendering') is True
+# The server: an unverified vphysics.dll keeps physics (spawning) on.
 _, M, s = session(True, [('vphysics.dll', 'unverified')])
-assert s.features.core and not s.features.physics and any(v.code == 'game_incompatible' and v.feature == 'physics' for v in s.issues.values())
-# A warning the player accepted (a runtime loaded elsewhere) is never given as the reason.
-_, M, first = session(False, [(n, 'unverified') for n in client], loaded_path='C:\\game\\mmdhl_runtime_win64.dll')
-fingerprint = first.fingerprint
-_, M, s = session(False, [(n, 'unverified') for n in client], accepted=json.dumps({'client': fingerprint}), loaded_path='C:\\game\\mmdhl_runtime_win64.dll')
-assert s.features.core and any(v.code == 'loaded_mismatch' and v.accepted for v in s.issues.values())
+assert s.features.core and s.features.physics and len(warnings(s)) == 1 and M.FeatureAvailable('physics') is True
+# A real failure (a missing interface) still names itself, never the warning beside it.
+problem = dict(code='game_incompatible', component='client.dll', message='Required game interface unavailable: VClientEntityList003')
+_, M, s = session(False, [(n, 'unverified') for n in client], ready=False, issues=[problem])
 ok, why = M.FeatureAvailable('rendering')
-assert not ok and 'engine.dll' in M.Localize(why), M.Localize(why)
-print('PASS: unverified game builds keep rendering and physics off with one message; audited builds render; accepted warnings are never the reason')
+assert not s.features.rendering and not ok and why == problem['message'], why
+# Nor is a warning the player accepted (a runtime loaded elsewhere).
+elsewhere = r'C:\game\mmdhl_runtime_win64.dll'
+_, M, first = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere)
+_, M, s = session(False, [(n, 'tested') for n in client], accepted=json.dumps({'client': first.fingerprint}), loaded_path=elsewhere, ready=False, issues=[problem])
+assert any(v.code == 'loaded_mismatch' and v.accepted for v in s.issues.values())
+ok, why = M.FeatureAvailable('rendering')
+assert not ok and why == problem['message'], why
+print('PASS: unverified game builds keep running with one dismissible warning; real failures, not warnings, are the reason a feature is off')

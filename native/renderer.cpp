@@ -54,6 +54,22 @@ std::string modelAnimationDiagnostics(const std::string& path){
     return Json({{"autoplay",ids},{"sequences",sequences}}).dump();
 }
 static IMaterialSystem* materials=nullptr;
+// How many slots lower the running game has IMaterialSystem's methods (appSystemShift).
+static size_t materialShift=0;
+// Every IMaterialSystem call goes to the running layout's slot: the method's compiled
+// slot (virtualSlot) less materialShift. Methods returning scalars only.
+template<class R,class... A> static R callMaterials(size_t compiled,A... args){
+    auto table=*reinterpret_cast<void* const* const*>(materials);
+    return reinterpret_cast<R(*)(IMaterialSystem*,A...)>(table[compiled-materialShift])(materials,args...);
+}
+static IMatRenderContext* renderContext(){
+    static const size_t slot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetRenderContext();});
+    return callMaterials<IMatRenderContext*>(slot);
+}
+static IMaterial* sourceMaterial(const char* name,const char* group){
+    static const size_t slot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->FindMaterial("","",false,nullptr);});
+    return callMaterials<IMaterial*>(slot,name,group,false,static_cast<const char*>(nullptr));
+}
 static bool remixFixedFunction=false;
 static std::string status="not initialized";
 struct CachedMesh {std::weak_ptr<const Snapshot> snapshot;uint64_t geometry=0;std::vector<IMesh*> meshes;size_t bytes=0;};
@@ -163,7 +179,7 @@ static IMaterial* findMaterial(const std::string& name){
     // module's first draw may arrive here before anything else resolved the
     // material system.
     initialize();
-    auto material=materials->FindMaterial(name.c_str(),"Model textures",false);if(!material||material->IsErrorMaterial())throw std::runtime_error("Character model render material missing: "+name);
+    auto material=sourceMaterial(name.c_str(),"Model textures");if(!material||material->IsErrorMaterial())throw std::runtime_error("Character model render material missing: "+name);
     material->IncrementReferenceCount();materialCache.emplace(name,material);return material;
 }
 // The Lua renderer's translucency test for override materials: Source keeps
@@ -182,7 +198,7 @@ void pruneRenderCache(bool all){
     std::unordered_map<uint64_t,uint64_t> sequences;for(auto& [id,owner]:world().instances)sequences[id]=owner->snapshot?owner->snapshot->sequence:0;
     const bool vertexCache=nativeVertexCache,skinning=gpuSkinning;
     submit([all,vertexCache,skinning,sequences=std::move(sequences)]{
-        CMatRenderContextPtr context(materials);
+        CMatRenderContextPtr context(renderContext());
         auto stale=[&](uint64_t id,uint64_t lastSequence){auto owner=sequences.find(id);return owner==sequences.end()||owner->second>lastSequence+4;};
         for(auto it=lightMasks.begin();it!=lightMasks.end();)if(all||it->second.snapshot.expired())it=lightMasks.erase(it);else ++it;
         for(auto it=cache.begin();it!=cache.end();)if(all||it->second.snapshot.expired()){
@@ -224,7 +240,7 @@ static void initialize(){
         requireGameBinary(library);
     }
     auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));if(!factory)throw std::runtime_error("Material factory unavailable");
-    materials=static_cast<IMaterialSystem*>(factory("VMaterialSystem080",nullptr));if(!materials)throw std::runtime_error("VMaterialSystem080 unavailable");status="VMaterialSystem080/native dynamic mesh";
+    materials=static_cast<IMaterialSystem*>(factory("VMaterialSystem080",nullptr));if(!materials)throw std::runtime_error("VMaterialSystem080 unavailable");materialShift=appSystemShift(materials,L"materialsystem.dll",MaterialSystemVtableLength);status=materialShift?"VMaterialSystem080 (default-branch layout)/native dynamic mesh":"VMaterialSystem080/native dynamic mesh";
     });
 }
 std::string rendererStatus(){std::lock_guard lock(renderMutex);return status;}
@@ -232,7 +248,7 @@ static std::array<LightDesc_t,4> lastSourceLights{};
 static int lastSourceLightCount=0;
 static Vector lastSourceLightOrigin(0,0,0);
 std::string renderLightingState(){
-    initialize();CMatRenderContextPtr context(materials);Vector eye;
+    initialize();CMatRenderContextPtr context(renderContext());Vector eye;
     context->GetWorldSpaceCameraPosition(&eye);Json lights=Json::array();
     for(int i=0;i<lastSourceLightCount;i++){
         const auto& l=lastSourceLights[i];
@@ -291,7 +307,7 @@ void setupSourceLighting(float x,float y,float z){
     auto slots=*reinterpret_cast<void***>(lightingTools);
     int count=reinterpret_cast<int(*)(void*,const Vector&,Vector*,int,LightDesc_t*)>(slots[77])(lightingTools,center,ambient,4,lights);
     if(count<0||count>4)throw std::runtime_error("Invalid Source map-light count");
-    initialize();CMatRenderContextPtr context(materials);
+    initialize();CMatRenderContextPtr context(renderContext());
     for(int i=0;i<4;i++)context->SetLight(i,lights[i]);
     std::memcpy(lastSourceLights.data(),lights,sizeof(lights));lastSourceLightCount=count;lastSourceLightOrigin=center;
 }
@@ -331,11 +347,11 @@ void registerSourceShadow(int entity,uint64_t instance,const std::vector<std::st
     auto renderable=client->GetClientRenderable();
     initialize();
     for(auto& name:names){
-        auto material=materials->FindMaterial(name.c_str(),"Model textures",false);bool found=false;auto original=material->FindVar("$translucent_material",&found,false);
+        auto material=sourceMaterial(name.c_str(),"Model textures");bool found=false;auto original=material->FindVar("$translucent_material",&found,false);
         // CreateMaterial supplies strings, but ShadowBuild requires a typed
         // IMaterial reference. Leaving it as a string loses texture alpha and
         // emits one engine warning per draw, causing severe frame-time spikes.
-        if(found&&original->GetType()!=MATERIAL_VAR_TYPE_MATERIAL){auto source=materials->FindMaterial(original->GetStringValue(),"Model textures",false);if(!source||source->IsErrorMaterial())throw std::runtime_error("Shadow source material unavailable");original->SetMaterialValue(source);}
+        if(found&&original->GetType()!=MATERIAL_VAR_TYPE_MATERIAL){auto source=sourceMaterial(original->GetStringValue(),"Model textures");if(!source||source->IsErrorMaterial())throw std::runtime_error("Shadow source material unavailable");original->SetMaterialValue(source);}
     }
     installSourceShadows();SourceShadow binding{&world(),entity,instance,names,alpha,{}};
     for(size_t i=0;i<names.size();i++){auto group=std::find_if(binding.groups.begin(),binding.groups.end(),[&](const auto& g){return g.first==names[i];});if(group==binding.groups.end()){binding.groups.push_back({names[i],{}});group=binding.groups.end()-1;}group->second.push_back(unsigned(i));}
@@ -431,7 +447,7 @@ static bool drawsDirectly(IMatRenderContext* context){return contextClass(contex
 // the hardware one, so buffers are created, filled and drawn directly as in
 // mat_queue_mode 0. Otherwise the work runs now. Returns true when queued.
 static bool submit(std::function<void()> work){
-    initialize();CMatRenderContextPtr context(materials);
+    initialize();CMatRenderContextPtr context(renderContext());
     if(drawsDirectly(context)){std::lock_guard lock(renderMutex);work();return false;}
     if(!recordsForRenderThread(context))throw std::runtime_error("Unrecognized Source render context");
     auto list=reinterpret_cast<SourceCallList*>(context->GetCallQueue());
@@ -443,8 +459,9 @@ static bool submit(std::function<void()> work){
 static Json queueStats(){
     Json out={{"outstandingCalls",outstandingCalls.load()},{"queuedCallsTotal",queuedCallsTotal.load()}};
     // The calling thread's context, as submit() classifies it.
-    if(materials){CMatRenderContextPtr context(materials);const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"materialsystem.dll"));
-        out["threadMode"]=int(materials->GetThreadMode());out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
+    if(materials){CMatRenderContextPtr context(renderContext());const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"materialsystem.dll"));
+        static const size_t threadModeSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetThreadMode();});
+        out["threadMode"]=int(callMaterials<MaterialThreadMode_t>(threadModeSlot));out["materialSlotShift"]=materialShift;out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
         auto rva=[&](void* table){return table?reinterpret_cast<uintptr_t>(table)-base:0;};
         out["contextClass"]=rttiClass(static_cast<IMatRenderContext*>(context),L"materialsystem.dll");
         out["queuedContextRva"]=rva(queuedContextTable.load());out["hardwareContextRva"]=rva(hardwareContextTable.load());
@@ -458,7 +475,13 @@ static Json queueStats(){
 // Runs every call still queued for the render thread: IMaterialSystem::Lock
 // waits for the render thread and executes the calls recorded so far. Needed
 // before anything a queued draw uses goes away (worker pool, this module).
-void drainRenderQueue(){if(materials&&outstandingCalls.load()>0){auto lock=materials->Lock();materials->Unlock(lock);}}
+void drainRenderQueue(){
+    if(!materials||outstandingCalls.load()<=0)return;
+    using Lock=decltype(std::declval<IMaterialSystem*>()->Lock());
+    static const size_t lockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Lock();});
+    static const size_t unlockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Unlock(Lock());});
+    callMaterials<void>(unlockSlot,callMaterials<Lock>(lockSlot));
+}
 std::string takeAsyncRenderError(){std::lock_guard lock(asyncMutex);std::string error;error.swap(asyncError);return error;}
 // A hardware-path failure reported by an earlier draw returns the instance to
 // CPU skinning (the next snapshot deforms every vertex again).
@@ -589,7 +612,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         constant(0,material.diffuse,material.alpha);constant(1,material.ambient,float(material.sphereMode));constant(2,material.specular,material.power);constant(3,material.edgeColor,material.edgeAlpha);
         bool found=false;auto blend=engineMaterial->FindVar("$invviewprojmat",&found,false);if(found){VMatrix matrix;for(int r=0;r<4;r++)for(int c=0;c<4;c++)matrix[r][c]=r==c?1.f:0.f;for(int r=0;r<3;r++)for(int c=0;c<4;c++)matrix[r][c]=material.textureBlend[r][c];blend->SetMatrixValue(matrix);}
     }
-    CMatRenderContextPtr context(materials);
+    CMatRenderContextPtr context(renderContext());
     // Draws run where the hardware context is current (see submit). Vertices
     // written through the queued context would be copied into a bounded Source
     // arena, which detailed multi-model scenes exhaust.

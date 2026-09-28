@@ -120,6 +120,27 @@ std::string rttiClass(const void* object,const wchar_t* library){
  auto end=std::find(name,name+size,'\0');
  return end==name+size?std::string():std::string(name,end);
 }
+namespace {
+std::mutex shiftMutex;
+Json shifts=Json::object();
+}
+size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength){
+ auto module=GetModuleHandleW(library);if(!module||!object)return 0;
+ // The vtable ends at the first entry that is not code of library: the next
+ // table's RTTI locator (materialsystem.dll) or other data (vphysics.dll).
+ auto table=*reinterpret_cast<void* const* const*>(object);
+ size_t length=0;MEMORY_BASIC_INFORMATION memory{};
+ for(;length<1024;length++){
+  if(!VirtualQuery(table+length,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_NOACCESS|PAGE_GUARD)))break;
+  auto target=table[length];
+  if(!VirtualQuery(target,&memory,sizeof(memory))||memory.AllocationBase!=module||!(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))break;
+ }
+ // Any other length keeps the compiled slots: a later build that only appends methods.
+ size_t shift=length+4==compiledLength?4:0;
+ std::lock_guard lock(shiftMutex);shifts[utf8(library)]={{"slotShift",shift},{"vtableLength",length},{"compiledLength",compiledLength}};
+ return shift;
+}
+Json appSystemShifts(){std::lock_guard lock(shiftMutex);return shifts;}
 static void checkInterfaces(const wchar_t* name){
  // Check once before hooks are installed. Later checks must not mistake our own
  // shadow callbacks for a third-party replacement, nor call private methods.
@@ -138,17 +159,19 @@ static void checkInterfaces(const wchar_t* name){
    get("VEngineModel016",{12,13,21});auto tools=get("VENGINETOOL003",{77});
    requireAbiRva(name,"lighting",reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(tools))[77])-reinterpret_cast<uintptr_t>(module));
   }else if(library==L"client.dll")get("VClientEntityList003",{3,4});
-  else if(library==L"materialsystem.dll")get("VMaterialSystem080",{0});
+  else if(library==L"materialsystem.dll")appSystemShift(get("VMaterialSystem080",{0}),name,MaterialSystemVtableLength);
   else if(library==L"vphysics.dll"){
-   auto physics=get("VPhysics031",{11,15});get("VPhysicsCollision007",{8,14,16,41,42,43,44});
-   requireAbiRva(name,"physics",reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(physics))[11])-reinterpret_cast<uintptr_t>(module));
+   // GetActiveEnvironmentByIndex and FindCollisionSet, at the running layout's slots.
+   auto physics=get("VPhysics031",{0});auto shift=appSystemShift(physics,name,PhysicsVtableLength);
+   requireOwnedSlots(physics,name,{11-shift,15-shift});get("VPhysicsCollision007",{8,14,16,41,42,43,44});
+   requireAbiRva(name,"physics",reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(physics))[11-shift])-reinterpret_cast<uintptr_t>(module));
   }
  });
 }
 Json checkCompatibility(bool server){
  Json result={{"ready",true},{"pending",false},{"libraries",Json::array()},{"issues",Json::array()}};
  std::vector<const wchar_t*> names=server?std::vector<const wchar_t*>{L"vphysics.dll"}:std::vector<const wchar_t*>{L"engine.dll",L"client.dll",L"materialsystem.dll",L"shaderapidx9.dll",GetModuleHandleW(L"stdshader_dx9.dll")?L"stdshader_dx9.dll":L"stdshader_dx6.dll"};
- for(auto name:names){if(!GetModuleHandleW(name)){result["ready"]=false;result["pending"]=true;continue;}try{auto p=requireGameBinary(name);checkInterfaces(name);result["libraries"].push_back({{"name",utf8(name)},{"sha256",p["observedSHA256"]},{"match",p["match"]}});}catch(const std::exception& e){result["ready"]=false;result["issues"].push_back({{"code","game_incompatible"},{"component",utf8(name)},{"message",e.what()}});}}
+ for(auto name:names){if(!GetModuleHandleW(name)){result["ready"]=false;result["pending"]=true;continue;}try{auto p=requireGameBinary(name);checkInterfaces(name);Json library={{"name",utf8(name)},{"sha256",p["observedSHA256"]},{"match",p["match"]}};auto layout=appSystemShifts();if(layout.contains(utf8(name)))library["layout"]=layout[utf8(name)];result["libraries"].push_back(library);}catch(const std::exception& e){result["ready"]=false;result["issues"].push_back({{"code","game_incompatible"},{"component",utf8(name)},{"message",e.what()}});}}
  return result;
 }
 }
