@@ -92,12 +92,17 @@ void configureAnimations(Rig& r,const Json& options){
  if(role=="player")includes=Json::array({playerPack});
  else if(role=="arms")includes=Json::array();
  else if(ragdoll){
-  // The player pack and the Citizen packs of the style. Their skeletons are the
-  // same reference (f_anm/female_shared, m_anm/male_shared) with the same IK
-  // chain order, so one proportion layer and chain list serve both.
-  includes=Json::array({playerPack});
+  // The Citizen packs of the style, then its player pack. Their skeletons are the
+  // same reference (female_shared/f_anm, male_shared/m_anm) with the same IK
+  // chain order, so one proportion layer and chain list serve both. Source numbers
+  // included sequences in include order, and addons commonly replace or extend
+  // f_anm/m_anm: last, a client's different player pack cannot shift the Citizen
+  // sequences' indices from the server's. (A name both have, such as walk_all,
+  // head_rot_z or reload_smg1, finds the Citizen sequence.)
   std::string citizen=gender=="male"?"models/humans/male_":"models/humans/female_";
+  includes=Json::array();
   for(auto pack:{"shared","ss","gestures","postures"})includes.push_back(citizen+pack+".mdl");
+  includes.push_back(playerPack);
  }
  else if(includes.empty())throw std::runtime_error("NPC profile has no animation-only include models");
  // Include animation packs, never the donor's visible/physical model. Its

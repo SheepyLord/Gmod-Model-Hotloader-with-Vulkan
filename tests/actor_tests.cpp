@@ -136,9 +136,10 @@ int main(int argc,char** argv){try{
   if(animated.manifest.contains("meshYaw")||animated.manifest.contains("actorOrigin"))throw std::runtime_error("Animated ragdoll changed its mesh bind");
   for(size_t i=0;i<animated.bones.size();i++)if((animated.bones[i].rest.getOrigin()-rag.bones[i].rest.getOrigin()).length()>1e-5f||btFabs(animated.bones[i].rest.getRotation().dot(rag.bones[i].rest.getRotation()))<.99999f)throw std::runtime_error("Animated ragdoll moved a fitted bone");
   for(size_t i=0;i<animated.bodies.size();i++)if(animated.bodies[i].hull!=rag.bodies[i].hull)throw std::runtime_error("Animated ragdoll changed a collision hull");
-  // The player pack of player models, then the Citizen packs; all ship with the game.
+  // The Citizen packs, then the player pack of player models (the one addons
+  // replace, last so it cannot shift the others' indices); all ship with the game.
   std::string player=gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl",citizen="models/humans/"+gender+"_";
-  Json includes={player,citizen+"shared.mdl",citizen+"ss.mdl",citizen+"gestures.mdl",citizen+"postures.mdl"};
+  Json includes={citizen+"shared.mdl",citizen+"ss.mdl",citizen+"gestures.mdl",citizen+"postures.mdl",player};
   if(animated.manifest["animation"]["includes"]!=includes||animated.manifest["animation"]["profile"]!="ragdoll_"+gender)throw std::runtime_error("Animated ragdoll does not include the player and Citizen packs");
   auto package=carrierFiles(animated);auto& mdl=package.at(animated.path);auto parsed=readAnimationModel(mdl);
   if(read<int>(mdl,188)!=4||parsed["includes"]!=includes||parsed["ikChains"]!=reference["ikChains"])throw std::runtime_error("Animated ragdoll header lacks its sequences, includes or IK chains");
