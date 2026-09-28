@@ -1,6 +1,6 @@
 # Supported binary interface
 
-Windows x64 Garry's Mod (both 64-bit branches), including the validated RTX variant. Workshop ABI profiles with normalized code/data evidence identify audited builds; since 2.1.0-native.6 any other build runs as *unverified* behind the runtime interface, slot-ownership and RTTI class checks, with guards learned from their first observation. Both successful and failed checks are cached. See [installation and compatibility validation](INSTALLATION_VALIDATION.md) for the current contract; the fingerprints below record historical audit baselines.
+Windows x64 Garry's Mod (both 64-bit branches), including the validated RTX variant. Workshop ABI profiles with normalized code/data evidence identify audited builds. Any other build is *unverified* and keeps rendering and physics off: the default branch's 64-bit build of 2026-09-17 keeps the interface version strings but has four fewer `IAppSystem` methods, which shifts every later `IMaterialSystem`/`IPhysics` slot (see [installation and compatibility validation](INSTALLATION_VALIDATION.md#game-updates)). Both successful and failed checks are cached. See [installation and compatibility validation](INSTALLATION_VALIDATION.md) for the current contract; the fingerprints below record historical audit baselines.
 
 | Library | SHA-256 |
 |---|---|

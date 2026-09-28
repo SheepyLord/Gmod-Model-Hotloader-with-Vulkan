@@ -152,7 +152,8 @@ end
 function M.FeatureAvailable(feature)
  if not status or not status.features.core then return false,(M.loadError or L'install.unavailable_repair') end
  if status.features[feature]==false then
-  for _,v in ipairs(status.issues) do if v.feature==feature or v.feature=='core' then return false,v.message end end
+  -- Accepted warnings (Use anyway) do not disable anything, so they are never the reason.
+  for _,v in ipairs(status.issues) do if not v.accepted and (v.feature==feature or v.feature=='core') then return false,v.message end end
   return false,L('install.checking_feature',{feature=featureName(feature)})
  end
  return true
@@ -270,7 +271,16 @@ function M.RefreshGameCompatibility()
  status.features[feature]=report and report.ready==true or false
  status.compatibility=report
  if not report then issue(status,'game_check_failed','game',tostring(err or value),feature)
- else for _,v in ipairs(report.issues or {}) do issue(status,v.code,v.component,v.message,feature) end end
+ else
+  for _,v in ipairs(report.issues or {}) do issue(status,v.code,v.component,v.message,feature) end
+  -- 2.1.0-native.6 runs game builds no profile describes ("unverified"). The default
+  -- branch's 64-bit build of 2026-09-17 proved that unsafe: its IAppSystem interfaces
+  -- (IMaterialSystem, IPhysics) have four fewer methods, so every later call lands on
+  -- another function (the model preview hung). Such builds keep this feature off.
+  local unverified={}
+  for _,v in ipairs(report.libraries or {}) do if v.match=='unverified' then unverified[#unverified+1]=tostring(v.name) end end
+  if #unverified>0 then issue(status,'game_incompatible','game',L('install.error.game_unsupported',{libraries=table.concat(unverified,', ')}),feature) end
+ end
  notifyChanged()
  return report and report.pending
 end

@@ -77,33 +77,32 @@ Lua module directory; it does not replace vanilla DLLs. Normal Steam updates
 should retain these separate files. File survival and ABI compatibility are
 independent: retaining an importer DLL does not prove it can use a changed engine.
 
-Only our own files are verified by hash (above). Game libraries change with
-every Garry's Mod update, usually without changing anything these modules use,
-so their builds are identified but never block the addon (since 2.1.0-native.6).
-`compatibility_policy.lua` describes the builds already audited for the compiled
-`source-win64-v1` ABI family: executable and read-only PE sections (DIR64
-image-base relocations normalized), with the RVAs of the existing guards. A
-library that matches a profile is reported as `tested` or `abi-evidence`; any
-other build is `unverified` (in Copy diagnostics, under `compatibility`) and
-still runs, without a warning.
+Our own files are verified by hash (above). Game libraries change with every
+Garry's Mod update. `compatibility_policy.lua` describes the builds audited for
+the compiled `source-win64-v1` ABI family: executable and read-only PE sections
+(DIR64 image-base relocations normalized), with the RVAs of the existing guards.
+A library that matches a profile is reported as `tested` or `abi-evidence`; any
+other build is `unverified`.
 
-Every build, audited or not, passes the runtime checks before private calls or
-hooks: named factories and interface versions, and the ownership of each used
-vtable slot by the expected library (a slot another module replaced is refused).
-The render contexts are told apart by their RTTI class (`CMatQueuedRenderContext`,
-`CMatRenderContext`), which does not depend on the build. For an unverified
-build, the remaining guards (engine `lighting`, the vphysics tables and slots) are
-taken from their first observation and every later one must agree. Physics
+An unverified build keeps model rendering (client) or physics (server) off, with
+the message "This Garry's Mod build is not supported yet", which **Dismiss** can
+hide. Imports, the library and every other feature keep working. 2.1.0-native.6
+itself would run unverified builds behind runtime checks (interface versions,
+slot ownership, RTTI class names, guards learned from their first observation),
+but the default branch's 64-bit build of 2026-09-17 showed those checks are not
+enough: its `IAppSystem` has four fewer methods than the x86-64 branch's, so the
+unchanged `VMaterialSystem080` and `VPhysics031` interfaces have every later
+method four slots lower. The compiled `IMaterialSystem::GetRenderContext` call
+landed on a function that waits for a render job, and the model preview hung the
+game. The Lua therefore disables those features for unverified builds; supporting
+another build needs its profile and, when its layout differs, native code built
+for it. Native releases up to 2.1.0-native.5 reject unverified builds themselves.
+
+Every build also passes the runtime checks before private calls or hooks: named
+factories and interface versions, and the ownership of each used vtable slot by
+the expected library (a slot another module replaced is refused). Physics
 environment checks remain deferred until that environment exists; missing game
 libraries are retried after map load.
-
-These checks cannot prove a future build compatible: if Facepunch changes an
-interface layout without a new version string, a feature may fail or the game
-may crash. Remaining problems (a missing interface, a replaced slot) disable
-only the affected feature. Their warning, like every installation warning, can be
-hidden with **Dismiss** until the problems change; the installation window still
-lists them. Native releases up to 2.1.0-native.5 still require a matching
-profile and report other builds as incompatible.
 
 ## Release workflow
 
