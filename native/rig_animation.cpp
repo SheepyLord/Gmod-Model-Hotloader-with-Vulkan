@@ -81,16 +81,21 @@ void configureAnimations(Rig& r,const Json& options){
  }
  if(matched<(role=="arms"?36:40))throw std::runtime_error("Animation reference lacks the ValveBiped skeleton");
  for(auto side:{"L","R"})for(auto bone:{"UpperArm","Forearm","Hand"})if(!named.contains(std::string("ValveBiped.Bip01_")+side+"_"+bone))throw std::runtime_error("Animation reference lacks an arm chain");
+ // The player pack of the style is f_anm/m_anm, the only one the game ships;
+ // Valve's player models include it alone. SCMI's QC also includes f_gst, f_pst,
+ // f_shd and f_ss (m_*), which it lacks: Source resolves a missing include to
+ // models/error.mdl and appends that model's one sequence, "idle" (unless an addon's
+ // extended f_anm already has an "idle"), so a carrier gained a junk sequence, and
+ // where other packs follow, indices that differ with the installed addons.
+ const std::string playerPack=gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl";
  Json includes=donor.value("includes",Json::array());
- if(role=="player"){includes=Json::array();std::string prefix=gender=="male"?"models/m_":"models/f_";for(auto suffix:{"anm","gst","pst","shd","ss"})includes.push_back(prefix+suffix+".mdl");}
+ if(role=="player")includes=Json::array({playerPack});
  else if(role=="arms")includes=Json::array();
  else if(ragdoll){
-  // The stock player pack and the Citizen packs of the style. Their skeletons are
-  // the same reference (f_anm/female_shared, m_anm/male_shared) with the same IK
-  // chain order, so one proportion layer and chain list serve both. Only files
-  // every installation has: a missing include adds an error-model sequence, and
-  // server and clients would disagree on sequence indices.
-  includes=Json::array({gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl"});
+  // The player pack and the Citizen packs of the style. Their skeletons are the
+  // same reference (f_anm/female_shared, m_anm/male_shared) with the same IK
+  // chain order, so one proportion layer and chain list serve both.
+  includes=Json::array({playerPack});
   std::string citizen=gender=="male"?"models/humans/male_":"models/humans/female_";
   for(auto pack:{"shared","ss","gestures","postures"})includes.push_back(citizen+pack+".mdl");
  }

@@ -91,6 +91,8 @@ int main(int argc,char** argv){try{
   if(std::string(role)=="arms")options["armsParts"]=Json::array();
   auto actor=fitRig(*model,options);if(actor.bodies.size()!=18||actor.bones.size()!=rag.bones.size())throw std::runtime_error("Actor changed physics/bone indices");
   if((std::string(role)=="citizen"||std::string(role)=="combine")&&actor.manifest["animation"]["includes"]!=reference["includes"])throw std::runtime_error("NPC included the donor mesh/physics instead of its animation packs");
+  // Only the player pack the game ships: a missing include adds error.mdl's "idle".
+  if(std::string(role)=="player"&&actor.manifest["animation"]["includes"]!=Json::array({"models/f_anm.mdl"}))throw std::runtime_error("Player model includes packs the game lacks");
   if(std::string(role)=="arms"&&!actor.manifest["armsParts"].is_object())throw std::runtime_error("Empty GLua arms selection was not normalized");
   if(actor.key==rag.key)throw std::runtime_error("Actor cache identities alias");
   // Arms fixture explicitly includes its tiny mesh to exercise VVD/VTX writing.
@@ -134,9 +136,10 @@ int main(int argc,char** argv){try{
   if(animated.manifest.contains("meshYaw")||animated.manifest.contains("actorOrigin"))throw std::runtime_error("Animated ragdoll changed its mesh bind");
   for(size_t i=0;i<animated.bones.size();i++)if((animated.bones[i].rest.getOrigin()-rag.bones[i].rest.getOrigin()).length()>1e-5f||btFabs(animated.bones[i].rest.getRotation().dot(rag.bones[i].rest.getRotation()))<.99999f)throw std::runtime_error("Animated ragdoll moved a fitted bone");
   for(size_t i=0;i<animated.bodies.size();i++)if(animated.bodies[i].hull!=rag.bodies[i].hull)throw std::runtime_error("Animated ragdoll changed a collision hull");
+  // The player pack of player models, then the Citizen packs; all ship with the game.
   std::string player=gender=="male"?"models/m_anm.mdl":"models/f_anm.mdl",citizen="models/humans/"+gender+"_";
   Json includes={player,citizen+"shared.mdl",citizen+"ss.mdl",citizen+"gestures.mdl",citizen+"postures.mdl"};
-  if(animated.manifest["animation"]["includes"]!=includes||animated.manifest["animation"]["profile"]!="ragdoll_"+gender)throw std::runtime_error("Animated ragdoll does not include the stock player and Citizen packs");
+  if(animated.manifest["animation"]["includes"]!=includes||animated.manifest["animation"]["profile"]!="ragdoll_"+gender)throw std::runtime_error("Animated ragdoll does not include the player and Citizen packs");
   auto package=carrierFiles(animated);auto& mdl=package.at(animated.path);auto parsed=readAnimationModel(mdl);
   if(read<int>(mdl,188)!=4||parsed["includes"]!=includes||parsed["ikChains"]!=reference["ikChains"])throw std::runtime_error("Animated ragdoll header lacks its sequences, includes or IK chains");
   auto bones=read<int>(mdl,160),anims=read<int>(mdl,184);
