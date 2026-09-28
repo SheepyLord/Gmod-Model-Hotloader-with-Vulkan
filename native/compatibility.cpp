@@ -141,7 +141,7 @@ size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength)
  auto length=vtableLength(object,library);
  // Any other length keeps the compiled slots: a later build that only appends methods.
  size_t shift=length+4==compiledLength?4:0;
- std::lock_guard lock(shiftMutex);shifts[utf8(library)]={{"slotShift",shift},{"vtableLength",length},{"compiledLength",compiledLength}};
+ std::lock_guard lock(shiftMutex);auto& entry=shifts[utf8(library)];entry["slotShift"]=shift;entry["vtableLength"]=length;entry["compiledLength"]=compiledLength;
  return shift;
 }
 bool olderPhysicsLayout(void* physics,void* collision){
