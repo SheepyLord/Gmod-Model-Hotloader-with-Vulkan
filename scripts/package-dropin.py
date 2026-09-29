@@ -29,7 +29,7 @@ PROJECT_NOTICES = {'Model-Hotloader-LICENSE.txt': 'LICENSE', 'THIRD_PARTY.md': '
 # Where players download releases and read the source (the MPL-2.0 files of
 # THIRD_PARTY.md included), and the Workshop addon these files belong to.
 PUBLIC_REPOSITORY = 'https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan'
-WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3808939802'
+WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3810025467'
 HEADER = '''Model Hotloader native files {release} (build {build}), Windows x64{variant}
 
 These are the native files only. The addon itself comes from the Steam Workshop:

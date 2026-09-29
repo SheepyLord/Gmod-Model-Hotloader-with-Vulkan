@@ -46,7 +46,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPO = 'SheepyLord/Gmod-Model-Hotloader-with-Vulkan'
 REPO_URL = 'https://github.com/' + REPO
 WORKFLOW = 'Build drop-in package'
-WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3808939802'
+WORKSHOP = 'https://steamcommunity.com/sharedfiles/filedetails/?id=3810025467'
 POLICY = ROOT / 'addon/lua/mmdhl/native_policy.lua'
 GMA = ROOT / 'addon.gma'
 VARIANTS = ('vulkan', 'opengl-remix')

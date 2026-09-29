@@ -54,7 +54,7 @@ try:
         with zipfile.ZipFile(p['archive']) as archive:
             assert archive.read('GarrysMod/bin/win64/LICENSES/Model-Hotloader-LICENSE.txt')==(ROOT/'LICENSE').read_bytes()
         install=(Path(p['folder'])/'INSTALL.txt').read_text(encoding='utf8')
-        assert 'https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases' in install and 'filedetails/?id=3808939802' in install,p['name']
+        assert 'https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases' in install and 'filedetails/?id=3810025467' in install,p['name']
     assert 'GarrysMod/bin/win64/DXVK-LICENSES/dxvk.txt' in names[0] and not any('DXVK-LICENSES' in n for n in names[1])
 
     def update(artifact):
