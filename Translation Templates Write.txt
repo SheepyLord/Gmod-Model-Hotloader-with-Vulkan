@@ -1,0 +1,477 @@
+//English
+Vulkan Kernel Model Hot Loader with Softbody Simulation (Utility / Tool)
+
+[b]Common model formats could be now be hot loaded into Garry's Mod in game as static / character models. It enables [url=https://en.wikipedia.org/wiki/Soft-body_dynamics]softbody simulation[/url] if the model supports and also replaces the rendering API of Garry's Mod to [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url] which by itself allows the game to have higher performance. [/b]
+
+[h1]Warning! ⚠ [/h1]
+[b]An open-source binary module is required[/b] for your game client/server to allow gmod to load models in your local computer and implement Vulkan rendering API. The source code and build process is fully public in GitHub action with verifiable SHA256 hash. Please visit the repo for more details.
+Download the binary module here: [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]Introduction[/h1]
+Have you noticed that, unlike most modern Sandbox games, you have to port a model or character into Source Engine format before you can actually use it in Garry's Mod? Well, that is no longer the case. Here we introduce "Vulkan Kernel Model Hot Loader with Softbody Simulation (VKMHL-SS)" to fully address this issue.
+
+This addon writes the model data directly into the runtime game memory and the rendering pipeline in Vulkan / OpenGl, thereby hotloads models into Gmod. The imported model is algorithmically identical to a complied Source engine model, at least at the engine level. This will make the non-multiplayer model porting process obsolete with some performance tradeoff when too many models are in player's view. To optimize this, we ended up re-wiring the rending API of Gmod to Vulkan, this means that native Ray-tracing, DLSS / FSR is now possible and will be implemented as a follow up project.
+
+For static objects, this addon supports: .pmx, .fbx, .obj, .glb and .blend
+For dynamic characters, this addon supports: MMD formatted .pmx (Polygon Model eXtended for MikuMikuDance) and Standardized .VRM (Virtual Reality Model).
+
+[h2] Adding "Imported Models" to the Main Menu alongside the "NPC" Panel [/h2]
+
+[b]As soon as you trust yourself, you will know how to live.[/b]
+ --- Johann Wolfgang von Goethe - Faust - AD 1790
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+Addon interface and description available in Chinese (中文), English (English), French (Français), Japanese (日本語), Korean (한국어), and Russian (Русский).
+
+[h1]Features[/h1]
+- Migrate Gmod rendering API from OpenGL to Vulkan, the performance should significantly improve on very complex scenes while reducing GPU usage by 50%.
+- Import almost any character model as player model/NPC and ragdolls into Garry's Mod
+- Models are server-sided and shareable between clients (needs the binary module being installed on both the client and server)
+- Export your imported models as Garry's Mod addons and release in workshop (Must list this addon as dependency or will be useless)
+- Save / Load between sessions
+
+[h2]How to use[/h2]
+[list=1]
+[*]Subscribe to this Workshop item.
+[*]Download the open-source gmod binary module from [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url].
+[*]Drop and merge the folder with steamapp/GarrysMod
+[*]Launch Garry's Mod.
+[*]Press Q and navigate to [b]Imported Models[/b] tab.
+[*]Browse models in your local computer using the import button.
+[*]Wait for a few seconds for model to import (depend on complexity)
+[*]Use buttons to place/spawn/use the models you imported.
+[/list]
+
+[h3]Note[/h3]
+- This addon overrides all limits in Source engine when importing, allowing models with up to 1-million vertexes, 32,767 bones, shapekey, material, vertex group and rigidbodies. Your computer is now your limitation.
+- This addon implements Bullet physics engine with a Vulkan GPU accelerated rigidbody and softbody simulation with plenty of optimization, allowing detailed cloth and hair simulation on character models.
+- Cloth, hair and body physics simulation is client only and the default Havok physics in Gmod is not altered.
+- Imported models is moddable and compatible to most vanilla lua entry points and methods.
+- Exported models will only be usable by users with this addon installed.
+- Optimized for RTX-Remix, please download OpenGL-Remix package if Remix.
+
+[u]Credits[/u]
+- Vulkan Kernel Model Hot Loader with Softbody Simulation by: SheepyLord
+
+[u]Other Addons[/u]
+1. (Recommended) Edit materials on imported models
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. (Recommended) Play animations on imported character models
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド) (Dependent)[/url]
+
+3. A proven to be working reaction addition to imported character models
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//Chinese_Simp
+带软体模拟的 Vulkan 内核模型热加载器（实用工具）
+
+[b]现在，常见格式的模型可以在游戏中直接热加载进《Garry's Mod》，作为静态模型或角色模型使用。若模型支持，本插件还会启用[url=https://en.wikipedia.org/wiki/Soft-body_dynamics]软体模拟[/url]，并将《Garry's Mod》的渲染 API 替换为 [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url]，仅此一项就能让游戏获得更高的性能。[/b]
+
+[h1]警告！⚠ [/h1]
+[b]您的游戏客户端/服务器需要安装一个开源的二进制模块[/b]，Gmod 才能加载您本地电脑中的模型并启用 Vulkan 渲染 API。源代码与构建过程完全公开于 GitHub Actions，并附有可验证的 SHA256 哈希值。详情请访问该仓库。
+在此下载二进制模块：[url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+中国大陆下载: https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord
+中文教学: https://space.bilibili.com/34378776
+
+[h1]简介[/h1]
+您是否注意到，与大多数现代沙盒游戏不同，在《Garry's Mod》中实际使用模型或角色之前，必须先将其移植为 Source 引擎格式？不过，这种情况已不复存在。在此，我们推出“带软体模拟的 Vulkan 内核模型热加载器（VKMHL-SS）”，以彻底解决这一问题。
+
+本插件将模型数据直接写入游戏运行时的内存以及 Vulkan / OpenGL 渲染管线，从而将模型热加载进 Gmod。至少在引擎层面上，导入的模型在算法上与编译好的 Source 引擎模型完全相同。这将使非联机用途的模型移植流程成为历史，代价是当玩家视野中的模型过多时会有一定的性能损耗。为了优化这一点，我们最终将 Gmod 的渲染 API 重新接入 Vulkan，这意味着原生光线追踪、DLSS / FSR 现已成为可能，并将作为后续项目实现。
+
+静态物体支持：.pmx、.fbx、.obj、.glb 和 .blend
+动态角色支持：MMD 格式的 .pmx（Polygon Model eXtended for MikuMikuDance）以及标准化的 .VRM（Virtual Reality Model）。
+
+[h2] 在主菜单的“NPC”面板旁添加“外部模型”标签页 [/h2]
+
+[b]一旦你相信自己，便会懂得如何生活。[/b]
+ --- 约翰·沃尔夫冈·冯·歌德 - 《浮士德》 - 公元1790年
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+插件界面与说明提供中文（中文）、英语（English）、法语（Français）、日语（日本語）、韩语（한국어）和俄语（Русский）版本。如存在翻译错误的专有名词，请以英文版为准。
+
+[h1]功能[/h1]
+- 将 Gmod 的渲染 API 从 OpenGL 迁移至 Vulkan，在非常复杂的场景中性能应有显著提升，同时 GPU 占用降低 50%。
+- 将几乎任何角色模型作为玩家模型/NPC 以及布娃娃导入《Garry's Mod》
+- 模型存储于服务器端，可在客户端之间共享（客户端和服务器均需安装二进制模块）
+- 将导入的模型导出为《Garry's Mod》插件并在创意工坊发布（必须将本插件列为依赖项，否则无法使用）
+- 跨会话保存/加载
+
+[h2]使用方法[/h2]
+[list=1]
+[*]订阅此创意工坊项目。
+[*]从 [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url] 下载开源的 Gmod 二进制模块。
+[*]将文件夹拖放到 steamapp/GarrysMod 中并合并。
+[*]启动《Garry's Mod》。
+[*]按 Q 键并进入 [b]外部模型[/b]（External Models）标签页。
+[*]使用导入按钮浏览您本地电脑中的模型。
+[*]等待几秒钟，直至模型导入完成（取决于模型复杂度）。
+[*]使用按钮放置/生成/使用您导入的模型。
+[/list]
+
+[h3]注意事项[/h3]
+- 本插件在导入时会突破 Source 引擎的所有限制，支持最多 100 万个顶点、32,767 根骨骼、形态键、材质、顶点组和刚体的模型。现在，唯一的限制就是您的电脑。
+- 本插件实现了 Bullet 物理引擎，采用 Vulkan GPU 加速的刚体与软体模拟，并经过大量优化，可在角色模型上实现精细的布料与头发模拟。
+- 布料、头发和身体的物理模拟仅在客户端运行，Gmod 默认的 Havok 物理不会被改动。
+- 导入的模型支持二次修改，并兼容大多数原版 Lua 入口点和方法。
+- 导出的模型仅限安装了本插件的用户使用。
+- 已针对 RTX-Remix 优化；如使用 Remix，请下载 OpenGL-Remix 版本的安装包。
+
+[u]致谢[/u]
+- 带软体模拟的 Vulkan 内核模型热加载器：SheepyLord
+
+[u]其他插件[/u]
+1. （推荐）编辑导入模型的材质
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. （推荐）在导入的角色模型上播放动作
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド)（需前置）[/url]
+
+3. 经验证可与导入角色模型配合使用的反应类插件
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//Chinese_Trad
+帶柔體模擬的 Vulkan 核心模型熱載入器（實用工具）
+
+[b]現在，常見格式的模型可以在遊戲中直接熱載入《Garry's Mod》，作為靜態模型或角色模型使用。若模型支援，本附加元件還會啟用[url=https://en.wikipedia.org/wiki/Soft-body_dynamics]柔體模擬[/url]，並將《Garry's Mod》的渲染 API 替換為 [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url]，僅此一項就能讓遊戲獲得更高的效能。[/b]
+
+[h1]警告！⚠ [/h1]
+[b]您的遊戲用戶端／伺服器需要安裝一個開源的二進位模組[/b]，Gmod 才能載入您本機電腦中的模型並啟用 Vulkan 渲染 API。原始碼與建置流程完全公開於 GitHub Actions，並附有可驗證的 SHA256 雜湊值。詳情請造訪該儲存庫。
+在此下載二進位模組：[url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]簡介[/h1]
+您是否注意到，與大多數現代沙盒遊戲不同，在《Garry's Mod》中實際使用模型或角色之前，必須先將其移植為 Source 引擎格式？不過，這種情況將不復存在。在此我們推出「帶柔體模擬的 Vulkan 核心模型熱載入器（VKMHL-SS）」，以徹底解決此問題。
+
+本附加元件將模型資料直接寫入遊戲執行時的記憶體，以及 Vulkan / OpenGL 渲染管線，藉此將模型熱載入 Gmod。至少在引擎層面上，匯入的模型在演算法上與編譯完成的 Source 引擎模型完全相同。這將讓非連線用途的模型移植流程走入歷史，代價是當玩家視野中的模型過多時會有一定的效能損耗。為了最佳化這一點，我們最終將 Gmod 的渲染 API 重新接上 Vulkan，這意味著原生光線追蹤、DLSS / FSR 現已成為可能，並將作為後續專案實作。
+
+靜態物件支援：.pmx、.fbx、.obj、.glb 與 .blend
+動態角色支援：MMD 格式的 .pmx（Polygon Model eXtended for MikuMikuDance）以及標準化的 .VRM（Virtual Reality Model）。
+
+[h2] 在主選單的「NPC」面板旁新增「外部模型」分頁 [/h2]
+
+[b]一旦你相信自己，你便會知道如何生活。[/b]
+ --- 約翰·沃爾夫岡·馮·歌德 - 《浮士德》 - 西元 1790 年
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+附加元件介面與說明提供中文（中文）、英文（English）、法文（Français）、日文（日本語）、韓文（한국어）及俄文（Русский）版本。如有翻譯錯誤的專有名詞，請以英文版為準。
+
+[h1]功能特色[/h1]
+- 將 Gmod 的渲染 API 從 OpenGL 遷移至 Vulkan，在非常複雜的場景中效能應有顯著提升，同時 GPU 使用率降低 50%。
+- 將幾乎任何角色模型作為玩家模型／NPC 以及布偶匯入《Garry's Mod》
+- 模型存放於伺服器端，可在用戶端之間共享（用戶端與伺服器皆需安裝二進位模組）
+- 將匯入的模型匯出為《Garry's Mod》附加元件並發布至工作坊（必須將本附加元件列為相依項目，否則將無法使用）
+- 跨遊戲階段儲存／載入
+
+[h2]使用方法[/h2]
+[list=1]
+[*]訂閱此工作坊項目。
+[*]從 [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url] 下載開源的 Gmod 二進位模組。
+[*]將資料夾拖放至 steamapp/GarrysMod 並合併。
+[*]啟動《Garry's Mod》。
+[*]按下 Q 並前往 [b]外部模型[/b]（External Models）分頁。
+[*]使用匯入按鈕瀏覽您本機電腦中的模型。
+[*]等待數秒，直到模型匯入完成（視複雜度而定）。
+[*]使用按鈕放置／生成／使用您匯入的模型。
+[/list]
+
+[h3]注意[/h3]
+- 本附加元件在匯入時會突破 Source 引擎的所有限制，支援最多 100 萬個頂點、32,767 根骨骼、形態鍵、材質、頂點群組與剛體的模型。現在，唯一的限制就是您的電腦。
+- 本附加元件實作了 Bullet 物理引擎，採用 Vulkan GPU 加速的剛體與柔體模擬，並經過大量最佳化，可在角色模型上實現精細的布料與頭髮模擬。
+- 布料、頭髮與身體的物理模擬僅在用戶端執行，Gmod 預設的 Havok 物理不會被更動。
+- 匯入的模型支援二次修改，並相容於大多數原版 Lua 進入點與方法。
+- 匯出的模型僅限安裝了本附加元件的使用者使用。
+- 已針對 RTX-Remix 最佳化；若使用 Remix，請下載 OpenGL-Remix 版本的套件。
+
+[u]參照與鳴謝[/u]
+- 帶柔體模擬的 Vulkan 核心模型熱載入器：SheepyLord
+
+[u]其他附加元件[/u]
+1. （推薦）編輯匯入模型的材質
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. （推薦）在匯入的角色模型上播放動作
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド)（需前置）[/url]
+
+3. 經實測可與匯入角色模型搭配使用的反應類附加元件
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//Japanese
+ソフトボディシミュレーション搭載 Vulkan カーネル・モデルホットローダー（ユーティリティ / ツール）
+
+[b]一般的な形式のモデルを、ゲーム内でそのまま Garry's Mod にホットロードし、静的モデルやキャラクターモデルとして使えるようになりました。モデルが対応していれば[url=https://en.wikipedia.org/wiki/Soft-body_dynamics]ソフトボディシミュレーション[/url]を有効にし、さらに Garry's Mod のレンダリング API を [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url] に置き換えます。これだけでもゲームのパフォーマンスが向上します。[/b]
+
+[h1]警告！⚠ [/h1]
+[b]オープンソースのバイナリモジュールが必要です。[/b]ゲームのクライアント／サーバーにこのモジュールを導入することで、Gmod がローカル PC 内のモデルを読み込み、Vulkan レンダリング API を実装できるようになります。ソースコードとビルドプロセスは GitHub Actions 上ですべて公開されており、SHA256 ハッシュで検証できます。詳しくはリポジトリをご覧ください。
+バイナリモジュールのダウンロードはこちら：[url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]はじめに[/h1]
+最近の多くのサンドボックスゲームとは異なり、Garry's Mod でモデルやキャラクターを実際に使うには、まず Source Engine 形式へ移植しなければならないことにお気づきでしょうか？しかし、もうその必要はありません。この問題を完全に解決する「Vulkan Kernel Model Hot Loader with Softbody Simulation（VKMHL-SS）」をご紹介します。
+
+このアドオンは、モデルデータを実行中のゲームのメモリと Vulkan / OpenGL のレンダリングパイプラインに直接書き込み、Gmod へモデルをホットロードします。インポートされたモデルは、少なくともエンジンレベルでは、コンパイル済みの Source エンジンモデルとアルゴリズム的に同一です。これにより、マルチプレイ用途以外のモデル移植作業は不要になりますが、プレイヤーの視界にモデルが多すぎる場合はパフォーマンスとのトレードオフが生じます。これを最適化するため、最終的に Gmod のレンダリング API を Vulkan につなぎ直しました。これにより、ネイティブのレイトレーシングや DLSS / FSR が可能になり、後続プロジェクトとして実装する予定です。
+
+静的オブジェクトの対応形式：.pmx、.fbx、.obj、.glb、.blend
+動的キャラクターの対応形式：MMD 形式の .pmx（Polygon Model eXtended for MikuMikuDance）および標準化された .VRM（Virtual Reality Model）
+
+[h2] メインメニューの「NPC」パネルの隣に「外部モデル」タブを追加 [/h2]
+
+[b]自分自身を信じれば、生きる道は自ずと開ける。[/b]
+ --- ヨハン・ヴォルフガング・フォン・ゲーテ - 『ファウスト』 - 1790年
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+このアドオンのインターフェースと説明文は、中国語（中文）、英語（English）、フランス語（Français）、日本語（日本語）、韓国語（한국어）、ロシア語（Русский）に対応しています。
+
+[h1]機能[/h1]
+- Gmod のレンダリング API を OpenGL から Vulkan へ移行。非常に複雑なシーンではパフォーマンスが大幅に向上し、GPU 使用率は 50% 削減されます。
+- ほぼすべてのキャラクターモデルを、プレイヤーモデル／NPC およびラグドールとして Garry's Mod にインポート可能
+- モデルはサーバーサイドで管理され、クライアント間で共有可能（クライアントとサーバーの両方にバイナリモジュールのインストールが必要）
+- インポートしたモデルを Garry's Mod アドオンとしてエクスポートし、ワークショップで公開可能（本アドオンを必須アイテムとして登録してください。登録しないと使用できません）
+- セッション間のセーブ／ロードに対応
+
+[h2]使用方法[/h2]
+[list=1]
+[*]このワークショップアイテムをサブスクライブします。
+[*][url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url] からオープンソースの Gmod バイナリモジュールをダウンロードします。
+[*]フォルダーを steamapp/GarrysMod にドロップして統合（マージ）します。
+[*]Garry's Mod を起動します。
+[*]Q キーを押し、[b]外部モデル[/b]（External Models）タブを開きます。
+[*]インポートボタンから、ローカル PC 内のモデルを選択します。
+[*]モデルのインポートが完了するまで数秒待ちます（モデルの複雑さによります）。
+[*]各ボタンで、インポートしたモデルを配置／スポーン／使用します。
+[/list]
+
+[h3]注意[/h3]
+- このアドオンはインポート時に Source エンジンのあらゆる制限を解除し、最大 100 万頂点、32,767 個のボーン、シェイプキー、マテリアル、頂点グループ、剛体を持つモデルに対応します。制限となるのはお使いの PC だけです。
+- このアドオンは Bullet 物理エンジンを実装しており、Vulkan による GPU アクセラレーションで剛体・ソフトボディシミュレーションを行います。数多くの最適化により、キャラクターモデルの細かな布や髪のシミュレーションが可能です。
+- 布・髪・身体の物理シミュレーションはクライアント側のみで行われ、Gmod 標準の Havok 物理演算は変更されません。
+- インポートしたモデルは改造が可能で、バニラの Lua エントリーポイントやメソッドの大半と互換性があります。
+- エクスポートしたモデルは、本アドオンをインストールしているユーザーのみ使用できます。
+- RTX-Remix 向けに最適化済みです。Remix を使用する場合は、OpenGL-Remix パッケージをダウンロードしてください。
+
+[u]クレジット[/u]
+- Vulkan Kernel Model Hot Loader with Softbody Simulation 制作：SheepyLord
+
+[u]その他のアドオン[/u]
+1. （おすすめ）インポートしたモデルのマテリアルを編集
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. （おすすめ）インポートしたキャラクターモデルでモーションを再生
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド)（上記アドオンが必要）[/url]
+
+3. インポートしたキャラクターモデルでの動作が確認済みのリアクション系アドオン
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//Korean
+소프트바디 시뮬레이션 지원 Vulkan 커널 모델 핫 로더 (유틸리티 / 도구)
+
+[b]이제 일반적인 형식의 모델을 게임 안에서 바로 Garry's Mod에 핫 로드하여 정적 모델이나 캐릭터 모델로 사용할 수 있습니다. 모델이 지원하는 경우 [url=https://en.wikipedia.org/wiki/Soft-body_dynamics]소프트바디 시뮬레이션[/url]을 활성화하며, Garry's Mod의 렌더링 API를 [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url]로 교체합니다. 이것만으로도 게임 성능이 향상됩니다.[/b]
+
+[h1]경고! ⚠ [/h1]
+[b]오픈소스 바이너리 모듈이 필요합니다.[/b] 게임 클라이언트/서버에 이 모듈을 설치해야 Gmod가 로컬 컴퓨터에 있는 모델을 불러오고 Vulkan 렌더링 API를 구현할 수 있습니다. 소스 코드와 빌드 과정은 GitHub Actions에 모두 공개되어 있으며, SHA256 해시로 검증할 수 있습니다. 자세한 내용은 저장소를 참고하세요.
+바이너리 모듈 다운로드: [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]소개[/h1]
+대부분의 최신 샌드박스 게임과 달리, Garry's Mod에서 모델이나 캐릭터를 실제로 사용하려면 먼저 Source 엔진 형식으로 포팅해야 한다는 사실을 알고 계셨나요? 하지만 이제 더 이상 그렇지 않습니다. 이 문제를 완전히 해결하기 위해 "Vulkan Kernel Model Hot Loader with Softbody Simulation (VKMHL-SS)"을 소개합니다.
+
+이 애드온은 모델 데이터를 실행 중인 게임의 메모리와 Vulkan / OpenGL 렌더링 파이프라인에 직접 기록하여 모델을 Gmod에 핫 로드합니다. 가져온 모델은 적어도 엔진 수준에서는 컴파일된 Source 엔진 모델과 알고리즘적으로 동일합니다. 이로써 멀티플레이어 용도가 아닌 모델 포팅 작업은 더 이상 필요하지 않게 되며, 다만 플레이어 시야에 모델이 너무 많을 때는 어느 정도의 성능 손실이 있습니다. 이를 최적화하기 위해 결국 Gmod의 렌더링 API를 Vulkan으로 다시 연결했습니다. 이에 따라 네이티브 레이 트레이싱과 DLSS / FSR이 가능해졌으며, 후속 프로젝트로 구현될 예정입니다.
+
+정적 오브젝트 지원 형식: .pmx, .fbx, .obj, .glb, .blend
+동적 캐릭터 지원 형식: MMD 형식의 .pmx(Polygon Model eXtended for MikuMikuDance) 및 표준화된 .VRM(Virtual Reality Model)
+
+[h2] 메인 메뉴의 "NPC" 패널 옆에 "외부 모델" 탭 추가 [/h2]
+
+[b]자신을 믿게 되는 순간, 어떻게 살아야 할지 알게 될 것이다.[/b]
+ --- 요한 볼프강 폰 괴테 - 파우스트 - 1790년
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+이 애드온의 인터페이스와 설명은 중국어(中文), 영어(English), 프랑스어(Français), 일본어(日本語), 한국어(한국어), 러시아어(Русский)로 제공됩니다.
+
+[h1]기능[/h1]
+- Gmod의 렌더링 API를 OpenGL에서 Vulkan으로 전환합니다. 매우 복잡한 장면에서 성능이 크게 향상되고, GPU 사용량은 50% 줄어듭니다.
+- 거의 모든 캐릭터 모델을 플레이어 모델/NPC 및 래그돌로 Garry's Mod에 가져오기
+- 모델은 서버 측에서 관리되며 클라이언트 간에 공유 가능 (클라이언트와 서버 모두에 바이너리 모듈 설치 필요)
+- 가져온 모델을 Garry's Mod 애드온으로 내보내 창작마당에 공개 (반드시 이 애드온을 필수 아이템으로 지정해야 하며, 그렇지 않으면 사용할 수 없습니다)
+- 세션 간 저장 / 불러오기
+
+[h2]사용 방법[/h2]
+[list=1]
+[*]이 창작마당 아이템을 구독하세요.
+[*][url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]에서 오픈소스 Gmod 바이너리 모듈을 다운로드하세요.
+[*]폴더를 steamapp/GarrysMod에 넣고 병합하세요.
+[*]Garry's Mod를 실행하세요.
+[*]Q를 누르고 [b]외부 모델[/b](External Models) 탭으로 이동하세요.
+[*]가져오기 버튼으로 로컬 컴퓨터에 있는 모델을 찾아 선택하세요.
+[*]모델을 가져오는 동안 몇 초 기다리세요 (모델 복잡도에 따라 다름).
+[*]버튼을 사용해 가져온 모델을 배치/스폰/사용하세요.
+[/list]
+
+[h3]참고[/h3]
+- 이 애드온은 가져오기 시 Source 엔진의 모든 제한을 해제하여, 최대 100만 개의 정점, 32,767개의 본, 셰이프 키, 재질, 버텍스 그룹, 강체를 가진 모델을 지원합니다. 이제 한계는 여러분의 컴퓨터뿐입니다.
+- 이 애드온은 Bullet 물리 엔진을 구현하며, Vulkan GPU 가속 강체 및 소프트바디 시뮬레이션과 다양한 최적화를 통해 캐릭터 모델의 섬세한 옷과 머리카락 시뮬레이션을 가능하게 합니다.
+- 옷, 머리카락, 신체 물리 시뮬레이션은 클라이언트에서만 실행되며, Gmod 기본 Havok 물리는 변경되지 않습니다.
+- 가져온 모델은 모딩이 가능하며, 대부분의 바닐라 Lua 진입점 및 메서드와 호환됩니다.
+- 내보낸 모델은 이 애드온을 설치한 사용자만 사용할 수 있습니다.
+- RTX-Remix에 최적화되어 있습니다. Remix를 사용하는 경우 OpenGL-Remix 패키지를 다운로드하세요.
+
+[u]크레딧[/u]
+- Vulkan Kernel Model Hot Loader with Softbody Simulation 제작: SheepyLord
+
+[u]다른 애드온[/u]
+1. (추천) 가져온 모델의 재질 편집
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. (추천) 가져온 캐릭터 모델에서 모션 재생
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド) (위 애드온 필요)[/url]
+
+3. 가져온 캐릭터 모델에서 작동이 검증된 리액션 애드온
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//French
+Chargeur de modèles à chaud sur noyau Vulkan avec simulation de corps mous (Utilitaire / Outil)
+
+[b]Les modèles aux formats courants peuvent désormais être chargés à chaud dans Garry's Mod, en pleine partie, comme modèles statiques ou modèles de personnages. L'addon active la [url=https://en.wikipedia.org/wiki/Soft-body_dynamics]simulation de corps mous[/url] si le modèle la prend en charge, et remplace aussi l'API de rendu de Garry's Mod par [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url], ce qui, à lui seul, améliore les performances du jeu.[/b]
+
+[h1]Attention ! ⚠ [/h1]
+[b]Un module binaire open source est requis[/b] sur votre client/serveur de jeu pour permettre à Gmod de charger les modèles présents sur votre ordinateur et d'utiliser l'API de rendu Vulkan. Le code source et le processus de compilation sont entièrement publics dans GitHub Actions, avec une empreinte SHA256 vérifiable. Consultez le dépôt pour plus de détails.
+Téléchargez le module binaire ici : [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]Introduction[/h1]
+Avez-vous remarqué que, contrairement à la plupart des jeux sandbox modernes, vous devez porter un modèle ou un personnage au format du moteur Source avant de pouvoir l'utiliser dans Garry's Mod ? Eh bien, ce n'est plus le cas. Nous vous présentons « Vulkan Kernel Model Hot Loader with Softbody Simulation (VKMHL-SS) » pour résoudre complètement ce problème.
+
+Cet addon écrit les données du modèle directement dans la mémoire du jeu en cours d'exécution et dans le pipeline de rendu Vulkan / OpenGL, chargeant ainsi les modèles à chaud dans Gmod. Le modèle importé est algorithmiquement identique à un modèle Source compilé, du moins au niveau du moteur. Le portage de modèles hors multijoueur devient ainsi obsolète, au prix d'une certaine perte de performances lorsque trop de modèles se trouvent dans le champ de vision du joueur. Pour y remédier, nous avons finalement rebranché l'API de rendu de Gmod sur Vulkan : le ray tracing natif et le DLSS / FSR sont donc désormais possibles et seront implémentés dans un projet ultérieur.
+
+Objets statiques pris en charge : .pmx, .fbx, .obj, .glb et .blend
+Personnages dynamiques pris en charge : .pmx au format MMD (Polygon Model eXtended pour MikuMikuDance) et .VRM standardisé (Virtual Reality Model).
+
+[h2] Ajout de l'onglet « Modèles externes » au menu principal, à côté du panneau « PNJ » [/h2]
+
+[b]Dès que tu auras confiance en toi, tu sauras comment vivre.[/b]
+ --- Johann Wolfgang von Goethe - Faust - 1790
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+L'interface et la description de l'addon sont disponibles en chinois (中文), anglais (English), français (Français), japonais (日本語), coréen (한국어) et russe (Русский).
+
+[h1]Fonctionnalités[/h1]
+- Passe l'API de rendu de Gmod d'OpenGL à Vulkan : les performances devraient nettement s'améliorer dans les scènes très complexes, tout en réduisant l'utilisation du GPU de 50 %.
+- Importez presque n'importe quel modèle de personnage dans Garry's Mod comme modèle du joueur, PNJ ou ragdoll
+- Les modèles sont gérés côté serveur et partageables entre les clients (le module binaire doit être installé à la fois sur le client et sur le serveur)
+- Exportez vos modèles importés sous forme d'addons Garry's Mod et publiez-les sur le Workshop (cet addon doit obligatoirement être indiqué comme dépendance, sinon ils seront inutilisables)
+- Sauvegarde / chargement entre les sessions
+
+[h2]Mode d'emploi[/h2]
+[list=1]
+[*]Abonnez-vous à cet élément du Workshop.
+[*]Téléchargez le module binaire open source pour Gmod depuis [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url].
+[*]Déposez le dossier dans steamapp/GarrysMod et fusionnez-le.
+[*]Lancez Garry's Mod.
+[*]Appuyez sur Q et ouvrez l'onglet [b]Modèles externes[/b] (External Models).
+[*]Parcourez les modèles de votre ordinateur à l'aide du bouton d'importation.
+[*]Patientez quelques secondes pendant l'importation du modèle (selon sa complexité).
+[*]Utilisez les boutons pour placer, faire apparaître ou utiliser les modèles importés.
+[/list]
+
+[h3]Remarques[/h3]
+- Lors de l'importation, cet addon lève toutes les limites du moteur Source et accepte des modèles comportant jusqu'à 1 million de sommets, 32 767 os, clés de forme, matériaux, groupes de sommets et corps rigides. Désormais, la seule limite est votre ordinateur.
+- Cet addon intègre le moteur physique Bullet, avec une simulation de corps rigides et de corps mous accélérée par le GPU via Vulkan et de nombreuses optimisations, ce qui permet une simulation détaillée des vêtements et des cheveux sur les modèles de personnages.
+- La simulation physique des vêtements, des cheveux et du corps s'exécute uniquement côté client ; la physique Havok par défaut de Gmod n'est pas modifiée.
+- Les modèles importés sont moddables et compatibles avec la plupart des points d'entrée et méthodes Lua d'origine.
+- Les modèles exportés ne sont utilisables que par les joueurs ayant installé cet addon.
+- Optimisé pour RTX-Remix ; si vous utilisez Remix, téléchargez le paquet OpenGL-Remix.
+
+[u]Crédits[/u]
+- Vulkan Kernel Model Hot Loader with Softbody Simulation par : SheepyLord
+
+[u]Autres addons[/u]
+1. (Recommandé) Modifier les matériaux des modèles importés
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. (Recommandé) Jouer des animations sur les modèles de personnages importés
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド) (nécessite l'addon ci-dessus)[/url]
+
+3. Un addon de réactions dont le bon fonctionnement avec les modèles de personnages importés a été vérifié
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
+
+//Russian
+Загрузчик моделей на лету с ядром Vulkan и симуляцией мягких тел (Утилита / Инструмент)
+
+[b]Модели в распространённых форматах теперь можно загружать в Garry's Mod прямо во время игры — как статичные модели или модели персонажей. Если модель это поддерживает, аддон включает [url=https://en.wikipedia.org/wiki/Soft-body_dynamics]симуляцию мягких тел[/url], а также заменяет API рендеринга Garry's Mod на [url=https://en.wikipedia.org/wiki/DXVK]Vulkan-DXVK[/url], что уже само по себе повышает производительность игры.[/b]
+
+[h1]Внимание! ⚠ [/h1]
+[b]Требуется бинарный модуль с открытым исходным кодом[/b] для клиента/сервера игры: он позволяет Gmod загружать модели с вашего компьютера и реализует API рендеринга Vulkan. Исходный код и процесс сборки полностью открыты в GitHub Actions, с проверяемым хешем SHA256. Подробности — в репозитории.
+Скачать бинарный модуль: [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url]
+
+[h1]Введение[/h1]
+Заметили ли вы, что, в отличие от большинства современных игр-песочниц, в Garry's Mod модель или персонажа сначала нужно перенести в формат Source Engine и только потом ими можно пользоваться? Теперь это не так. Представляем «Vulkan Kernel Model Hot Loader with Softbody Simulation (VKMHL-SS)», который полностью решает эту проблему.
+
+Этот аддон записывает данные модели напрямую в память запущенной игры и в конвейер рендеринга Vulkan / OpenGL, тем самым загружая модели в Gmod на лету. Импортированная модель алгоритмически идентична скомпилированной модели Source — по крайней мере на уровне движка. Благодаря этому перенос моделей для одиночной игры становится ненужным, ценой некоторой потери производительности, когда в поле зрения игрока слишком много моделей. Чтобы это оптимизировать, мы в итоге переключили API рендеринга Gmod на Vulkan: теперь возможны нативная трассировка лучей и DLSS / FSR, которые будут реализованы в последующем проекте.
+
+Статичные объекты: поддерживаются .pmx, .fbx, .obj, .glb и .blend
+Динамические персонажи: поддерживаются .pmx в формате MMD (Polygon Model eXtended для MikuMikuDance) и стандартизированный .VRM (Virtual Reality Model).
+
+[h2] Вкладка «Внешние модели» в главном меню рядом с панелью «НИПы» [/h2]
+
+[b]Как только ты поверишь в себя, ты поймёшь, как жить.[/b]
+ --- Иоганн Вольфганг фон Гёте — «Фауст» — 1790 г.
+
+[img]https://i.imgur.com/fVVaDCS.gif[/img]
+
+Интерфейс и описание аддона доступны на китайском (中文), английском (English), французском (Français), японском (日本語), корейском (한국어) и русском (Русский) языках.
+
+[h1]Возможности[/h1]
+- Перевод API рендеринга Gmod с OpenGL на Vulkan: производительность в очень сложных сценах должна заметно вырасти, а нагрузка на GPU — снизиться на 50%.
+- Импорт практически любой модели персонажа в Garry's Mod в качестве модели игрока/НИПа и рэгдолла
+- Модели хранятся на сервере и доступны всем клиентам (бинарный модуль должен быть установлен и на клиенте, и на сервере)
+- Экспорт импортированных моделей в виде аддонов Garry's Mod и публикация в Мастерской (этот аддон обязательно нужно указать как зависимость, иначе они будут бесполезны)
+- Сохранение / загрузка между сессиями
+
+[h2]Как использовать[/h2]
+[list=1]
+[*]Подпишитесь на этот предмет в Мастерской.
+[*]Скачайте бинарный модуль для Gmod с открытым исходным кодом с [url=https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases] GitHub: SheepyLord/Gmod-Model-Hotloader-with-Vulkan[/url].
+[*]Перетащите папку в steamapp/GarrysMod и объедините её с существующей.
+[*]Запустите Garry's Mod.
+[*]Нажмите Q и перейдите на вкладку [b]Внешние модели[/b] (External Models).
+[*]Выберите модели на своём компьютере с помощью кнопки импорта.
+[*]Подождите несколько секунд, пока модель импортируется (зависит от сложности).
+[*]С помощью кнопок размещайте, создавайте и используйте импортированные модели.
+[/list]
+
+[h3]Примечания[/h3]
+- При импорте этот аддон снимает все ограничения движка Source и поддерживает модели, содержащие до 1 миллиона вершин, 32 767 костей, ключей формы, материалов, групп вершин и твёрдых тел. Теперь ограничение — только ваш компьютер.
+- Аддон использует физический движок Bullet с ускоренной на GPU через Vulkan симуляцией твёрдых и мягких тел и множеством оптимизаций, что позволяет детально симулировать одежду и волосы на моделях персонажей.
+- Симуляция физики одежды, волос и тела выполняется только на клиенте; стандартная физика Havok в Gmod не изменяется.
+- Импортированные модели поддерживают моддинг и совместимы с большинством стандартных точек входа и методов Lua.
+- Экспортированными моделями смогут пользоваться только игроки, у которых установлен этот аддон.
+- Оптимизировано для RTX-Remix; если вы используете Remix, скачайте пакет OpenGL-Remix.
+
+[u]Авторы[/u]
+- Vulkan Kernel Model Hot Loader with Softbody Simulation: SheepyLord
+
+[u]Другие аддоны[/u]
+1. (Рекомендуется) Редактирование материалов импортированных моделей
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326] Advanced Material Editor (Tools)[/url]
+
+2. (Рекомендуется) Воспроизведение анимаций на импортированных моделях персонажей
+[url=https://steamcommunity.com/workshop/filedetails/?id=3718373357] Character Motion Importer from MikuMikuDance[/url]
+[url=https://steamcommunity.com/workshop/filedetails/?id=3762968326] Hello Miku! - Character Dance Animation Pack - Vocaloid (ハーロミク - ボーカロイド) (требуется аддон выше)[/url]
+
+3. Аддон реакций, работа которого с импортированными моделями персонажей проверена
+[url=https://steamcommunity.com/sharedfiles/filedetails/?id=3667904171]
+Enhanced Entity Animation and Expression Response (Utility) [/url]
