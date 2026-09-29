@@ -204,7 +204,7 @@ if SERVER then
   ent:SetNW2Bool('MMDHLNoDraw',ent:GetNoDraw() or ent:IsEffectActive(EF_NODRAW))
   mmdhl.InvalidateEntityList()
   ent:SetNW2Int('MMDHLNativeBodyCount',ent:GetPhysicsObjectCount())
-  ent:SetNW2Int('MMDHLSecondaryCollision',options.secondaryCollision or 2)
+  ent:SetNW2Int('MMDHLCollisionFlags',mmdhl.ValidCollisionFlags(options.collisionFlags) or mmdhl.CollideDefault)
   ent:SetNW2String('MMDHLSecondaryBackend',options.secondaryBackend or 'reference')
   ent.MMDOptions=table.Copy(options) ent.MMDPose={} ent.MMDManipulation={} ent.MMDMorphs={}
   mmdhl.rigs[rig.key]=rig

@@ -4,6 +4,13 @@
 #include "broadphase.hpp"
 namespace mmd {
 constexpr int ExternalCollisionTag=0x4d4d44;
+// What hair and clothing collide with: the checkboxes in the physics settings.
+// Character is the model's own body (its bone-following PMX bodies and VRM
+// colliders); the others come from the captured Source scene.
+namespace Collide {
+constexpr unsigned World=1,Character=2,Objects=4,Players=8,Npcs=16,All=31;
+constexpr unsigned Scene=World|Objects|Players|Npcs,Default=Character|Objects;
+}
 struct SceneGeometry {
  enum Kind { Sphere,Triangles,Convexes } kind=Convexes;
  std::vector<btVector3> vertices;
@@ -18,6 +25,10 @@ struct SceneObject {
  btTransform transform=btTransform::getIdentity();
  btVector3 velocity{0,0,0},angular{0,0,0};
  bool isStatic=false;
+ // A living player's or NPC's physics shadow: characters collide with them only
+ // when asked (Collide::Players, Collide::Npcs).
+ enum Actor:uint8_t {NoActor=0,LivingPlayer=1,LivingNpc=2};
+ uint8_t actor=NoActor;
 };
 struct SceneFrame {uint64_t sequence=0;double timestamp=0,captureMs=0;unsigned ownedObjects=0;std::vector<SceneObject> objects;};
 // Frames and geometry cross realms: the client's secondary worlds keep what the

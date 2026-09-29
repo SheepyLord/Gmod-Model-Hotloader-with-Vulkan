@@ -1,32 +1,55 @@
 local native=mmdhl.native
 local L,lazy=mmdhl.L,mmdhl.I18n.Lazy
-mmdhl.SecondaryCollisionModes={
- lazy({id=0},{name=function() return L'secondary.collision.character' end}),
- lazy({id=1},{name=function() return L'secondary.collision.map' end}),
- lazy({id=2},{name=function() return L'secondary.collision.objects' end})
+-- What hair and clothing collide with: one bit per checkbox of the physics
+-- settings (mmdhl_collide_with), as Collide:: in the native module. Character
+-- is the model's own body; the others come from the captured Source scene.
+local Collide={world=1,character=2,objects=4,players=8,npcs=16}
+mmdhl.Collide=Collide
+mmdhl.CollideDefault=Collide.character+Collide.objects
+mmdhl.CollideScene=Collide.world+Collide.objects+Collide.players+Collide.npcs
+mmdhl.CollisionTargets={
+ lazy({key='world',flag=Collide.world},{name=function() return L'physics.collide.world' end,tooltip=function() return L'physics.collide.world_tooltip' end}),
+ lazy({key='character',flag=Collide.character},{name=function() return L'physics.collide.character' end,tooltip=function() return L'physics.collide.character_tooltip' end}),
+ lazy({key='objects',flag=Collide.objects},{name=function() return L'physics.collide.objects' end,tooltip=function() return L'physics.collide.objects_tooltip' end}),
+ lazy({key='players',flag=Collide.players},{name=function() return L'physics.collide.players' end,tooltip=function() return L'physics.collide.players_tooltip' end}),
+ lazy({key='npcs',flag=Collide.npcs},{name=function() return L'physics.collide.npcs' end,tooltip=function() return L'physics.collide.npcs_tooltip' end})
 }
-function mmdhl.GetSecondaryCollisionMode(ent)
- if CLIENT then
-  if ent.MMDHLClientCollisionMode~=nil then return ent.MMDHLClientCollisionMode end
-  if mmdhl.GetGlobalSettings then return mmdhl.GetGlobalSettings().secondaryCollision end
- end
- return ent:GetNW2Int('MMDHLSecondaryCollision',2)
+function mmdhl.ValidCollisionFlags(flags)
+ flags=tonumber(flags) if flags and flags==math.floor(flags) and flags>=0 and flags<=31 then return flags end
 end
-function mmdhl.SetSecondaryCollisionMode(ent,mode)
- mode=tonumber(mode) if not mmdhl.IsMMD(ent) or not mode or mode~=math.floor(mode) or mode<0 or mode>2 then return false end
+-- Native modules before 2.2 take a level: 0 the character only, 1 and the map, 2 and objects.
+function mmdhl.CollisionLevel(flags)
+ if bit.band(flags,Collide.objects)~=0 then return 2 end
+ return bit.band(flags,Collide.world)~=0 and 1 or 0
+end
+-- The scene objects these flags need, as far as this machine's native module can
+-- tell them apart: one before 2.2 cannot tag living players and NPCs.
+function mmdhl.SceneKinds(flags)
+ local kinds=bit.band(flags,mmdhl.CollideScene)
+ if not native.SetSecondaryCollisionFlags then kinds=bit.band(kinds,Collide.world+Collide.objects) end
+ return kinds
+end
+function mmdhl.GetCollisionFlags(ent)
  if CLIENT then
-  if mmdhl.GetInstance(ent)>0 then local _,err=native.SetSecondaryCollisionMode(mmdhl.GetInstance(ent),mode) if err then return false,err end end
-  ent.MMDHLClientCollisionMode=mode return true
+  if ent.MMDHLClientCollisionFlags~=nil then return ent.MMDHLClientCollisionFlags end
+  if mmdhl.GetGlobalSettings then return mmdhl.GetGlobalSettings().collisionFlags end
  end
- if mmdhl.GetInstance(ent)>0 then local _,err=native.SetSecondaryCollisionMode(mmdhl.GetInstance(ent),mode) if err then return false,err end end
- ent:SetNW2Int('MMDHLSecondaryCollision',mode) ent.MMDOptions=ent.MMDOptions or {} ent.MMDOptions.secondaryCollision=mode return true
+ return ent:GetNW2Int('MMDHLCollisionFlags',mmdhl.CollideDefault)
+end
+function mmdhl.SetCollisionFlags(ent,flags)
+ flags=mmdhl.ValidCollisionFlags(flags) if not mmdhl.IsMMD(ent) or not flags then return false end
+ local handle=mmdhl.GetInstance(ent)
+ if handle>0 then
+  local _,err if native.SetSecondaryCollisionFlags then _,err=native.SetSecondaryCollisionFlags(handle,flags) else _,err=native.SetSecondaryCollisionMode(handle,mmdhl.CollisionLevel(flags)) end
+  if err then return false,err end
+ end
+ if CLIENT then ent.MMDHLClientCollisionFlags=flags return true end
+ ent:SetNW2Int('MMDHLCollisionFlags',flags) ent.MMDOptions=ent.MMDOptions or {} ent.MMDOptions.collisionFlags=flags return true
 end
 if SERVER then
  util.AddNetworkString('mmdhl_scene_active')
  local localDemand=true
  net.Receive('mmdhl_scene_active',function(_,ply) if game.SinglePlayer() then localDemand=net.ReadBool() end end)
- util.AddNetworkString('mmdhl_secondary_collision')
- net.Receive('mmdhl_secondary_collision',function(_,ply) local ent,mode=net.ReadEntity(),net.ReadUInt(2) if game.SinglePlayer() and mmdhl.IsMMD(ent) and gamemode.Call('CanProperty',ply,'bodygroups',ent) then mmdhl.SetSecondaryCollisionMode(ent,mode) end end)
  local active=false
  local function physicsBodies(ent)
   local count=ent:GetPhysicsObjectCount()
@@ -73,9 +96,11 @@ if SERVER then
    local bodies=physicsBodies(ent) if bodies then owners[ent:EntIndex()]=bodies end
   end
   if not wanted then if active then native.CaptureSecondaryScene() active=false end return end
-  -- Classify on the engine thread; each immutable snapshot excludes living
-  -- actors before the native bridge reads their physics. Dead ragdolls remain.
-  local excluded={} local living=0 local classified={}
+  -- Classify on the engine thread. Living players' and NPCs' bodies are tagged
+  -- for the characters that collide with them; a native module before 2.2
+  -- cannot tag them, so they are left out. Dead ragdolls are objects.
+  local tagged=native.SetSecondaryCollisionFlags~=nil
+  local excluded,players,npcs={},{},{} local living=0 local classified={}
   local function classify(ent)
    if classified[ent] then return end classified[ent]=true
    -- In a listen-server process, VPhysics already publishes exact transforms.
@@ -86,20 +111,20 @@ if SERVER then
    local bodies=(livingActor or not game.SinglePlayer()) and physicsBodies(ent) or owners[ent:EntIndex()]
    if bodies then owners[ent:EntIndex()]=bodies end
    if livingActor then
-    living=living+1
-    for _,body in pairs(bodies or {}) do if IsValid(body) then excluded[#excluded+1]=body end end
+    living=living+1 local list=not tagged and excluded or ent:IsPlayer() and players or npcs
+    for _,body in pairs(bodies or {}) do if IsValid(body) then list[#list+1]=body end end
    end
   end
   -- Players are few and can outrun the region margin (noclip, vehicles, falls).
   for _,ent in ipairs(player.GetAll()) do classify(ent) end
   for _,ent in ipairs(nearbyEntities()) do classify(ent) end
-  active=true local value,err=native.CaptureSecondaryScene(owners,CurTime(),excluded)
+  active=true local value,err=native.CaptureSecondaryScene(owners,CurTime(),excluded,players,npcs)
   if err then
    mmdhl.sceneError=err ErrorNoHalt('[Model Hotloader scene] '..err..'\n')
    file.CreateDir('mmd_hotloader/diagnostics') file.Write('mmd_hotloader/diagnostics/secondary-scene-'..os.time()..'.json',util.TableToJSON({error=err,map=game.GetMap(),scene=mmdhl.sceneDiagnostics,time=CurTime()},true))
    net.Start('mmdhl_notice') net.WriteString(L('secondary.error.contacts_disabled',{reason=err})) net.Broadcast()
-   for _,ent in ipairs(mmdhl.Entities()) do mmdhl.SetSecondaryCollisionMode(ent,0) end
-  else mmdhl.sceneDiagnostics=mmdhl.Decode(value) mmdhl.sceneDiagnostics.excludedLivingEntities=living end
+   for _,ent in ipairs(mmdhl.Entities()) do mmdhl.SetCollisionFlags(ent,Collide.character) end
+  else mmdhl.sceneDiagnostics=mmdhl.Decode(value) mmdhl.sceneDiagnostics.livingEntities=living end
  end)
  hook.Add('PostCleanupMap','MMDHL.SecondarySceneCleanup',function() native.CaptureSecondaryScene() active=false end)
 end
@@ -110,7 +135,7 @@ if CLIENT then
   local quality=GetConVar('mmdhl_secondary_iterations') local active=false
   if quality and quality:GetInt()>0 then for _,ent in ipairs(mmdhl.Entities()) do
    local lod=ent.MMDPhysicsLOD
-   if mmdhl.GetInstance(ent)>0 and mmdhl.GetSecondaryCollisionMode(ent)>0 and not (lod and lod.suspended) and not (mmdhl.IsLocalFirstPerson and mmdhl.IsLocalFirstPerson(ent)) then active=true break end
+   if mmdhl.GetInstance(ent)>0 and bit.band(mmdhl.GetCollisionFlags(ent),mmdhl.CollideScene)~=0 and not (lod and lod.suspended) and not (mmdhl.IsLocalFirstPerson and mmdhl.IsLocalFirstPerson(ent)) then active=true break end
   end end
   if active~=wasActive then wasActive=active net.Start('mmdhl_scene_active') net.WriteBool(active) net.SendToServer() end
  end)

@@ -37,8 +37,10 @@ function mmdhl.OpenEntityEditor(ent)
  end
  action(L'editor.reload',function() mmdhl.library.StartImport(mmdhl.native.Reload(id)) end)
  if ent:GetClass()=='prop_ragdoll' and mmdhl.CollisionEditor then mmdhl.CollisionEditor(scroll,ent) end
- local collisions=scroll:Add('DComboBox') collisions:Dock(TOP) collisions:SetTall(30)
- mmdhl.BindGlobalChoice(collisions,'secondaryCollision',mmdhl.SecondaryCollisionModes)
+ local collisions=scroll:Add('DLabel') collisions:Dock(TOP) collisions:SetTall(26) collisions:SetText(L'physics.collision.label') collisions:SetDark(true)
+ for _,target in ipairs(mmdhl.CollisionTargets) do
+  local box=scroll:Add('DCheckBoxLabel') box:Dock(TOP) box:DockMargin(12,0,0,4) box:SetText(target.name) box:SetDark(true) box:SetTooltip(target.tooltip) mmdhl.BindCollisionCheckbox(box,target.flag)
+ end
  local collisionHelp=scroll:Add('DLabel') collisionHelp:Dock(TOP) collisionHelp:SetTall(40) collisionHelp:SetWrap(true) collisionHelp:SetText(L'editor.collision_help') collisionHelp:SetDark(true)
  local parts=scroll:Add('DCollapsibleCategory') parts:Dock(TOP) parts:SetLabel(L'editor.visible_parts') parts:SetExpanded(false)
  local contents=vgui.Create('DListLayout',parts) parts:SetContents(contents)

@@ -55,7 +55,7 @@ mmdhl.WithSpawnDefaults=function(_,o) return table.Copy(o or {}) end
 mmdhl.FacingPlayerAngles=function() return Angle() end
 mmdhl.CanUseAsset=function() return true end
 mmdhl.ActorOptions=function(o) return o end
-mmdhl.NPCWeapon=function() return 'none' end mmdhl.CleanBodygroups=function(v) return v end mmdhl.ValidSecondaryBackend=function() return 'cpu_mt_v2' end
+mmdhl.NPCWeapon=function() return 'none' end mmdhl.CleanBodygroups=function(v) return v end mmdhl.ValidSecondaryBackend=function() return 'cpu_mt_v2' end mmdhl.ValidCollisionFlags=function(v) return tonumber(v) end mmdhl.CollideDefault=6
 mmdhl.SpawnNative=function(p,id,options,done) CREATED=CREATED+1 local ent={EntIndex=function() return 42 end} done(ent) return ent end
 ''')
 attach(server)

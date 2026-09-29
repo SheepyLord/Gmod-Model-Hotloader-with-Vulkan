@@ -48,10 +48,14 @@ constexpr size_t PresentHistoryDepth=5;
 }
 struct Secondary::Filter:btOverlapFilterCallback {
  bool pruneKinematic=false;
+ // Collide::Character: hair and clothing (simulated bodies) against the body
+ // (the bodies that follow bones).
+ bool characterContacts=true;
  bool needBroadphaseCollision(btBroadphaseProxy* a,btBroadphaseProxy* b) const override {
   auto x=static_cast<btCollisionObject*>(a->m_clientObject),y=static_cast<btCollisionObject*>(b->m_clientObject);
   bool ex=x->getUserIndex2()==ExternalCollisionTag,ey=y->getUserIndex2()==ExternalCollisionTag;
   if(ex||ey)return ex!=ey&&!(ex?y:x)->isStaticOrKinematicObject();
+  if(!characterContacts&&x->isStaticOrKinematicObject()!=y->isStaticOrKinematicObject())return false;
   // Two followers never produce a contact response; skipping the pair saves the
   // broadphase bookkeeping and narrowphase visit Bullet would otherwise spend.
   if(pruneKinematic&&x->isStaticOrKinematicObject()&&y->isStaticOrKinematicObject())return false;
@@ -154,7 +158,7 @@ struct Secondary::External {
  }
  // `lower`/`upper` are the character's Source-space bounds captured by the
  // caller, so an asynchronous tick never reads render-thread arrays.
- void sync(const Instance& instance,int mode,btVector3 lower,btVector3 upper){
+ void sync(const Instance& instance,unsigned flags,btVector3 lower,btVector3 upper){
   auto start=std::chrono::steady_clock::now();auto frame=readScene(instance.owner);std::set<uint64_t> keep;
   auto c=basis();float scale=instance.sourceRig->scale;
   lower-=btVector3(48,48,48);upper+=btVector3(48,48,48);
@@ -166,7 +170,9 @@ struct Secondary::External {
   interestCenter=middle;interestPlaced=true;
   noteSceneInterest(reinterpret_cast<uintptr_t>(this),lower-lead,upper+lead);
   if(frame){sequence=frame->sequence;captureMs=frame->captureMs;
-   for(auto& source:frame->objects){if(source.owner==(instance.sceneOwner?instance.sceneOwner:instance.id)||(!source.isStatic&&mode<2))continue;
+   for(auto& source:frame->objects){
+    unsigned kind=source.actor==SceneObject::LivingPlayer?Collide::Players:source.actor==SceneObject::LivingNpc?Collide::Npcs:source.isStatic?Collide::World:Collide::Objects;
+    if(source.owner==(instance.sceneOwner?instance.sceneOwner:instance.id)||!(flags&kind))continue;
     auto center=source.transform*((source.geometry->minimum+source.geometry->maximum)*.5f),extent=(source.geometry->maximum-source.geometry->minimum)*.5f;
     auto basisAbs=source.transform.getBasis().absolute();extent=basisAbs*extent+source.velocity.absolute()*.1f;
     if(center.x()+extent.x()<lower.x()||center.y()+extent.y()<lower.y()||center.z()+extent.z()<lower.z()||center.x()-extent.x()>upper.x()||center.y()-extent.y()>upper.y()||center.z()-extent.z()>upper.z())continue;
@@ -245,14 +251,33 @@ struct Secondary::External {
   owner.surfaceGuardMs+=elapsedMs(started);
  }
 };
-void Secondary::applyCollisionMode(int mode){if(!mode)external.reset();else if(!external)external=std::make_unique<External>(*this);effectiveCollisionMode=mode;}
-void Secondary::setCollisionMode(int mode){
- if(mode<0||mode>2)throw std::runtime_error("Invalid secondary collision mode");collisionMode=mode;
- // The simulation owns `external`. A running job applies the newest request
- // before its next tick; an idle world applies it now and drops a request a
- // finished job left behind, which would otherwise override this newer one.
- if(async){std::lock_guard lock(mutex);if(running){pendingCollisionMode=mode;return;}pendingCollisionMode=-1;applyCollisionMode(mode);return;}
- applyCollisionMode(mode);
+unsigned collisionFlagsForLevel(int level){
+ if(level<0||level>2)throw std::runtime_error("Invalid secondary collision mode");
+ return level==0?Collide::Character:level==1?Collide::Character|Collide::World:Collide::Character|Collide::World|Collide::Objects;
+}
+void Secondary::applyCollisionFlags(unsigned flags){
+ bool character=flags&Collide::Character;
+ if(filter->characterContacts!=character){
+  filter->characterContacts=character;auto w=nanoemWorld(world);
+  // The filter stays installed while it excludes the body. Otherwise reference
+  // worlds keep Bullet's own pair order unless an external scene needs it.
+  if(!character&&!filterInstalled){if(!external)w->getPairCache()->setOverlapFilterCallback(filter.get());filterInstalled=true;}
+  else if(character&&filterInstalled&&!v2){if(!external)w->getPairCache()->setOverlapFilterCallback(nullptr);filterInstalled=false;}
+  // Pairs are filtered when they form: rebuild the model's proxies so pairs
+  // that already exist follow the new rule.
+  for(auto& b:bodies)w->refreshBroadphaseProxy(nanoemRigidBody(b.value));
+ }
+ if(!(flags&Collide::Scene))external.reset();else if(!external)external=std::make_unique<External>(*this);
+ effectiveCollisionFlags=flags;
+}
+void Secondary::setCollisionFlags(unsigned flags){
+ if(flags>Collide::All)throw std::runtime_error("Invalid secondary collision flags");collisionFlags=flags;
+ // The simulation owns `external` and the pair filter. A running job applies
+ // the newest request before its next tick; an idle world applies it now and
+ // drops a request a finished job left behind, which would otherwise override
+ // this newer one.
+ if(async){std::lock_guard lock(mutex);if(running){pendingCollisionFlags=flags;collisionPending=true;return;}collisionPending=false;applyCollisionFlags(flags);return;}
+ applyCollisionFlags(flags);
 }
 void Secondary::setAsyncWaitBudget(double ms){if(!std::isfinite(ms)||ms<0||ms>100)throw std::runtime_error("Wait budget must be 0 through 100 ms");waitBudgetMs=ms;}
 double Secondary::asyncWaitBudget(){return waitBudgetMs.load();}
@@ -553,7 +578,7 @@ void Secondary::step(double seconds){
  if(!inputs.empty()&&seconds==0)inputs.back().pose=instance.sourcePose;else inputs.push_back({inputTime,instance.sourcePose});
  auto latest=instance.sourcePose;
  accumulator+=seconds;
- if(external){btVector3 lower(1e9f,1e9f,1e9f),upper=-lower;for(auto& bone:instance.presentationBones){lower.setMin(bone.getOrigin());upper.setMax(bone.getOrigin());}if(instance.snapshot){lower.setMin(instance.snapshot->minimum);upper.setMax(instance.snapshot->maximum);}external->sync(instance,effectiveCollisionMode,lower,upper);sceneMs=external->syncMs;}
+ if(external){btVector3 lower(1e9f,1e9f,1e9f),upper=-lower;for(auto& bone:instance.presentationBones){lower.setMin(bone.getOrigin());upper.setMax(bone.getOrigin());}if(instance.snapshot){lower.setMin(instance.snapshot->minimum);upper.setMax(instance.snapshot->maximum);}external->sync(instance,effectiveCollisionFlags,lower,upper);sceneMs=external->syncMs;}
  applyImpulses(instance.expandedMorphs(),instance.lastImpulseWeights);
  applySleepPolicy();
  lastSteps=advance(instance.sourcePose,[&]()->const std::vector<btTransform>&{instance.evaluate(false);return instance.skin;});
@@ -580,9 +605,9 @@ void Secondary::submitAsync(Input&& input){
 void Secondary::runAsync(){
  InlinePhysicsScope inlineScope;
  for(;;){
-  Input input;int mode=-1;
-  {std::lock_guard lock(mutex);if(stopping||queue.empty()){running=false;idle.notify_all();return;}input=std::move(queue.front());queue.pop_front();mode=pendingCollisionMode;pendingCollisionMode=-1;}
-  try{if(mode>=0)applyCollisionMode(mode);tickAsync(input);}
+  Input input;bool apply=false;unsigned flags=0;
+  {std::lock_guard lock(mutex);if(stopping||queue.empty()){running=false;idle.notify_all();return;}input=std::move(queue.front());queue.pop_front();apply=collisionPending;flags=pendingCollisionFlags;collisionPending=false;}
+  try{if(apply)applyCollisionFlags(flags);tickAsync(input);}
   catch(const std::exception& e){std::lock_guard lock(mutex);asyncError=e.what();running=false;idle.notify_all();return;}
   catch(...){std::lock_guard lock(mutex);asyncError="Unknown asynchronous physics failure";running=false;idle.notify_all();return;}
  }
@@ -605,7 +630,7 @@ void Secondary::tickAsync(const Input& input){
  inputTime+=input.elapsed;
  if(!inputs.empty()&&input.elapsed==0)inputs.back().pose=input.pose;else inputs.push_back({inputTime,input.pose});
  accumulator+=input.elapsed;
- if(external){external->sync(instance,effectiveCollisionMode,input.boundsMinimum,input.boundsMaximum);sceneMs=external->syncMs;}
+ if(external){external->sync(instance,effectiveCollisionFlags,input.boundsMinimum,input.boundsMaximum);sceneMs=external->syncMs;}
  applyImpulses(input.morphs,tickImpulseWeights);
  applySleepPolicy();
  unsigned steps=advance(tickSourcePose,[&]()->const std::vector<btTransform>&{auto started=std::chrono::steady_clock::now();evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective);evaluateMs+=elapsedMs(started);return tickPose.skin;});
@@ -690,6 +715,7 @@ void Secondary::stepSprings(const std::vector<btTransform>& skin){
  // Joints also meet mirrored map/prop geometry in the collision modes that mirror it,
  // with at least 2 cm of radius: VRM hit radii are sized for hair against a head.
  SpringSystem::WorldContact contact=[this](const btVector3& outside,const btVector3& head,btVector3& tail,float radius,float length){return external->constrainTail(outside,head,tail,std::max(radius,.02f*springs->setup().unitsPerMeter),length);};
+ springs->bodyContacts=effectiveCollisionFlags&Collide::Character;
  springs->step(float(TickSeconds),skin,tuningGravity,tuningDamping,external&&!external->objects.empty()?&contact:nullptr);
 }
 void Secondary::presentSprings(const std::vector<btQuaternion>& previous,const std::vector<btQuaternion>& current,bool blend){
@@ -786,7 +812,7 @@ Json Secondary::diagnosticsFrom(bool detailed,const std::vector<btTransform>& cu
   }
  }
  Json out=broadphase.is_object()?broadphase:Json::object();
- out.update({{"physicsMs",stats.physicsMs},{"poseMs",stats.poseMs},{"ticks",stats.ticks},{"lastSteps",stats.steps},{"simulationTime",stats.simulationTime},{"inputTime",stats.inputTime},{"debtSeconds",stats.accumulator},{"interpolation",interpolation},{"resets",stats.resets},{"resetReason",stats.resetReason},{"backend","nanoem-30acffaa"},{"bodies",bodies.size()},{"joints",joints.size()},{"authoredJoints",instance.model->joints.size()},{"skippedJoints",instance.model->joints.size()-joints.size()},{"warnings",instance.model->warnings},{"activeJoints",active},{"followers",followers},{"softBodies",soft.size()},{"stepMs",stats.lastMs},{"physicsTotalMs",stats.physicsTotalMs},{"tickTotalMs",stats.tickTotalMs},{"guardTotalMs",stats.guardTotalMs},{"tickCpuTotalMs",stats.tickCpuTotalMs},{"droppedTime",stats.dropped},{"maxJointDistance",maxError},{"maxLinearLimitError",maxLimitError},{"ground",false},{"collisionMode",collisionMode},{"effectiveCollisionMode",effectiveCollisionMode.load()},{"feedbackApplied",0},{"asynchronous",async},{"lagMs",lagMs},{"presentationDelayMs",presentationDelayMs()},{"sleepingBodies",sleepingBodies},{"asyncError",asyncError},{"bodyList",list}});
+ out.update({{"physicsMs",stats.physicsMs},{"poseMs",stats.poseMs},{"ticks",stats.ticks},{"lastSteps",stats.steps},{"simulationTime",stats.simulationTime},{"inputTime",stats.inputTime},{"debtSeconds",stats.accumulator},{"interpolation",interpolation},{"resets",stats.resets},{"resetReason",stats.resetReason},{"backend","nanoem-30acffaa"},{"bodies",bodies.size()},{"joints",joints.size()},{"authoredJoints",instance.model->joints.size()},{"skippedJoints",instance.model->joints.size()-joints.size()},{"warnings",instance.model->warnings},{"activeJoints",active},{"followers",followers},{"softBodies",soft.size()},{"stepMs",stats.lastMs},{"physicsTotalMs",stats.physicsTotalMs},{"tickTotalMs",stats.tickTotalMs},{"guardTotalMs",stats.guardTotalMs},{"tickCpuTotalMs",stats.tickCpuTotalMs},{"droppedTime",stats.dropped},{"maxJointDistance",maxError},{"maxLinearLimitError",maxLimitError},{"ground",false},{"collisionFlags",collisionFlags},{"effectiveCollisionFlags",effectiveCollisionFlags.load()},{"feedbackApplied",0},{"asynchronous",async},{"lagMs",lagMs},{"presentationDelayMs",presentationDelayMs()},{"sleepingBodies",sleepingBodies},{"asyncError",asyncError},{"bodyList",list}});
  out["secondaryBackendRequested"]=instance.secondaryBackend;out["secondaryBackend"]=effectiveBackend;out["secondaryBackendFallback"]=backendFallback;out["broadphaseRequested"]=instance.secondaryBroadphase;out["solverIterations"]=stats.iterations;
  if(detailed){out["maxLinearLimitJoint"]=worstJoint;out["maxLinearLimitBodies"]=worstBodies;out["attachmentJoints"]=std::move(attachments);}
  if(out.contains("compute")&&!out["compute"].value("failure",std::string()).empty()){out["secondaryBackend"]="cpu_mt";out["secondaryBackendFallback"]=out["compute"]["failure"];}

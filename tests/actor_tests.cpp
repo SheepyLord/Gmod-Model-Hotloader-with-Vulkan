@@ -166,5 +166,13 @@ int main(int argc,char** argv){try{
  rejected=false;try{validateSharedFile("rigs/test/carrier.gma",makeGma({{"lua/autorun/payload.lua",{'x'}}},"bad"));}catch(...){rejected=true;}if(!rejected)throw std::runtime_error("Executable archive accepted");
  auto frame=std::make_shared<SceneFrame>();frame->sequence=9;frame->timestamp=1;auto geometry=std::make_shared<SceneGeometry>();geometry->kind=SceneGeometry::Sphere;geometry->radius=1;geometry->minimum={-1,-1,-1};geometry->maximum={1,1,1};SceneObject object;object.id=1;object.geometry=geometry;frame->objects.push_back(object);publishScene(frame);
  SceneShare sender,receiver;auto description=sender.describe({0,0,0},100);std::string id=description["objects"][0]["shape"];auto bytes=sender.chunk(id,0,32768);receiver.accept(id,bytes);World client;receiver.publish(client,description);if(readScene(&client)->objects.size()!=1)throw std::runtime_error("Scene publication failed");bytes.back()^=1;rejected=false;try{receiver.accept(id,bytes);}catch(...){rejected=true;}if(!rejected)throw std::runtime_error("Corrupt geometry accepted");
+ // Living players and NPCs travel tagged; a subscriber receives only the kinds it asked for.
+ {auto tagged=std::make_shared<SceneFrame>();tagged->sequence=10;tagged->timestamp=2;
+  for(uint8_t actor:{uint8_t(SceneObject::NoActor),uint8_t(SceneObject::LivingPlayer),uint8_t(SceneObject::LivingNpc)}){SceneObject o=object;o.id=10+actor;o.actor=actor;tagged->objects.push_back(o);}
+  SceneObject fixed=object;fixed.id=20;fixed.isStatic=true;tagged->objects.push_back(fixed);publishScene(tagged);
+  auto count=[&](unsigned kinds){return sender.describe({0,0,0},100,0,kinds)["objects"].size();};
+  if(count(Collide::All)!=4||count(Collide::Objects)!=1||count(Collide::World)!=1||count(Collide::Players|Collide::Npcs)!=2||count(Collide::Character)!=0)throw std::runtime_error("Scene export ignores the subscriber's collision kinds");
+  receiver.publish(client,sender.describe({0,0,0},100));int kinds=0;for(auto& o:readScene(&client)->objects)kinds|=1<<o.actor;
+  if(kinds!=7)throw std::runtime_error("Remote scene lost living actor tags");}
  std::cout<<"Actor reference/proportion encoding, native arms geometry, safe packages and remote collision snapshots passed\n";return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

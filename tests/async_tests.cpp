@@ -44,7 +44,7 @@ int main(int argc,char** argv){try{
   pa.submitPresentationPose(palette(*ps.sourceRig,191/60.,256),191/60.,192);pa.secondary->waitAsyncIdle();pa.stepSource();
   check(pa.secondary->resets==resets+1&&pa.secondary->resetReason=="teleport","teleports reset the asynchronous world once");
   pa.secondary->setCollisionMode(2);pa.submitPresentationPose(palette(*ps.sourceRig,192/60.,256),192/60.,193);pa.secondary->setCollisionMode(0);pa.secondary->waitAsyncIdle();pa.stepSource();
-  check(pa.secondary->diagnostics(false)["collisionMode"]==0&&pa.sourceError.empty(),"collision mode changes apply between ticks");
+  check(pa.secondary->diagnostics(false)["collisionFlags"]==Collide::Character&&pa.sourceError.empty(),"collision mode changes apply between ticks");
   double total=pa.secondary->inputTime;
   for(int k=0;k<24;k++){double t=(193+k)/60.;pa.submitPresentationPose(palette(*ps.sourceRig,t,256),t,uint64_t(194+k));}
   pa.secondary->waitAsyncIdle();pa.stepSource();
@@ -61,17 +61,18 @@ int main(int argc,char** argv){try{
   auto tick=[&]{double t=frame/60.;p.submitPresentationPose(palette(*p.sourceRig,t),t,uint64_t(++frame));};
   // The worker has taken the input: its tick is running (20 ms longer than usual).
   auto inFlight=[&]{Secondary::setAsyncTestStepDelay(20);tick();while(p.secondary->queuedInputs())std::this_thread::yield();};
-  auto effective=[&]{p.secondary->waitAsyncIdle();return p.secondary->diagnostics(false)["effectiveCollisionMode"].get<int>();};
+  auto effective=[&]{p.secondary->waitAsyncIdle();return p.secondary->diagnostics(false)["effectiveCollisionFlags"].get<unsigned>();};
+  const unsigned all=collisionFlagsForLevel(2),character=Collide::Character;
   p.secondary->setCollisionMode(2);tick();
-  check(effective()==2,"an idle world applies its collision mode at once");
+  check(effective()==all,"an idle world applies its collision mode at once");
   inFlight();p.secondary->setCollisionMode(0);
-  check(effective()==2,"a collision mode requested during a tick waits for the next tick");
+  check(effective()==all,"a collision mode requested during a tick waits for the next tick");
   Secondary::setAsyncTestStepDelay(0);tick();
-  check(effective()==0&&p.secondary->collisionMode==0,"the requested collision mode applies at the next tick");
+  check(effective()==character&&p.secondary->collisionFlags==character,"the requested collision mode applies at the next tick");
   p.secondary->setCollisionMode(2);tick();
   inFlight();p.secondary->setCollisionMode(0);p.secondary->waitAsyncIdle();
   Secondary::setAsyncTestStepDelay(0);p.secondary->setCollisionMode(2);tick();
-  check(effective()==2&&p.secondary->collisionMode==2&&p.sourceError.empty(),"a collision mode chosen while idle supersedes one left pending by the final in-flight tick");
+  check(effective()==all&&p.secondary->collisionFlags==all&&p.sourceError.empty(),"a collision mode chosen while idle supersedes one left pending by the final in-flight tick");
  }
  // Presentation continuity while a stepping job outlasts a frame: frames paced
  // at 240 Hz in real time present right after submitting (no wait budget) while

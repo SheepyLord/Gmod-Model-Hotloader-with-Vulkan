@@ -77,11 +77,11 @@ def main():
     process=kernel.OpenProcess(0x1000|0x10,False,session['pid']);assert process,'Owned game not running'
     psapi=ctypes.WinDLL('psapi');psapi.GetProcessMemoryInfo.argtypes=[wintypes.HANDLE,ctypes.POINTER(Memory),wintypes.DWORD]
     # Physics LOD and update-rate LOD are off unless requested: every character is presented every frame.
-    settings=['mmdhl_secondary_backend','mmdhl_secondary_collision','mmdhl_workers','mmdhl_secondary_wait_ms','mmdhl_lod_enabled','mmdhl_update_lod','mmdhl_secondary_iterations']+(['mmdhl_force_immediate_rendering'] if a.force_immediate is not None else [])
+    settings=['mmdhl_secondary_backend','mmdhl_collide_with','mmdhl_workers','mmdhl_secondary_wait_ms','mmdhl_lod_enabled','mmdhl_update_lod','mmdhl_secondary_iterations']+(['mmdhl_force_immediate_rendering'] if a.force_immediate is not None else [])
     saved=lua('client','local t={} for _,n in ipairs({'+','.join(json.dumps(n) for n in settings)+'}) do local c=GetConVar(n) if c then t[n]=c:GetString() end end return t')
     report['savedSettings']=saved
     try:
-        overrides=dict(zip(settings,[a.backend,str(a.mode),str(a.workers),str(a.wait),'0','1' if a.update_lod else '0',str(a.iterations)]+([str(a.force_immediate)] if a.force_immediate is not None else [])))
+        overrides=dict(zip(settings,[a.backend,str({0:2,1:3,2:7}[a.mode]),str(a.workers),str(a.wait),'0','1' if a.update_lod else '0',str(a.iterations)]+([str(a.force_immediate)] if a.force_immediate is not None else [])))
         lua('client','for k,v in pairs(util.JSONToTable('+json.dumps(json.dumps(overrides))+')) do local c=GetConVar(k) if c then c:SetString(v) end end return true')
         time.sleep(.35) # Let the normal client settings callbacks reach a safe worker boundary.
         lua('client',f'mmdhl.native.SetWorkers({a.workers}) mmdhl.native.SetSecondaryWaitBudget({a.wait}) return true')

@@ -12,7 +12,7 @@ from pathlib import Path
 directory=Path(session['cache'])/'debug'/session['token']
 assets=read(ROOT/'tests/v2-assets.json')
 source=(ROOT/'tests/game/native-stress.lua').read_text(encoding='utf-8')
-settings=['mmdhl_lod_enabled','mmdhl_secondary_backend','mmdhl_secondary_collision','mmdhl_debug_overlay']
+settings=['mmdhl_lod_enabled','mmdhl_secondary_backend','mmdhl_collide_with','mmdhl_debug_overlay']
 saved=lua('client','local t={} for _,n in ipairs('+ '{'+','.join(json.dumps(n) for n in settings)+'}) do t[n]=GetConVar(n):GetString() end return t')
 report={'session':session,'assets':assets,'scenes':{}}
 def save(): (ROOT/'validation/adaptive-physics.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -22,7 +22,7 @@ def cleanup():
 try:
     assert lua('client','return system.HasFocus()'), 'Owned game must be foreground'
     assert not lua('client','for _,e in ipairs(mmdhl.Entities()) do if not e.MMDHLPreviewRig then return true end end return false'), 'Use an empty owned scene; never remove unrelated actors'
-    lua('client',"RunConsoleCommand('mmdhl_secondary_backend','cpu_mt_v2'); RunConsoleCommand('mmdhl_secondary_collision','2'); RunConsoleCommand('mmdhl_debug_overlay','0'); return true")
+    lua('client',"RunConsoleCommand('mmdhl_secondary_backend','cpu_mt_v2'); RunConsoleCommand('mmdhl_collide_with','7'); RunConsoleCommand('mmdhl_debug_overlay','0'); return true")
     encoded=json.dumps(json.dumps([a['asset'] for a in assets]))
     lua('server','for _,id in ipairs(util.JSONToTable('+encoded+')) do mmdhl.native.RequestAsset(id) end return true')
     deadline=time.monotonic()+45

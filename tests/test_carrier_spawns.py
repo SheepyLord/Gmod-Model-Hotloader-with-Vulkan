@@ -12,7 +12,7 @@ root = Path(__file__).resolve().parents[1]
 lua = LuaRuntime(unpack_returned_tuples=True)
 lua.execute(r'''
 SERVER=true CLIENT=false
-mmdhl={rigs={},actorRegistrations={}}
+mmdhl={rigs={},actorRegistrations={},CollideDefault=6,ValidCollisionFlags=function(v) return tonumber(v) end}
 IsValid=function(e) return type(e)=='table' and not e.removed end
 isnumber=function(v) return type(v)=='number' end
 istable=function(v) return type(v)=='table' end

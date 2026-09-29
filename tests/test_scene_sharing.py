@@ -11,6 +11,7 @@ source = (root / 'addon/lua/mmdhl/scene_sharing.lua').read_text(encoding='utf-8'
 common = r'''
 NOW=0 RealTime=function() return NOW end CurTime=function() return NOW end
 IsValid=function(v) return v~=nil and not v.gone end istable=function(v) return type(v)=='table' end
+bit={band=function(a,b) return a&b end,bor=function(a,b) return a|b end}
 math.Clamp=function(v,low,high) return math.min(math.max(v,low),high) end
 game={SinglePlayer=function() return false end}
 HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end}
@@ -32,13 +33,14 @@ server.execute(common + r'''
 SERVER=true CLIENT=false
 util={AddNetworkString=function() end,Compress=function(s) return s end}
 EXPORTS={} CHUNKS={} CHARACTERS={}
-native={ExportSecondaryScene=function(center,radius,consumer) EXPORTS[#EXPORTS+1]=radius return '{"objects":[]}' end,
+native={ExportSecondaryScene=function(center,radius,consumer,kinds) EXPORTS[#EXPORTS+1]=radius EXPORTED_KINDS=kinds return '{"objects":[]}' end,
  ReadSceneChunk=function(id,offset) CHUNKS[#CHUNKS+1]={id=id,offset=offset,at=NOW} return string.rep('s',64) end}
--- The subscriber's own collision mode is its userinfo (mmdhl_secondary_collision).
-mmdhl={native=native,Entities=function() return CHARACTERS end,GetGlobalSettings=function(p) return {secondaryCollision=p.collision} end}
+-- The subscriber names the kinds of scene objects its collision choice needs
+-- (1 map, 4 objects, 8 living players, 16 living NPCs).
+mmdhl={native=native,Entities=function() return CHARACTERS end,CollideScene=29}
 function character(distance,radius) return {GetPos=function() return Vector(distance,0,0) end,BoundingRadius=function() return radius end} end
-P={collision=2,EyePos=function() return Vector(0,0,0) end,EntIndex=function() return 1 end}
-function subscribe(radius) INBOX={0,radius~=nil,radius} RECEIVE(0,P) end
+P={kinds=4,EyePos=function() return Vector(0,0,0) end,EntIndex=function() return 1 end}
+function subscribe(radius) INBOX={0,radius~=nil,radius,P.kinds} RECEIVE(0,P) end
 function shape(offset) INBOX={1,'shape',offset} RECEIVE(0,P) end
 -- One export frame: ticks until the 50 ms frame timer runs again.
 function frame() local before=#EXPORTS NOW=NOW+.06 run('Tick') return #EXPORTS>before and EXPORTS[#EXPORTS] or nil end
@@ -58,9 +60,12 @@ subscribe(800) assert(frame()==800,'a smaller request is kept')
 subscribe(-5) assert(frame()==512,'the smallest sphere is 512 units')
 CHARACTERS={character(1000,40),character(40000,40)}
 subscribe(1e9) assert(frame()==16384,'the server limit never exceeds 16384 units')
--- The client's own collision mode is off for every character: no export.
-P.collision=0 subscribe(4000) assert(frame()==nil,'a subscriber without collisions is exported for')
-P.collision=2 subscribe(4000) assert(frame()==4000)
+-- The client collides with nothing from the scene: no export.
+P.kinds=0 subscribe(4000) assert(frame()==nil,'a subscriber without collisions is exported for')
+P.kinds=4 subscribe(4000) assert(frame()==4000 and EXPORTED_KINDS==4,'the export is limited to the kinds the subscriber asked for')
+-- The character's own body is no scene object.
+P.kinds=31 subscribe(4000) assert(frame()==4000 and EXPORTED_KINDS==29)
+P.kinds=4
 -- Leaving and expiry.
 subscribe(nil) assert(frame()==nil,'an unsubscribed client is exported for')
 subscribe(4000) NOW=NOW+3.1 assert(frame()==nil,'a subscription not renewed for 3 s expires')
@@ -94,13 +99,14 @@ GetConVar=function() return {GetInt=function() return 1 end} end
 LocalPlayer=function() return {EyePos=function() return Vector(0,0,0) end} end
 local character={GetPos=function() return Vector(100,0,0) end,BoundingRadius=function() return 30 end}
 native={PublishRemoteScene=function() return true end}
-mmdhl={native=native,Entities=function() return {character} end,GetInstance=function() return 1 end,GetSecondaryCollisionMode=function() return 2 end}
+mmdhl={native=native,Entities=function() return {character} end,GetInstance=function() return 1 end,GetCollisionFlags=function() return 6 end,SceneKinds=function(flags) return flags&29 end}
 function deliver(sequence,name) INBOX={0,sequence,1,1,#name,name} RECEIVE() end
 ''')
 client.execute(source)
 client.execute(r'''
 run('Think')
 assert(SENT[1][1]==0 and SENT[1][2]==true and SENT[1][3]==4000,'the client subscribes with its own sphere')
+assert(SENT[1][4]==4,'the client names the kinds of scene objects it collides with')
 SENT={}
 -- A frame of 20001 objects is dropped: nothing is requested or published.
 local big={objects={}} for i=1,20001 do big.objects[i]={id=i,shape='s'..i,bytes=10} end

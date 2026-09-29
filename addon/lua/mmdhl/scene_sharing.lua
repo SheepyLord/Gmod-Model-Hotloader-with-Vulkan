@@ -13,10 +13,11 @@ end
 if SERVER then
  util.AddNetworkString('mmdhl_scene') local subscribers={}
  -- A subscriber's sphere reaches at most its farthest character, as its client
- -- computes it, never the whole map. The client applies its own collision mode
- -- (userinfo) to every character. Nil: there is nothing to export for it.
- local function interestLimit(p)
-  if mmdhl.GetGlobalSettings(p).secondaryCollision<=0 then return end
+ -- computes it, never the whole map. The client applies its own collision
+ -- choice to every character and names the kinds of objects that needs (map,
+ -- objects, living players, living NPCs). Nil: there is nothing to export for it.
+ local function interestLimit(p,state)
+  if (state.kinds or 0)==0 then return end
   local eye,limit=p:EyePos()
   for _,ent in ipairs(mmdhl.Entities()) do limit=math.max(limit or 0,eye:Distance(ent:GetPos())+ent:BoundingRadius()+512) end
   return limit and math.Clamp(limit,512,16384)
@@ -34,7 +35,7 @@ if SERVER then
    -- NaN or an infinite radius is no region: treat it as leaving.
    local radius=net.ReadBool() and net.ReadFloat()
    if not radius or radius~=radius or math.abs(radius)==math.huge then subscribers[p]=nil return end
-   local state=subscribers[p] or {} subscribers[p]=state state.untilTime=RealTime()+3 state.radius=math.max(radius,512) return
+   local state=subscribers[p] or {} subscribers[p]=state state.untilTime=RealTime()+3 state.radius=math.max(radius,512) state.kinds=bit.band(net.ReadUInt(5),mmdhl.CollideScene) return
   end
   if command~=1 or not subscribers[p] then return end
   local state=subscribers[p] state.chunk={id=net.ReadString(),offset=net.ReadUInt(32)}
@@ -48,8 +49,8 @@ if SERVER then
   for p,state in pairs(subscribers) do
    if not IsValid(p) or RealTime()>state.untilTime then subscribers[p]=nil
    else
-    local limit=interestLimit(p) local raw,err
-    if limit then raw,err=native.ExportSecondaryScene(p:EyePos(),math.min(state.radius,limit),p:EntIndex()) end
+    local limit=interestLimit(p,state) local raw,err
+    if limit then raw,err=native.ExportSecondaryScene(p:EyePos(),math.min(state.radius,limit),p:EntIndex(),state.kinds) end
     if raw then
      local bytes=util.Compress(raw)
      -- Split snapshot metadata; every net message stays below the engine limit.
@@ -108,11 +109,11 @@ else
   if game.SinglePlayer() then return end
   if transfer and RealTime()-transfer.time>5 then pending[transfer.id]=nil transfer=nil end
   if RealTime()<nextSubscribe then return end nextSubscribe=RealTime()+1
-  active=false local radius=4000
-  for _,ent in ipairs(mmdhl.Entities()) do local quality=ent.MMDPhysicsLOD
-   if GetConVar('mmdhl_secondary_iterations'):GetInt()>0 and mmdhl.GetInstance(ent)>0 and mmdhl.GetSecondaryCollisionMode(ent)>0 and not (quality and quality.suspended) then active=true radius=math.max(radius,LocalPlayer():EyePos():Distance(ent:GetPos())+ent:BoundingRadius()+512) end
+  active=false local radius,kinds=4000,0
+  for _,ent in ipairs(mmdhl.Entities()) do local quality=ent.MMDPhysicsLOD local wanted=mmdhl.SceneKinds(mmdhl.GetCollisionFlags(ent))
+   if GetConVar('mmdhl_secondary_iterations'):GetInt()>0 and mmdhl.GetInstance(ent)>0 and wanted~=0 and not (quality and quality.suspended) then active=true kinds=bit.bor(kinds,wanted) radius=math.max(radius,LocalPlayer():EyePos():Distance(ent:GetPos())+ent:BoundingRadius()+512) end
   end
-  net.Start('mmdhl_scene') net.WriteUInt(0,2) net.WriteBool(active) if active then net.WriteFloat(radius) end net.SendToServer() request()
+  net.Start('mmdhl_scene') net.WriteUInt(0,2) net.WriteBool(active) if active then net.WriteFloat(radius) net.WriteUInt(kinds,5) end net.SendToServer() request()
  end)
  function mmdhl.UpdateRemoteScene()
   if game.SinglePlayer() or not active or not latest then return end
@@ -121,7 +122,8 @@ else
   for _,o in ipairs(latest.objects) do if known[o.shape] then
    local copy=table.Copy(o) local ent=o.owner and Entity(o.owner)
    if not o.static and IsValid(ent) then
-    local bone=ent:TranslatePhysBoneToBone(o.bone or 0) local matrix=bone and bone>=0 and ent:GetBoneMatrix(bone)
+    -- A living player's or NPC's shadow does not follow a bone: interpolate it.
+    local bone=(o.actor or 0)==0 and ent:TranslatePhysBoneToBone(o.bone or 0) local matrix=bone and bone>=0 and ent:GetBoneMatrix(bone)
     if matrix then copy.position={(matrix*Vector(unpack(o.center or {0,0,0}))):Unpack()} copy.rotation=quaternion(matrix:GetAngles())
     else local old=previous and previous.byId[o.id] if old then copy.position={LerpVector(fraction,Vector(unpack(old.position)),Vector(unpack(o.position))):Unpack()} copy.rotation=quaternion(LerpAngle(fraction,rotation(old.rotation),rotation(o.rotation))) end end
    end

@@ -101,7 +101,7 @@ void SpringSystem::step(float dt,const std::vector<btTransform>& skin,float grav
   auto next=tail+inertia+rest*(j.stiffness*dt*d.unitsPerMeter)+j.gravityDir*(j.gravityPower*gravityScale*dt*d.unitsPerMeter);
   auto constrain=[&]{auto v=next-head;float l=v.length();next=head+(l>1e-7f?v/l:rest)*j.length;};
   constrain();
-  for(int ci:spring.colliders){auto& col=d.colliders[ci];if(col.bone<0)continue;
+  if(bodyContacts)for(int ci:spring.colliders){auto& col=d.colliders[ci];if(col.bone<0)continue;
    auto frame=d.isAffected[col.bone]?global[col.bone]:animated(skin,col.bone);auto a=frame*col.offset;btVector3 delta=next-a;
    if(col.capsule){auto segment=frame*col.tail-a;float along=segment.dot(delta),squared=segment.length2();if(along>0)delta-=along>=squared?segment:segment*(along/squared);}
    float length=delta.length(),distance=length-col.radius-j.hitRadius;

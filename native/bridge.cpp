@@ -132,11 +132,11 @@ void clearSecondaryScene(){sceneTracked.clear();publishScene(nullptr);}
 // quarter second of their own motion must touch a sceneInterest region. Busy
 // maps (animated props' bone followers, ragdolls, builds) used to be read in
 // full every tick. Until a consumer registers, everything is captured.
-Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,double timestamp,const std::unordered_set<void*>& excluded){
+Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,double timestamp,const std::unordered_set<void*>& excluded,const std::unordered_map<void*,uint8_t>& actors){
  auto started=std::chrono::steady_clock::now();initialize();int count=0;auto list=call<void**>(environment,47,&count);
  if(count<0||count>100000)throw std::runtime_error("Invalid scene object count");
  auto frame=newSceneFrame();frame->sequence=++sceneSequence;frame->timestamp=timestamp;const uint64_t generation=frame->sequence;
- unsigned triangles=0,excludedLiving=0,outside=0;
+ unsigned triangles=0,excludedLiving=0,livingActors=0,outside=0;
  const auto regions=sceneInterest();
  auto reachable=[&](const btVector3& c,const btVector3& e){
   if(regions.empty())return true;
@@ -151,6 +151,11 @@ Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,doub
  // Excluded objects are only dereferenced when this environment lists them.
  std::unordered_set<void*> excludedOwners;
  if(!excluded.empty())for(int i=0;i<count;i++)if(excluded.contains(list[i])){checked(list[i]);if(auto owner=call<void*>(list[i],objectMethod(17)))excludedOwners.insert(owner);}
+ // A living actor's other shadows share its kind and its entity (a player's own
+ // character must never collide with its crouched shadow).
+ struct ActorOwner {uint8_t kind;uint64_t entity;};std::unordered_map<void*,ActorOwner> actorOwners;
+ if(!actors.empty())for(int i=0;i<count;i++)if(auto it=actors.find(list[i]);it!=actors.end()){checked(list[i]);auto owner=owners.find(list[i]);
+  if(auto data=call<void*>(list[i],objectMethod(17)))actorOwners[data]={it->second,owner!=owners.end()?owner->second>>16:0};}
  frame->objects.reserve(size_t(std::min(count,1024)));
  for(int i=0;i<count;i++){void* object=list[i];checked(object);
   auto it=sceneTracked.find(object);if(it!=sceneTracked.end())it->second.seen=generation;
@@ -175,11 +180,12 @@ Json captureSecondaryScene(const std::unordered_map<void*,uint64_t>& owners,doub
   if(!reachable(transform*((g.minimum+g.maximum)*.5f),rotation.absolute()*((g.maximum-g.minimum)*.5f)+btVector3(linear.x,linear.y,linear.z).absolute()*.25f)){outside++;continue;}
   SceneObject item;item.id=it->second.id;item.geometry=it->second.geometry;item.isStatic=isStatic;item.transform=transform;
   if(auto owner=owners.find(object);owner!=owners.end()){item.owner=owner->second>>16;item.physicsBone=int(owner->second&65535);frame->ownedObjects++;}
+  if(!actorOwners.empty())if(auto actor=actorOwners.find(call<void*>(object,objectMethod(17)));actor!=actorOwners.end()){item.actor=actor->second.kind;if(!item.owner)item.owner=actor->second.entity;livingActors++;}
   item.localCenter={center.x,center.y,center.z};item.velocity={linear.x,linear.y,linear.z};item.angular={angular.x,angular.y,angular.z};frame->objects.push_back(std::move(item));
  }
  for(auto it=sceneTracked.begin();it!=sceneTracked.end();)if(it->second.seen!=generation)it=sceneTracked.erase(it);else ++it;
  frame->captureMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();publishScene(frame);
- return {{"excludedLivingObjects",excludedLiving},{"objects",frame->objects.size()},{"sourceObjects",count},{"outsideInterest",outside},{"interestRegions",regions.size()},{"ownedObjects",frame->ownedObjects},{"captureMs",frame->captureMs},{"newTriangles",triangles},{"sequence",frame->sequence},{"feedbackApplied",0}};
+ return {{"excludedLivingObjects",excludedLiving},{"livingActorObjects",livingActors},{"objects",frame->objects.size()},{"sourceObjects",count},{"outsideInterest",outside},{"interestRegions",regions.size()},{"ownedObjects",frame->ownedObjects},{"captureMs",frame->captureMs},{"newTriangles",triangles},{"sequence",frame->sequence},{"feedbackApplied",0}};
 }
 Json capturePhysics(){
     initialize();int count=0;auto list=call<void**>(environment,47,&count);if(count<0||count>100000)throw std::runtime_error("Invalid native object count");

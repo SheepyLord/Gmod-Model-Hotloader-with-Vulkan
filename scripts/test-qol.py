@@ -58,7 +58,7 @@ check('context reset available',lua('client',f'return properties.List.mmdhl_rese
 # Spawn a live NPC with a native physics object; the owning-thread capture must exclude it.
 lua('server',"local n=ents.Create('npc_citizen') n:SetPos(player.GetHumans()[1]:GetPos()+Vector(100,0,0)) n:Spawn() n:PhysicsInit(SOLID_VPHYSICS) n:SetMoveType(MOVETYPE_NONE) n:SetHealth(100) MMDHL_QOL_NPC=n return true")
 time.sleep(.3)
-check('living actors excluded from default contacts',lua('server',"local d=mmdhl.sceneDiagnostics assert(d.excludedLivingEntities>=2) return {entities=d.excludedLivingEntities,physicsObjects=d.excludedLivingObjects,sceneObjects=d.objects,feedback=d.feedbackApplied}"))
+check('living actors tagged for the living players/NPCs checkboxes',lua('server',"local d=mmdhl.sceneDiagnostics assert(d.livingEntities>=2 and d.livingActorObjects>=2) return {entities=d.livingEntities,physicsObjects=d.livingActorObjects,sceneObjects=d.objects,feedback=d.feedbackApplied}"))
 lua('server','if IsValid(MMDHL_QOL_NPC) then MMDHL_QOL_NPC:Remove() end return true')
 # Keep another texture reference to prove deletion does not remove shared data.
 other=import_model(ROOT/'tests/fixtures/textured21.pmx')

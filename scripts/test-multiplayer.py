@@ -103,12 +103,12 @@ def appearance():
 
 def settings():
     rid=lua('server',"return MMDHLMPActors.ragdoll.entity")
-    names=['mmdhl_secondary_backend','mmdhl_secondary_collision','mmdhl_lod_enabled']
+    names=['mmdhl_secondary_backend','mmdhl_collide_with','mmdhl_lod_enabled']
     saved={peer:lua(peer,'local out={} for _,n in ipairs('+ '{'+','.join(json.dumps(n) for n in names)+'}' +') do out[n]=GetConVar(n):GetString() end return out') for peer in ('client1','client2')}
     report['savedClientSettings']=saved;save()
     try:
-        lua('client1',"GetConVar('mmdhl_secondary_backend'):SetString('reference');GetConVar('mmdhl_secondary_collision'):SetString('0');GetConVar('mmdhl_lod_enabled'):SetString('1');return true")
-        lua('client2',"GetConVar('mmdhl_secondary_backend'):SetString('cpu_mt_v2');GetConVar('mmdhl_secondary_collision'):SetString('2');GetConVar('mmdhl_lod_enabled'):SetString('1');return true")
+        lua('client1',"GetConVar('mmdhl_secondary_backend'):SetString('reference');GetConVar('mmdhl_collide_with'):SetString('2');GetConVar('mmdhl_lod_enabled'):SetString('1');return true")
+        lua('client2',"GetConVar('mmdhl_secondary_backend'):SetString('cpu_mt_v2');GetConVar('mmdhl_collide_with'):SetString('7');GetConVar('mmdhl_lod_enabled'):SetString('1');return true")
         lua('client1',f"hook.Add('CalcView','MMDHL.MPTestView',function() local e=Entity({rid});local target=e:GetPos()+Vector(0,0,35);local origin=target+Vector(5000,0,50); return {{origin=origin,angles=(target-origin):Angle(),fov=75,drawviewer=true}} end);return true")
         lua('client2',f"hook.Add('CalcView','MMDHL.MPTestView',function() local e=Entity({rid});local target=e:GetPos()+Vector(0,0,35);local origin=target+Vector(180,-80,35); return {{origin=origin,angles=(target-origin):Angle(),fov=75,drawviewer=true}} end);return true")
         query=f"local e=Entity({rid});local d=mmdhl.GetDiagnostics(e,false);return {{handle=mmdhl.GetInstance(e),backend=d.secondaryBackendRequested,collision=mmdhl.GetSecondaryCollisionMode(e),ticks=d.ticks,quality=d.quality,lod=e.MMDPhysicsLOD and {{suspended=e.MMDPhysicsLOD.suspended,reason=e.MMDPhysicsLOD.reason,distance=e.MMDPhysicsLOD.distance}}}}"

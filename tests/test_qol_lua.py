@@ -126,6 +126,7 @@ end}}
 # secondary_collision.lua labels its mode list with mmdhl.L and mmdhl.I18n.Lazy at load.
 attach(scene)
 scene.execute((root/'addon/lua/mmdhl/secondary_collision.lua').read_text(encoding='utf-8'))
+scene.execute("bit={band=function(a,b)return a&b end,bor=function(a,b)return a|b end,bnot=function(a)return ~a end}")
 scene.execute("for i=1,3 do hook.callbacks['MMDHL.SecondaryScene']() end assert(sceneCaptures==3)")
 scene.execute('''
 local original=ents.GetAll()
@@ -165,23 +166,41 @@ mmdhl.native.CaptureSecondaryScene=function(owners,_,excluded)
 end
 hook.callbacks['MMDHL.SecondaryScene']()
 assert(#boxes==1 and boxes[1][1].x==-64 and boxes[1][2].z==94,'Regions are searched with a 64-unit margin')
+-- A 2.2 native module tags living players and NPCs instead: none is dropped.
+mmdhl.native.SetSecondaryCollisionFlags=function() end
+mmdhl.native.CaptureSecondaryScene=function(owners,_,excluded,players,npcs)
+ assert(#excluded==0 and #players==1 and #npcs==1 and players[1]==remote:GetPhysicsObjectNum(0) and npcs[1]==near:GetPhysicsObjectNum(0),'Living actors were not tagged by kind')
+ assert(owners[8][1]==near:GetPhysicsObjectNum(0) and owners[9][1]==remote:GetPhysicsObjectNum(0),'Tagged actors lost their owners')
+ return {}
+end
+hook.callbacks['MMDHL.SecondaryScene']()
+mmdhl.native.SetSecondaryCollisionFlags=nil
 ''')
 scene.execute("""
 CLIENT=true SERVER=false
 mmdhl.IsMMD=function()return true end
 mmdhl.GetInstance=function(e)return e.handle or 0 end
-mmdhl.GetGlobalSettings=function()return {secondaryCollision=0} end
-mmdhl.native.SetSecondaryCollisionMode=function(_,mode) appliedMode=mode return true end
-local ent={GetNW2Int=function()return 2 end}
-assert(mmdhl.GetSecondaryCollisionMode(ent)==0,'Client must not use server collision settings')
-assert(mmdhl.SetSecondaryCollisionMode(ent,1))
-assert(mmdhl.GetSecondaryCollisionMode(ent)==1)
+mmdhl.GetGlobalSettings=function()return {collisionFlags=2} end
+mmdhl.native.SetSecondaryCollisionFlags=function(_,flags) appliedFlags=flags return true end
+local ent={GetNW2Int=function()return 31 end}
+assert(mmdhl.CollideDefault==6 and mmdhl.CollideScene==29,'Character and objects are the default')
+assert(mmdhl.GetCollisionFlags(ent)==2,'Client must not use server collision settings')
+assert(mmdhl.SetCollisionFlags(ent,3))
+assert(mmdhl.GetCollisionFlags(ent)==3)
 ent.handle=10
-assert(mmdhl.SetSecondaryCollisionMode(ent,2) and appliedMode==2)
-assert(not mmdhl.SetSecondaryCollisionMode(ent,3))
-mmdhl.native.SetSecondaryCollisionMode=function()return nil,'failure' end
-assert(not mmdhl.SetSecondaryCollisionMode(ent,0))
-assert(mmdhl.GetSecondaryCollisionMode(ent)==2,'Failed changes must not publish a new mode')
+assert(mmdhl.SetCollisionFlags(ent,31) and appliedFlags==31)
+assert(not mmdhl.SetCollisionFlags(ent,32) and not mmdhl.SetCollisionFlags(ent,1.5) and not mmdhl.SetCollisionFlags(ent,-1))
+mmdhl.native.SetSecondaryCollisionFlags=function()return nil,'failure' end
+assert(not mmdhl.SetCollisionFlags(ent,2))
+assert(mmdhl.GetCollisionFlags(ent)==31,'Failed changes must not publish new flags')
+assert(mmdhl.SceneKinds(31)==29,'The character is no scene object')
+-- A native module before 2.2 takes the nearest level and cannot tell living actors apart.
+mmdhl.native.SetSecondaryCollisionFlags=nil
+mmdhl.native.SetSecondaryCollisionMode=function(_,level) appliedLevel=level return true end
+for flags,level in pairs({[0]=0,[2]=0,[3]=1,[6]=2,[7]=2,[24]=0}) do assert(mmdhl.SetCollisionFlags(ent,flags) and appliedLevel==level,'level for flags '..flags) end
+assert(mmdhl.SceneKinds(31)==5,'A native module before 2.2 was asked for living actors')
+local labels={} for _,target in ipairs(mmdhl.CollisionTargets) do labels[#labels+1]=target.key..'='..target.flag end
+assert(table.concat(labels,',')=='world=1,character=2,objects=4,players=8,npcs=16','Checkboxes are listed as world, character, objects, living players, living NPCs')
 """)
 corpse=LuaRuntime(unpack_returned_tuples=True)
 corpse.execute('''

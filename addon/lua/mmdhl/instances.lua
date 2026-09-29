@@ -19,7 +19,7 @@ local function release(ent)
  local handle=ent.MMDHLClientInstance
  if handle then native.RemoveSourceShadow(ent.MMDHLShadowIndex or math.max(0,ent:EntIndex())) native.DestroyInstance(handle) end
  ent.MMDHLClientInstance=nil ent.MMDHLAttachmentKey=nil ent.MMDShadowAlpha=nil ent.MMDVisibilitySent=nil ent.MMDHLManualApplied=nil
- ent.MMDRenderPose=nil ent.MMDPresentationFrame=nil ent.MMDPresentationStopped=nil ent.MMDPhysicsLOD=nil ent.MMDHLClientCollisionMode=nil
+ ent.MMDRenderPose=nil ent.MMDPresentationFrame=nil ent.MMDPresentationStopped=nil ent.MMDPhysicsLOD=nil ent.MMDHLClientCollisionFlags=nil
  ent.MMDNamesSent=nil ent.MMDOverrideFrame=nil ent.MMDOverrideNext=nil ent.MMDOverrideJson=nil ent.MMDShadowSequence=nil ent.MMDHLClientMorphs=nil ent.MMDHLMorphBuffer=nil
  ent.MMDVisibilityNext=nil ent.MMDHLBoundsSequence=nil ent.MMDHLBatchEntry=nil
  ent.MMDHLLightFrame=nil ent.MMDHLLightOrigin=nil ent.MMDHLLightBone=nil
@@ -67,7 +67,7 @@ function mmdhl.AttachPresentation(ent)
  local handle,createError=native.CreateInstance(id,util.TableToJSON(settings))
  if not handle then return false,createError end
  ent.MMDHLClientInstance=handle ent.MMDHLAttachmentKey=key ent.MMDHLClientMorphs={} ent.MMDHLShadowIndex=mmdhl.ShadowKey(ent,handle)
- ent.MMDHLClientCollisionMode=settings.secondaryCollision
+ ent.MMDHLClientCollisionFlags=settings.collisionFlags
  mmdhl.assets[id]=info attached[ent]=true
  if ent:GetModel()~=rig.model then
   -- Only repair the missing-asset placeholder. Another addon/gamemode may
@@ -98,14 +98,14 @@ function mmdhl.TransferPresentation(source,corpse)
  if corpse.MMDHLClientInstance then release(corpse) end
  local ok=native.RebindSourceEntity(handle,math.max(0,corpse:EntIndex())) if not ok then return false end
  native.RemoveSourceShadow(source.MMDHLShadowIndex or math.max(0,source:EntIndex()))
- local collisionMode=source.MMDHLClientCollisionMode
+ local collisionFlags=source.MMDHLClientCollisionFlags
  local proxy=source.MMDHLVisual source.MMDHLVisual=nil
  source.MMDHLTransferredGeneration=source.MMDHLAttachmentKey source.MMDHLClientInstance=nil
  release(source) -- Clear per-instance render caches without destroying the transferred world.
  local rig=mmdhl.GetRig(corpse)
  corpse.MMDHLClientInstance=handle corpse.MMDHLAttachmentKey=rig.key..':'..corpse:GetNW2Int('MMDHLGeneration',0)
  corpse.MMDHLClientMorphs={} corpse.MMDHLShadowIndex=mmdhl.ShadowKey(corpse,handle) attached[corpse]=true
- corpse.MMDHLClientCollisionMode=collisionMode
+ corpse.MMDHLClientCollisionFlags=collisionFlags
  if IsValid(proxy) then
   corpse.MMDHLVisual=proxy proxy.MMDOwner=corpse corpse.MMDHLBoundsSequence=nil
   corpse:CallOnRemove('MMDHL.NativeVisualRemove',function(owner) if IsValid(proxy) and proxy.MMDOwner==owner then proxy:Remove() end end)

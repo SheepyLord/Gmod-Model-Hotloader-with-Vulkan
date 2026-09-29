@@ -44,6 +44,7 @@ public:
  std::vector<btVector3> tails(const std::vector<btTransform>& skin)const;
  const SpringSetup& setup()const{return *data;}
  bool relativeDamping=true;  // mmdhl_vrm_relative_damping
+ bool bodyContacts=true;  // the avatar's own colliders (Collide::Character)
  uint64_t colliderHits=0,worldHits=0,steps=0;double stepMs=0,totalMs=0;
 private:
  const Model& model;std::shared_ptr<const SpringSetup> data;std::vector<uint8_t> moving;std::vector<int> anchors;int reference=-1;

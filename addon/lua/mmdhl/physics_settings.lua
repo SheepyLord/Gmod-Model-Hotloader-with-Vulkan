@@ -14,7 +14,7 @@ local definitions={
  {'mmdhl_workers','0','Model Hotloader worker count: 0 selects the automatic count',0,maximumWorkers}
 }
 mmdhl.PhysicsSettingDefaults={mmdhl_first_person_body="2",
- mmdhl_secondary_backend='cpu_mt_v2',mmdhl_secondary_collision='2',mmdhl_spawn_frozen='0',
+ mmdhl_secondary_backend='cpu_mt_v2',mmdhl_collide_with=tostring(mmdhl.CollideDefault),mmdhl_spawn_frozen='0',
  mmdhl_secondary_sleep='1',mmdhl_secondary_sleep_linear='0.5',mmdhl_secondary_sleep_angular='0.35',
  mmdhl_secondary_sleep_seconds='1.5',mmdhl_secondary_wake_drift='0.02',mmdhl_secondary_wait_ms='0',
  mmdhl_vertex_cache='1',mmdhl_compact_vertices='1',mmdhl_gpu_skinning='1',mmdhl_update_lod='1',mmdhl_smooth_stepped_poses='1',mmdhl_flashlight_overlap_fix='1',mmdhl_debug_overlay='0',mmdhl_debug_print='0'
@@ -133,7 +133,13 @@ function mmdhl.BuildPhysicsSettings(parent,s,fonts,styleChoices)
   p:SetTextColor(mmdhl.physicsSettingsError and Color(180,46,46) or muted)
  end
  choice('secondaryBackend',L'physics.backend.label',mmdhl.SecondaryBackends,L'physics.backend.tooltip')
- choice('secondaryCollision',L'physics.collision.label',mmdhl.SecondaryCollisionModes,L'physics.collision.tooltip')
+ text(L'physics.collision.label',false):SetTall(s(26))
+ local last
+ for _,target in ipairs(mmdhl.CollisionTargets) do
+  local p=row('DCheckBoxLabel',24) p:SetText(target.name) p:SetTextColor(ink) p.Label:SetFont(fonts.Body) p:SetTooltip(target.tooltip) p:DockMargin(s(26),0,s(16),s(4))
+  mmdhl.BindCollisionCheckbox(p,target.flag) last=p
+ end
+ last:DockMargin(s(26),0,s(16),s(14)) -- sets the group apart from "Spawn frozen"
  check('mmdhl_spawn_frozen',L'physics.spawn_frozen.label',L'physics.spawn_frozen.tooltip')
  local accuracy=row('DNumSlider',38) accuracy:SetDark(true)
  accuracy.Label:SetFont(fonts.Body) accuracy.Label:SetWide(s(305))

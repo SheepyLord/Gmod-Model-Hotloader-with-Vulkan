@@ -12,7 +12,7 @@ def check(condition,message):
 
 def main():
     output={}
-    output['initial']=lua('client',"local saved={} for _,key in ipairs({'mmdhl_spawn_frozen','mmdhl_secondary_collision','mmdhl_secondary_backend','mmdhl_debug_overlay','mmdhl_debug_print'}) do saved[key]=GetConVar(key):GetString() end return {convars=saved,resolution={ScrW(),ScrH()},addons=engine.GetAddons(),folders=select(2,file.Find('addons/*','MOD')),polls=mmdhl.performance.polls}")
+    output['initial']=lua('client',"local saved={} for _,key in ipairs({'mmdhl_spawn_frozen','mmdhl_collide_with','mmdhl_secondary_backend','mmdhl_debug_overlay','mmdhl_debug_print'}) do saved[key]=GetConVar(key):GetString() end return {convars=saved,resolution={ScrW(),ScrH()},addons=engine.GetAddons(),folders=select(2,file.Find('addons/*','MOD')),polls=mmdhl.performance.polls}")
     check(output['initial']['resolution']==[2560,1440],'Wrong game resolution')
     session=read(ROOT/'validation/session.json')
     from pathlib import Path

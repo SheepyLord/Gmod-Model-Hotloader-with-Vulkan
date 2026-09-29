@@ -2,6 +2,7 @@
 #include "rig.hpp"
 #include "broadphase.hpp"
 #include "spring_bones.hpp"
+#include "scene.hpp"
 #include <ext/physics.h>
 #include <array>
 #include <condition_variable>
@@ -9,6 +10,9 @@
 #include <mutex>
 #include <unordered_map>
 namespace mmd {
+// The collision levels of releases before 2.2: 0 the character only, 1 and the
+// map, 2 and objects. Throws outside 0-2.
+unsigned collisionFlagsForLevel(int level);
 class Secondary {
 public:
  explicit Secondary(Instance&);
@@ -18,10 +22,11 @@ public:
  bool simplified()const{return presentationMode<=0;}
  void stepSimplified(double seconds,bool teleport);
  void reset();
- void setCollisionMode(int);
+ void setCollisionFlags(unsigned flags);
+ void setCollisionMode(int level){setCollisionFlags(collisionFlagsForLevel(level));}
  void setQuality(int divisor,bool suspended);
  Json qualityInfo() const;
- int collisionMode=0;
+ unsigned collisionFlags=Collide::Default;
  std::string effectiveBackend="reference",backendFallback;
  // `parentGlobal`: the parent bone's pose in this same evaluation (spring bones bend relative to it).
  btTransform feedback(size_t bone,const btTransform& animated,const btTransform* parentGlobal=nullptr) const;
@@ -140,10 +145,10 @@ private:
  bool v2=false,async=false;unsigned sleepVersionApplied=0;
  // Asynchronous scheduling state. `mutex` guards the queue, `running`,
  // `stopping`, the pending collision mode and the published state.
- mutable std::mutex mutex;std::condition_variable idle;std::deque<Input> queue;bool running=false,stopping=false;int pendingCollisionMode=-1;
- // The mode the simulation runs with: `collisionMode` is the latest request,
+ mutable std::mutex mutex;std::condition_variable idle;std::deque<Input> queue;bool running=false,stopping=false,collisionPending=false;unsigned pendingCollisionFlags=0;
+ // The flags the simulation runs with: `collisionFlags` is the latest request,
  // applied between ticks by whichever thread owns the world at that moment.
- std::atomic<int> effectiveCollisionMode{0};
+ std::atomic<unsigned> effectiveCollisionFlags{0};
  PoseArrays tickPose;std::vector<btTransform> tickSourcePose;std::vector<float> tickImpulseWeights;
  struct Solved {
   std::vector<btTransform> current,previous;btTransform currentRoot=btTransform::getIdentity(),previousRoot=btTransform::getIdentity();
@@ -169,7 +174,7 @@ private:
  void runAsync();
  void tickAsync(const Input&);
  void resetTick(const Input&);
- void applyCollisionMode(int mode);
+ void applyCollisionFlags(unsigned flags);
  unsigned advance(std::vector<btTransform>& sourcePose,const std::function<const std::vector<btTransform>&()>& evaluateSkin);
  void applyImpulses(const std::vector<float>& weights,std::vector<float>& last);
  void applySleepPolicy();

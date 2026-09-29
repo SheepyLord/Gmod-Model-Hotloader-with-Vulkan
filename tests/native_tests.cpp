@@ -133,6 +133,11 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
        check(contact,"nanoem authored bodies contact one-way Source scene geometry");
        check(host.takeImpulses().empty(),"secondary scene cannot export impulses into Source");
        frame=std::make_shared<SceneFrame>();object.owner=id;frame->objects.push_back(object);publishScene(frame);instance.secondary->step(1./60);check(instance.secondary->diagnostics()["sourceMirrors"]==0,"own carrier is excluded from secondary contacts");
+       // Each collision checkbox admits its own kind of scene object.
+       {auto kinds=std::make_shared<SceneFrame>();SceneObject o=object;o.owner=0;o.id=11;o.isStatic=true;kinds->objects.push_back(o);o.id=12;o.isStatic=false;kinds->objects.push_back(o);
+        o.id=13;o.actor=SceneObject::LivingPlayer;kinds->objects.push_back(o);o.id=14;o.actor=SceneObject::LivingNpc;kinds->objects.push_back(o);publishScene(kinds);
+        auto mirrors=[&](unsigned flags){instance.secondary->setCollisionFlags(flags);instance.secondary->step(1./60);return instance.secondary->diagnostics()["sourceMirrors"].get<int>();};
+        check(mirrors(Collide::Character|Collide::World)==1&&mirrors(Collide::Objects)==1&&mirrors(Collide::Players)==1&&mirrors(Collide::Npcs)==1&&mirrors(Collide::All)==4&&mirrors(Collide::Default)==1,"each collision checkbox admits only its kind of scene object");}
        instance.secondary->setCollisionMode(0);publishScene(nullptr);check(instance.secondary->diagnostics()["sourceMirrors"]==0,"disabling scene contacts releases all proxies");
       }
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"joint/scene regression");}
@@ -281,9 +286,9 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      writeJson(cache/"cleanup.json",{"assets/"+id+"/materials-v5.gma","textures/"+texture+".vtf"});
      retainCacheFiles(cache,{fs::path("assets")/id});auto pending=readJson(cache/"cleanup.json");check(pending.size()==1&&pending[0]=="textures/"+texture+".vtf","reimport cancels deferred deletion of reused paths");fs::remove(cache/"cleanup.json");
      World host;auto handle=host.create(model,{{"backend","source"}});auto& instance=host.get(handle);
-     check(instance.secondary->collisionMode==2,"secondary collision default includes the Source scene");
+     check(instance.secondary->collisionFlags==Collide::Default&&(Collide::Default&Collide::Scene),"secondary collision defaults to the character and objects, from the Source scene");
      instance.sourceError="synthetic solver failure";instance.pendingSourceDelta=200;auto pose=instance.sourcePose;instance.reset();
-     check(instance.sourceError.empty()&&instance.pendingSourceDelta==0&&instance.secondary->collisionMode==2&&instance.sourcePose.size()==pose.size(),"physics reset recovers stopped secondary world without changing its primary pose or mode");
+     check(instance.sourceError.empty()&&instance.pendingSourceDelta==0&&instance.secondary->collisionFlags==Collide::Default&&instance.sourcePose.size()==pose.size(),"physics reset recovers stopped secondary world without changing its primary pose or mode");
      instance.secondary->step(1./60);check(instance.secondary->diagnostics()["bodies"]==model->bodies.size(),"reset retains every authored physics body");
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"QoL naming, deletion and reset regressions");}
     // Snapshots with an unchanged pose: a material-only change (a material morph on
@@ -339,5 +344,19 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      for(auto& w:cycle->warnings)noted|=w.starts_with("Repaired bone ");
      check(ordered&&noted,"a cyclic bone hierarchy loads with the loop broken, parents first");
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"deep bone chain regression");}
+    // Collide::Character: the model's simulated bodies (hair) against its bone-following
+    // ones (head). Reference worlds keep Bullet's pair order unless a filter is needed.
+    for(auto backend:{"reference","cpu_mt_v2"})try{
+     auto model=parse(readFile("tests/fixtures/native-chain.pmx"));World host;auto& p=host.get(host.create(model,{{"backend","source"},{"secondaryBackend",backend},{"collisionFlags",Collide::Default}}));auto& s=*p.secondary;
+     // A bone-following body and a simulated one whose authored groups collide.
+     btCollisionObject* follower=nullptr;btCollisionObject* simulated=nullptr;auto& objects=s.dynamics()->getCollisionObjectArray();
+     for(int i=0;i<objects.size();i++)for(int j=0;j<objects.size()&&!follower;j++){auto a=objects[i],b=objects[j];auto pa=a->getBroadphaseHandle(),pb=b->getBroadphaseHandle();
+      if(a->getUserIndex2()!=ExternalCollisionTag&&b->getUserIndex2()!=ExternalCollisionTag&&a->isStaticOrKinematicObject()&&!b->isStaticOrKinematicObject()&&(pa->m_collisionFilterGroup&pb->m_collisionFilterMask)&&(pb->m_collisionFilterGroup&pa->m_collisionFilterMask)){follower=a;simulated=b;}}
+     auto cache=static_cast<btHashedOverlappingPairCache*>(s.dynamics()->getPairCache()); // SecondaryBroadphase (no RTTI in Bullet)
+     // Refreshing proxies replaces the broadphase handles: read them after each change.
+     auto contacts=[&](unsigned flags){s.setCollisionFlags(flags);s.step(1./60);return cache->needsBroadphaseCollision(follower->getBroadphaseHandle(),simulated->getBroadphaseHandle());};
+     bool ok=cache&&follower&&simulated&&contacts(Collide::Default)&&!contacts(Collide::Objects)&&contacts(Collide::Default)&&!contacts(0)&&contacts(Collide::Character)&&!contacts(Collide::World);
+     check(ok&&s.diagnostics()["bodies"]==model->bodies.size(),(std::string("the character checkbox turns the body's contacts with hair and clothing off and on (")+backend+")").c_str());
+    }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"character collision flag regression");}
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

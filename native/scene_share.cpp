@@ -7,14 +7,16 @@ btVector3 vec(const Json& j){btVector3 v(j.at(0),j.at(1),j.at(2));for(int i=0;i<
 Bytes encode(const SceneGeometry& g){StudioWriter w;w.alloc(48);w.i(0,0x43534d4d);w.i(4,1);w.i(8,g.kind);w.f(12,g.radius);w.i(16,int(g.vertices.size()));w.i(20,int(g.hullCounts.size()));w.vec(24,g.minimum);w.vec(36,g.maximum);for(auto v:g.vertices)w.vec(w.alloc(12),v);for(int n:g.hullCounts)w.i(w.alloc(4),n);return std::move(w.b);}
 template<class T>T at(std::span<const unsigned char> b,size_t offset){if(offset>b.size()||sizeof(T)>b.size()-offset)throw std::runtime_error("Truncated remote collision geometry");T v;std::memcpy(&v,b.data()+offset,sizeof(v));return v;}
 }
-Json SceneShare::describe(const btVector3& center,float radius,uint64_t consumer){
+Json SceneShare::describe(const btVector3& center,float radius,uint64_t consumer,unsigned kinds){
  // Remote subscribers receive a sphere; the capture keeps what it covers.
  noteSceneInterest(uintptr_t(0x5CE0000000000000ull|consumer),center-btVector3(radius,radius,radius),center+btVector3(radius,radius,radius));
  auto frame=readScene();Json out={{"objects",Json::array()},{"sequence",frame?frame->sequence:0},{"timestamp",frame?frame->timestamp:0}};if(!frame)return out;
  for(auto it=exported.begin();it!=exported.end();)if(it->second.source.expired())it=exported.erase(it);else ++it;
- for(auto& object:frame->objects){auto& g=*object.geometry;auto gc=(g.minimum+g.maximum)*.5f,extent=(g.maximum-g.minimum)*.5f;auto wc=object.transform*gc;float range=radius+extent.length()+object.velocity.length()*.25f;if((wc-center).length2()>range*range)continue;
+ for(auto& object:frame->objects){
+  unsigned kind=object.actor==SceneObject::LivingPlayer?Collide::Players:object.actor==SceneObject::LivingNpc?Collide::Npcs:object.isStatic?Collide::World:Collide::Objects;
+  if(!(kinds&kind))continue;auto& g=*object.geometry;auto gc=(g.minimum+g.maximum)*.5f,extent=(g.maximum-g.minimum)*.5f;auto wc=object.transform*gc;float range=radius+extent.length()+object.velocity.length()*.25f;if((wc-center).length2()>range*range)continue;
   auto it=exported.find(&g);if(it==exported.end()){auto bytes=encode(g);auto digest=hash(bytes);it=exported.emplace(&g,Cached{object.geometry,digest,std::move(bytes)}).first;}
-  auto q=object.transform.getRotation();out["objects"].push_back({{"id",object.id},{"owner",object.owner},{"bone",object.physicsBone},{"center",xyz(object.localCenter)},{"shape",it->second.key},{"bytes",it->second.bytes.size()},{"static",object.isStatic},{"position",xyz(object.transform.getOrigin())},{"rotation",{q.x(),q.y(),q.z(),q.w()}},{"velocity",xyz(object.velocity)},{"angular",xyz(object.angular)}});
+  auto q=object.transform.getRotation();out["objects"].push_back({{"id",object.id},{"owner",object.owner},{"bone",object.physicsBone},{"center",xyz(object.localCenter)},{"shape",it->second.key},{"bytes",it->second.bytes.size()},{"static",object.isStatic},{"actor",object.actor},{"position",xyz(object.transform.getOrigin())},{"rotation",{q.x(),q.y(),q.z(),q.w()}},{"velocity",xyz(object.velocity)},{"angular",xyz(object.angular)}});
  }return out;
 }
 Bytes SceneShare::chunk(const std::string& key,size_t offset,size_t count)const{
@@ -32,7 +34,7 @@ void SceneShare::accept(const std::string& key,std::span<const unsigned char> b)
 }
 void SceneShare::publish(World& host,const Json& description){
  auto frame=std::make_shared<SceneFrame>();frame->sequence=description.at("sequence");frame->timestamp=description.at("timestamp");if(!std::isfinite(frame->timestamp))throw std::runtime_error("Invalid scene clock");
- for(auto& item:description.at("objects")){auto g=imported.find(item.at("shape").get<std::string>());if(g==imported.end())continue;SceneObject o;o.id=item.at("id");o.owner=item.at("owner");o.physicsBone=item.value("bone",0);o.geometry=g->second;o.isStatic=item.at("static");auto q=item.at("rotation");btQuaternion r(q.at(0),q.at(1),q.at(2),q.at(3));if(!std::isfinite(r.length2())||r.length2()<.5||r.length2()>1.5)throw std::runtime_error("Invalid remote collision rotation");o.transform=btTransform(r.normalized(),vec(item.at("position")));o.velocity=vec(item.at("velocity"));o.angular=vec(item.at("angular"));frame->objects.push_back(std::move(o));}
+ for(auto& item:description.at("objects")){auto g=imported.find(item.at("shape").get<std::string>());if(g==imported.end())continue;SceneObject o;o.id=item.at("id");o.owner=item.at("owner");o.physicsBone=item.value("bone",0);o.geometry=g->second;o.isStatic=item.at("static");auto actor=item.value("actor",0);if(actor<0||actor>2)throw std::runtime_error("Invalid remote collision actor");o.actor=uint8_t(actor);auto q=item.at("rotation");btQuaternion r(q.at(0),q.at(1),q.at(2),q.at(3));if(!std::isfinite(r.length2())||r.length2()<.5||r.length2()>1.5)throw std::runtime_error("Invalid remote collision rotation");o.transform=btTransform(r.normalized(),vec(item.at("position")));o.velocity=vec(item.at("velocity"));o.angular=vec(item.at("angular"));frame->objects.push_back(std::move(o));}
  host.externalScene.store(frame);
 }
 }

@@ -163,7 +163,7 @@ Instance::Instance(World& w,std::shared_ptr<Model> m,uint64_t handle,const Json&
     if(options.contains("center"))placement.setOrigin(jvec(options.at("center"))*Inch-placement.getBasis()*toSource((model->minimum+model->maximum)*.5f)*scale);
     size_t n=model->bones.size();local.resize(n,btTransform::getIdentity());global=skin=manual=local;drivers.resize(n,-1);morphWeights.resize(model->morphs.size());lastImpulseWeights=morphWeights;
     sourceControl.resize(n,-1);evaluate(false);
-    try{sceneOwner=options.value("sourceEntity",uint64_t(0));if(options.value("backend","")=="source"){secondaryBackend=options.value("secondaryBackend",std::string("reference"));sourceRig=std::make_shared<Rig>(options.contains("rigManifest")?rigFromManifest(options.at("rigManifest")):fitRig(*model,options));validateRig(*sourceRig,*model);secondaryBroadphase=options.value("secondaryBroadphase",secondaryBroadphaseDefault());isSapBroadphase(secondaryBroadphase);presentationDriven=options.value("presentationDriven",false);scale=sourceRig->scale*Inch;sourcePose=global;for(size_t i=0;i<sourceRig->bones.size();i++){int b=sourceRig->bones[i].mmd;if(b>=0)sourceControl[b]=int(i);for(int alias:sourceRig->bones[i].aliases)sourceControl[alias]=int(i);}secondary=std::make_unique<Secondary>(*this);secondary->setCollisionMode(options.value("secondaryCollision",2));}else buildPhysics(options);publish(0);}catch(...){for(auto& s:softBodies)w.dynamics().removeSoftBody(s.body.get());for(auto& j:joints)w.dynamics().removeConstraint(j.get());for(auto& b:bodies)w.dynamics().removeRigidBody(b->rigid.get());throw;}
+    try{sceneOwner=options.value("sourceEntity",uint64_t(0));if(options.value("backend","")=="source"){secondaryBackend=options.value("secondaryBackend",std::string("reference"));sourceRig=std::make_shared<Rig>(options.contains("rigManifest")?rigFromManifest(options.at("rigManifest")):fitRig(*model,options));validateRig(*sourceRig,*model);secondaryBroadphase=options.value("secondaryBroadphase",secondaryBroadphaseDefault());isSapBroadphase(secondaryBroadphase);presentationDriven=options.value("presentationDriven",false);scale=sourceRig->scale*Inch;sourcePose=global;for(size_t i=0;i<sourceRig->bones.size();i++){int b=sourceRig->bones[i].mmd;if(b>=0)sourceControl[b]=int(i);for(int alias:sourceRig->bones[i].aliases)sourceControl[alias]=int(i);}secondary=std::make_unique<Secondary>(*this);secondary->setCollisionFlags(options.contains("collisionFlags")?options.at("collisionFlags").get<unsigned>():options.contains("secondaryCollision")?collisionFlagsForLevel(options.at("secondaryCollision").get<int>()):Collide::Default);}else buildPhysics(options);publish(0);}catch(...){for(auto& s:softBodies)w.dynamics().removeSoftBody(s.body.get());for(auto& j:joints)w.dynamics().removeConstraint(j.get());for(auto& b:bodies)w.dynamics().removeRigidBody(b->rigid.get());throw;}
     if(!sourceRig&&options.value("frozen",false))freeze(true);
 }
 Instance::~Instance(){
@@ -333,9 +333,9 @@ void Instance::setBonePose(size_t bone,const btTransform& transform){
 void Instance::reset(){if(secondary){
     // Rebuild only the secondary world, including its solver/contact history.
     // Source physics objects, the current primary pose and appearance stay intact.
-    int mode=secondary->collisionMode;sourceError.clear();pendingSourceDelta=0;
+    unsigned flags=secondary->collisionFlags;sourceError.clear();pendingSourceDelta=0;
     secondary->waitAsyncIdle();auto resets=secondary->resets;
-    secondary.reset();evaluate(false);secondary=std::make_unique<Secondary>(*this);secondary->setCollisionMode(mode);
+    secondary.reset();evaluate(false);secondary=std::make_unique<Secondary>(*this);secondary->setCollisionFlags(flags);
     secondary->resets=resets+1;secondary->resetReason="manual";
     // Construction already initializes bodies at the current Source pose. Do
     // not repeat the reset at the next presentation frame or replay old debt.

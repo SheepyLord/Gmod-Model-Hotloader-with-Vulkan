@@ -12,7 +12,7 @@ No reimport is needed.
 | --- | --- |
 | Backend | Claude CPU v2 (`cpu_mt_v2`) |
 | Broadphase | `auto`: sweep-and-prune for Claude CPU v2, order-preserving DBVT (`dbvt-fast`) for the replay-exact backends |
-| Secondary collisions | Everything except living players/NPCs |
+| Hair and clothing collide with (`mmdhl_collide_with`) | Character and objects (checkboxes: world 1, character 2, objects 4, living players 8, living NPCs 16) |
 | Spawn frozen | Off |
 | Solver iterations | 10 |
 | Gravity / authored damping multipliers | 1 / 1 |
