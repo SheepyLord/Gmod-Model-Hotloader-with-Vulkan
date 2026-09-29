@@ -10,7 +10,7 @@ Unlike most modern sandbox games, in *Garry's Mod* you must first convert models
 <img width="3840" height="2160" alt="20260924000541_1" src="https://github.com/user-attachments/assets/7d783459-ea74-42f5-a42b-1914ca347b0e" />
 
 ## Install and use
-1. Subscribe to the [Model Hotloader Workshop addon](https://steamcommunity.com/sharedfiles/filedetails/?id=3808939802).
+1. Subscribe to the [Model Hotloader Workshop addon](https://steamcommunity.com/sharedfiles/filedetails/?id=3810025467).
 2. Download the most recent binary module package from [Releases](https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases). 在中国大陆请使用[替代链接](https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord).
 3. Close Garry's Mod and copy the package's `GarrysMod` folder onto `steamapps\common\GarrysMod`, replacing files.
 
