@@ -11,7 +11,8 @@ return util.JSONToTable([==[
     "2.1.0-native.9",
     "2.1.0-native.10",
     "2.1.0-native.11",
-    "2.1.0-native.12"
+    "2.1.0-native.12",
+    "2.2.0"
   ],
   "releases": {
     "2.1.0-native.1": {
@@ -552,8 +553,55 @@ return util.JSONToTable([==[
       },
       "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.1.0-native.12",
       "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
+    },
+    "2.2.0": {
+      "api": 1,
+      "build": "82dc38c80d4b-20260929T015314Z",
+      "installApi": 1,
+      "platform": "win64",
+      "release": "2.2.0",
+      "files": {
+        "client": {
+          "name": "gmcl_mmdhl_win64.dll",
+          "size": 2746368,
+          "sha256": "707f0ea54c4e78bc57d9fe2e95f6f6cb7499742338057967347b845c627e7132"
+        },
+        "server": {
+          "name": "gmsv_mmdhl_win64.dll",
+          "size": 1820672,
+          "sha256": "4b8a693b8df5cd1f956945e893a0c502108a37e1d3cc5030e85a7d5e2290f961"
+        },
+        "runtime": {
+          "name": "mmdhl_runtime_win64.dll",
+          "size": 9563648,
+          "sha256": "ee910e3666886afa150ff421957efdae045c51bd94d86dbb035340bbfb962b86"
+        },
+        "worker": {
+          "name": "mmdhl_worker.exe",
+          "size": 3160576,
+          "sha256": "5c774d6e3c5ab084b0dfa6c20259a92339b5b37f09638fe9c0929b79b6b71231"
+        },
+        "coacd": {
+          "name": "lib_coacd.dll",
+          "size": 6169600,
+          "sha256": "a32e801d260b774ebc723edfc05e45e179c09d0d2355592c64cbff490698e806"
+        }
+      },
+      "renderer": {
+        "name": "d3d9.dll",
+        "size": 4042752,
+        "sha256": "b02bb11fe0c4ed2a115a6a1fffd848c55f2eb8a23e9c109528ea759c062ab710",
+        "kind": "dxvk",
+        "dxvk": "v3.1.1",
+        "patches": [
+          "0001-shared-compute-queues.patch",
+          "0002-gmod-app-profile.patch"
+        ]
+      },
+      "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.2.0",
+      "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
     }
   },
-  "recommended": "2.1.0-native.12"
+  "recommended": "2.2.0"
 }
 ]==])
