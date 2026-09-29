@@ -509,9 +509,9 @@ private:
                 auto path=im.str(im.pick({"name","filepath"}));
                 if(int(im.num("source"))==4||path.empty())throw std::runtime_error("the image was generated in Blender and never saved; save or pack it in Blender");
                 if(path.rfind("//",0)==0)path=path.substr(2);
-                auto resolved=resources.resolve(path);repaired+=resolved.repaired;bytes=readFile(resolved.path,128ull<<20);
+                auto resolved=resources.resolve(path);repaired+=resolved.repaired;bytes=readFile(resolved.path,MaxTextureFileBytes);
             }
-            auto t=makeTexture(bytes,o.limits.textureDimension);hash=t.hash;addTexture(a,std::move(t));
+            auto t=makeTexture(bytes,o.limits.textureDimension);hash=t.hash;addTexture(a,std::move(t),name);
         }catch(const std::exception& e){
             auto message="Texture "+name+" for material "+material+": "+e.what();
             a.manifest["warnings"].push_back(message);j["missing_texture"]=true;j["texture_errors"][slot]=message;failures[im.at]=message;
@@ -603,9 +603,9 @@ const char* typeName(int type){
 }
 BlendFile open(const fs::path& path,const Options& o,const Progress& progress){
     progress("Reading Blender file",.02f,{},0,0,true);
-    auto raw=readFile(path,o.limits.expandedBytes);
+    auto raw=readFile(path,o.limits.blendBytes);
     if(raw.size()>=4&&(raw[0]==0x1F||raw[0]==0x28))progress("Decompressing Blender file",.03f,{},0,0,true);
-    return BlendFile(std::move(raw),o.limits.expandedBytes);
+    return BlendFile(std::move(raw),o.limits.blendBytes);
 }
 }
 

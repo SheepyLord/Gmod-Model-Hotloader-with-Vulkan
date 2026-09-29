@@ -10,6 +10,7 @@
 #include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -24,7 +25,18 @@ std::string normalized(std::string s){s=ascii(s);s.erase(std::remove_if(s.begin(
 int findBone(const Model& m,const std::vector<std::string>& names){for(auto& name:names)for(size_t i=0;i<m.bones.size();i++)if(m.bones[i].name==name||m.bones[i].english==name)return int(i);for(auto& name:names){auto n=normalized(name);if(n.empty())continue;for(size_t i=0;i<m.bones.size();i++)if(normalized(m.bones[i].name)==n||normalized(m.bones[i].english)==n)return int(i);}return -1;}
 float percentile(std::vector<float> a,float p){if(a.empty())return 0;size_t k=size_t(p*(a.size()-1));std::nth_element(a.begin(),a.begin()+k,a.end());return a[k];}
 using Writer=StudioWriter;
-uint32_t crc(const Bytes& b){uint32_t c=~0u;for(auto v:b){c^=v;for(int i=0;i<8;i++)c=(c>>1)^((0u-(c&1))&0xedb88320u);}return ~c;}
+uint32_t crcUpdate(uint32_t c,const unsigned char* p,size_t n){
+ static const auto table=[]{std::array<uint32_t,256> t{};for(uint32_t i=0;i<256;i++){uint32_t v=i;for(int k=0;k<8;k++)v=(v>>1)^((0u-(v&1))&0xedb88320u);t[i]=v;}return t;}();
+ for(size_t i=0;i<n;i++)c=table[(c^p[i])&255]^(c>>8);return c;
+}
+uint32_t crc(const Bytes& b){return ~crcUpdate(~0u,b.data(),b.size());}
+struct GmaItem{std::string name;uint64_t size;uint32_t crc;};
+// GMAD version 3: header, file table (ending in index 0), file data, then a zero CRC.
+Bytes gmaHeader(const std::vector<GmaItem>& items,const std::string& title){
+ Writer g;g.b={'G','M','A','D',3};g.b.resize(21);g.str("");g.str(title);g.str("{\"type\":\"model\",\"tags\":[]}");g.str("Model Hotloader");size_t p=g.b.size();g.b.resize(p+4);g.i(p,1);int id=0;
+ for(auto& item:items){p=g.b.size();g.b.resize(p+4);g.i(p,++id);g.str(item.name);p=g.b.size();g.b.resize(p+12);g.put<uint64_t>(p,item.size);g.put<uint32_t>(p+8,item.crc);}
+ g.b.resize(g.b.size()+4);return g.b;
+}
 }
 float resolveSourceScale(const Json& options,float height){
  int modes=int(options.contains("scaleMultiplier"))+int(options.contains("height"))+int(options.contains("scale"));
@@ -269,8 +281,30 @@ std::map<std::string,Bytes> carrierFiles(const Rig& r,const Model* armsModel){
  std::string stem=r.path.substr(0,r.path.size()-4);return {{r.path,std::move(w.b)},{stem+".vvd",std::move(vvd.b)},{stem+".dx90.vtx",std::move(vtx.b)}};
 }
 Bytes makeGma(const std::map<std::string,Bytes>& files,const std::string& title){
- Writer g;g.b={'G','M','A','D',3};g.b.resize(21);g.str("");g.str(title);g.str("{\"type\":\"model\",\"tags\":[]}");g.str("Model Hotloader");size_t p=g.b.size();g.b.resize(p+4);g.i(p,1);int id=0;for(auto& [name,data]:files){p=g.b.size();g.b.resize(p+4);g.i(p,++id);g.str(name);p=g.b.size();g.b.resize(p+12);g.put<uint64_t>(p,data.size());g.put<uint32_t>(p+8,crc(data));}p=g.b.size();g.b.resize(p+4);for(auto& [name,data]:files)g.b.insert(g.b.end(),data.begin(),data.end());p=g.b.size();g.b.resize(p+4);g.put<uint32_t>(p,0);
- return g.b;
+ std::vector<GmaItem> items;size_t total=0;for(auto& [name,data]:files){items.push_back({name,data.size(),crc(data)});total+=data.size();}
+ auto b=gmaHeader(items,title);b.reserve(b.size()+total+4);for(auto& [name,data]:files)b.insert(b.end(),data.begin(),data.end());b.resize(b.size()+4);return b;
+}
+void writeGma(const fs::path& path,const std::map<std::string,GmaEntry>& files,const std::string& title){
+ std::vector<unsigned char> buffer(4u<<20);
+ auto stream=[&](const fs::path& file,const std::function<void(const unsigned char*,size_t)>& use){
+  std::ifstream in(ioPath(file),std::ios::binary);if(!in)throw std::runtime_error("Cannot read "+utf8(file.wstring()));uint64_t size=0;
+  while(in.read(reinterpret_cast<char*>(buffer.data()),std::streamsize(buffer.size()))||in.gcount()>0){auto n=size_t(in.gcount());use(buffer.data(),n);size+=n;}
+  if(in.bad())throw std::runtime_error("Cannot read "+utf8(file.wstring()));return size;};
+ std::vector<GmaItem> items;
+ for(auto& [name,entry]:files){
+  if(entry.file.empty()){items.push_back({name,entry.data.size(),crc(entry.data)});continue;}
+  uint32_t c=~0u;auto size=stream(entry.file,[&](const unsigned char* p,size_t n){c=crcUpdate(c,p,n);});items.push_back({name,size,~c});
+ }
+ auto header=gmaHeader(items,title);
+ writeAtomic(path,[&](std::ostream& out){
+  out.write(reinterpret_cast<const char*>(header.data()),std::streamsize(header.size()));size_t k=0;
+  for(auto& [name,entry]:files){auto& item=items[k++];
+   if(entry.file.empty()){out.write(reinterpret_cast<const char*>(entry.data.data()),std::streamsize(entry.data.size()));continue;}
+   uint32_t c=~0u;auto size=stream(entry.file,[&](const unsigned char* p,size_t n){c=crcUpdate(c,p,n);out.write(reinterpret_cast<const char*>(p),std::streamsize(n));});
+   if(size!=item.size||~c!=item.crc)throw std::runtime_error("A file changed while its package was written: "+name);
+  }
+  const char end[4]{};out.write(end,4);
+ });
 }
 Json packageCarrier(const fs::path& cache,const Rig& r,Bytes physics){registerShortName(cache,"rigs",r.key);retainCacheFiles(cache,{fs::path(L"rigs")/wide(r.key)});auto arms=r.manifest.value("role",std::string("ragdoll"))=="arms"?loadAsset(cache,r.manifest.at("asset").get<std::string>()):std::shared_ptr<Model>{};auto files=carrierFiles(r,arms.get());files[r.path.substr(0,r.path.size()-4)+".phy"]=std::move(physics);
  auto bytes=makeGma(files,"Model Hotloader carrier "+r.key);

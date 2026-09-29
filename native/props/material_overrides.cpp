@@ -41,13 +41,13 @@ void applyMaterialOverrides(Asset& a,const fs::path& source,const Options& optio
         if(override.contains("specular")||override.contains("shininess"))m.erase("pbr"); // explicit Phong wins
         for(auto binding:{"base_texture","normal_texture"})if(override.contains(binding)){
             auto ref=override.at(binding).get<std::string>();
-            auto bytes=readFile(resources.resolve(ref).path,128ull<<20);
+            auto bytes=readFile(resources.resolve(ref).path,MaxTextureFileBytes);
             Texture texture;
             if(std::string_view(binding)=="base_texture"&&override.contains("opacity_texture")){
-                auto mask=readFile(resources.resolve(override.at("opacity_texture").get<std::string>()).path,128ull<<20);
+                auto mask=readFile(resources.resolve(override.at("opacity_texture").get<std::string>()).path,MaxTextureFileBytes);
                 texture=makeMaskedTexture(bytes,mask,options.limits.textureDimension,override.value("white_opacity",false));
             }else texture=makeTexture(bytes,options.limits.textureDimension);
-            auto hash=texture.hash;addTexture(a,std::move(texture));m[binding]=hash;
+            auto hash=texture.hash;addTexture(a,std::move(texture),ref);m[binding]=hash;
             // Resolve only this binding's diagnostic; a repaired diffuse map
             // must not conceal an independently missing normal map.
             if(m.contains("texture_errors")){

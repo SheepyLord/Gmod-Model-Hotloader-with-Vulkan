@@ -17,6 +17,9 @@
 #include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#define STB_IMAGE_RESIZE_STATIC
+#include <stb_image_resize2.h>
 
 namespace mmd {
 std::wstring wide(std::string_view s){if(s.empty())return {};int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0);if(!n)throw std::runtime_error("Invalid UTF-8 path");std::wstring out(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),out.data(),n);return out;}
@@ -31,7 +34,14 @@ fs::path ioPath(const fs::path& path){
  return L"\\\\?\\"+value;
 }
 Bytes readFile(const fs::path& path){std::ifstream f(ioPath(path),std::ios::binary|std::ios::ate);if(!f)throw std::runtime_error("Cannot read "+utf8(path.wstring()));auto size=f.tellg();if(size<0)throw std::runtime_error("Cannot determine file size");Bytes b(static_cast<size_t>(size));f.seekg(0);if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))throw std::runtime_error("Incomplete file read");return b;}
-void writeAtomic(const fs::path& path,std::span<const unsigned char> b){auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());{std::ofstream f(tmp,std::ios::binary|std::ios::trunc);if(!f||!f.write(reinterpret_cast<const char*>(b.data()),b.size()))throw std::runtime_error("Cannot write output file: "+utf8(path.wstring()));}for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED))throw std::runtime_error("Cannot commit output file: "+utf8(path.wstring()));Sleep(10);}}
+void writeAtomic(const fs::path& path,const std::function<void(std::ostream&)>& write){
+ auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());
+ {std::ofstream f(tmp,std::ios::binary|std::ios::trunc);bool written=bool(f);
+  if(written){try{write(f);}catch(...){f.close();std::error_code ec;fs::remove(tmp,ec);throw;}written=bool(f.flush());}
+  if(!written){f.close();std::error_code ec;fs::remove(tmp,ec);throw std::runtime_error("Cannot write output file: "+utf8(path.wstring()));}}
+ for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED))throw std::runtime_error("Cannot commit output file: "+utf8(path.wstring()));Sleep(10);}
+}
+void writeAtomic(const fs::path& path,std::span<const unsigned char> b){writeAtomic(path,[&](std::ostream& f){f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));});}
 void writeJson(const fs::path& path,const Json& j){auto s=j.dump(2);writeAtomic(path,std::span(reinterpret_cast<const unsigned char*>(s.data()),s.size()));}
 Json readJson(const fs::path& p){auto b=readFile(p);return Json::parse(b.begin(),b.end());}
 std::string hash(std::span<const unsigned char> b){
@@ -56,6 +66,17 @@ void registerShortName(const fs::path& cache,const std::string& kind,const std::
  retainCacheFiles(cache,{path.lexically_relative(cache)});writeJson(path,{{"id",id}});
 }
 bool validId(std::string_view s){return s.size()==64&&std::all_of(s.begin(),s.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
+// Texels past 4096 on an edge cost four times the memory and import time and
+// look the same in game, so larger textures are scaled down, keeping the ratio.
+constexpr int MaxTextureEdge=4096;
+static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes& scaled){
+    if(width<=MaxTextureEdge&&height<=MaxTextureEdge)return false;
+    double factor=double(MaxTextureEdge)/std::max(width,height);
+    int w=std::clamp(int(std::lround(width*factor)),1,MaxTextureEdge),h=std::clamp(int(std::lround(height*factor)),1,MaxTextureEdge);
+    scaled.resize(size_t(w)*h*4);
+    if(!stbir_resize_uint8_srgb(pixels,width,height,0,scaled.data(),w,h,0,STBIR_RGBA))throw std::runtime_error("Cannot scale down a large texture");
+    width=w;height=h;return true;
+}
 static fs::path resolveTexture(const fs::path& base,std::string path){std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);return (base/p).lexically_normal();}
 static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings){
     int width=0,height=0,channels=0;
@@ -72,8 +93,12 @@ static std::string normalizeTexture(const Bytes& bytes,const std::string& name,c
         if(!stbi_info_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels)||width<1||height<1)throw std::runtime_error("Unsupported texture: "+name);
         guard.reset(stbi_load_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels,4));pixels=guard.get();if(!pixels)throw std::runtime_error("Cannot decode texture: "+name);
     }
-    if(width>4096||height>4096||bytes.size()>(64ull<<20))warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+"). Import continues; memory use and loading time may be high.");
     for(size_t i=3;i<size_t(width)*height*4;i+=4)if(pixels[i]<255){alpha=true;break;}
+    Bytes scaled;const int sourceWidth=width,sourceHeight=height;
+    if(fitTexture(pixels,width,height,scaled)){
+        guard.reset();decoded=Bytes();pixels=scaled.data();
+        warnings.push_back("Large texture "+name+" ("+std::to_string(sourceWidth)+" x "+std::to_string(sourceHeight)+") was scaled down to "+std::to_string(width)+" x "+std::to_string(height)+"; the game shows no more detail than that.");
+    }else if(bytes.size()>(64ull<<20))warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+"). Import continues; memory use and loading time may be high.");
     Bytes png;auto callback=[](void* context,void* p,int n){auto& b=*static_cast<Bytes*>(context);auto src=static_cast<unsigned char*>(p);b.insert(b.end(),src,src+n);};
     if(!stbi_write_png_to_func(callback,&png,width,height,4,pixels,width*4))throw std::runtime_error("Texture encoding failed");auto id=hash(png);auto path=cache/L"textures"/wide(id+".png");if(!fs::exists(path))writeAtomic(path,png);return id;
 }
@@ -84,37 +109,49 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
  std::vector<fs::path> retained={fs::path(L"assets")/wide(id)};
  for(auto& t:manifest["textures"])for(auto kind:{"base","sphere","toon"}){auto h=t.value(kind,"");if(validId(h))for(auto ext:{".png",".vtf"})retained.push_back(fs::path(L"textures")/wide(h+ext));}
  retainCacheFiles(cache,retained);if(fs::is_regular_file(package))return;
- std::map<std::string,Bytes> files;
+ // Textures stay on disk until the package streams them: a model with dozens of
+ // 4096 textures never holds them all, plus a packed copy, in memory.
+ std::map<std::string,GmaEntry> files;
  for(size_t i=0;i<manifest["materials"].size();i++){
   auto& material=manifest["materials"][i];auto& texture=manifest["textures"][i];std::string base=texture.value("base","");
   std::string texturePath="models/debug/debugwhite";
   if(validId(base)){
    registerShortName(cache,"textures",base);texturePath="mmd/t/"+base.substr(0,16);auto derivative=cache/L"textures"/wide(base+".vtf");
    if(!fs::is_regular_file(derivative)){
-    auto png=readFile(cache/L"textures"/wide(base+".png"));int width,height,channels;
-    std::unique_ptr<unsigned char,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4),stbi_image_free);
-    if(!pixels)throw std::runtime_error("Cannot create Source texture derivative");
+    int width,height,channels;std::unique_ptr<unsigned char,decltype(&stbi_image_free)> decoded(nullptr,stbi_image_free);
+    {auto png=readFile(cache/L"textures"/wide(base+".png"));decoded.reset(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4));}
+    if(!decoded)throw std::runtime_error("Cannot create Source texture derivative");
+    // Caches from before 2.2 hold textures larger than 4096.
+    Bytes scaled;const unsigned char* pixels=decoded.get();if(fitTexture(pixels,width,height,scaled))pixels=scaled.data();
     if(width>65535||height>65535)throw std::runtime_error("Texture dimensions cannot be represented in the VTF format");
-    Bytes vtf(80,0);auto put=[&]<class T>(size_t at,T value){std::memcpy(vtf.data()+at,&value,sizeof(T));};
+    // Mip levels follow the 80-byte header smallest first; each level is a 2x2
+    // box filter of the one above, built in place.
+    std::vector<std::pair<int,int>> levels{{width,height}};while(levels.back().first>1||levels.back().second>1)levels.push_back({std::max(1,levels.back().first/2),std::max(1,levels.back().second/2)});
+    std::vector<size_t> offsets(levels.size());size_t size=80;for(size_t k=levels.size();k-->0;){offsets[k]=size;size+=size_t(levels[k].first)*levels[k].second*4;}
+    Bytes vtf(size,0);auto put=[&]<class T>(size_t at,T value){std::memcpy(vtf.data()+at,&value,sizeof(T));};
     std::memcpy(vtf.data(),"VTF",3);put(4,uint32_t(7));put(8,uint32_t(2));put(12,uint32_t(80));put(16,uint16_t(width));put(18,uint16_t(height));put(20,uint32_t(texture.value("alpha",false)?0x2000:0));put(24,uint16_t(1));put(32,.5f);put(36,.5f);put(40,.5f);put(48,1.f);put(52,uint32_t(0));put(57,int32_t(-1));put(63,uint16_t(1));
-    std::vector<Bytes> mips;int w=width,h=height;mips.emplace_back(pixels.get(),pixels.get()+size_t(w)*h*4);
-    while(w>1||h>1){int nw=std::max(1,w/2),nh=std::max(1,h/2);Bytes next(size_t(nw)*nh*4);auto& prior=mips.back();for(int y=0;y<nh;y++)for(int x=0;x<nw;x++)for(int c=0;c<4;c++){unsigned sum=0;for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)sum+=prior[(size_t(std::min(h-1,y*2+yy))*w+std::min(w-1,x*2+xx))*4+c];next[(size_t(y)*nw+x)*4+c]=uint8_t(sum/4);}mips.push_back(std::move(next));w=nw;h=nh;}
-    vtf[56]=uint8_t(mips.size());for(auto it=mips.rbegin();it!=mips.rend();++it)vtf.insert(vtf.end(),it->begin(),it->end());writeAtomic(derivative,vtf);
+    vtf[56]=uint8_t(levels.size());std::memcpy(vtf.data()+offsets[0],pixels,size_t(width)*height*4);decoded.reset();scaled=Bytes();
+    for(size_t k=1;k<levels.size();k++){auto [w,h]=levels[k-1];auto [nw,nh]=levels[k];const unsigned char* prior=vtf.data()+offsets[k-1];unsigned char* next=vtf.data()+offsets[k];
+     for(int y=0;y<nh;y++)for(int x=0;x<nw;x++)for(int c=0;c<4;c++){unsigned sum=0;for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)sum+=prior[(size_t(std::min(h-1,y*2+yy))*w+std::min(w-1,x*2+xx))*4+c];next[(size_t(y)*nw+x)*4+c]=uint8_t(sum/4);}}
+    writeAtomic(derivative,vtf);
    }
-   std::string path="materials/"+texturePath+".vtf";if(!files.contains(path))files[path]=readFile(derivative);
-   auto& pixels=files.at(path);
-   if(pixels.size()<80||std::memcmp(pixels.data(),"VTF\0",4)!=0)throw std::runtime_error("Invalid Source texture derivative header");
-   uint16_t width=0,height=0;std::memcpy(&width,pixels.data()+16,2);std::memcpy(&height,pixels.data()+18,2);size_t count=size_t(width)*height*4;
-   if(!width||!height||count>pixels.size()-80)throw std::runtime_error("Invalid Source texture derivative");
+   std::string path="materials/"+texturePath+".vtf";
+   if(!files.contains(path)){
+    std::ifstream in(ioPath(derivative),std::ios::binary);unsigned char header[80]{};std::error_code ec;auto size=fs::file_size(ioPath(derivative),ec);
+    if(!in||!in.read(reinterpret_cast<char*>(header),80)||ec||std::memcmp(header,"VTF\0",4)!=0)throw std::runtime_error("Invalid Source texture derivative header");
+    uint16_t width=0,height=0;std::memcpy(&width,header+16,2);std::memcpy(&height,header+18,2);uint64_t count=uint64_t(width)*height*4;
+    if(!width||!height||count>size-80)throw std::runtime_error("Invalid Source texture derivative");
+    files[path].file=derivative;
+   }
   }
   std::ostringstream vmt;vmt<<"VertexLitGeneric\n{\n";
   auto value=[&](const char* key,const std::string& v){vmt<<'"'<<key<<"\" \""<<v<<"\"\n";};
   value("$basetexture",texturePath);value("$model","1");value("$vertexcolor","1");value("$nocull",material.value("twoSided",false)?"1":"0");
   value("$translucent","0");value("$vertexalpha","0");value("$alphatest","1");value("$alphatestreference",".5");value("$allowalphatocoverage","1");
   value("$bumpmap","mmdhl/scmi/normal");value("$lightwarptexture","mmdhl/scmi/lightwarptexture");value("$halflambert","0");value("$phong","1");value("$phongboost","24");value("$phongalbedotint","1");value("$phongexponenttexture","mmdhl/scmi/phong_exp");value("$phongfresnelranges","[0 0 1]");value("$rimlight","1");value("$rimlightexponent","2");value("$rimlightboost","2");vmt<<"}\n";
-  auto text=vmt.str();files["materials/"+materialPath(id,i,material.value("name",""))+".vmt"]=Bytes(text.begin(),text.end());
+  auto text=vmt.str();files["materials/"+materialPath(id,i,material.value("name",""))+".vmt"].data=Bytes(text.begin(),text.end());
  }
- writeAtomic(package,makeGma(files,"Model Hotloader materials "+id));
+ writeGma(package,files,"Model Hotloader materials "+id);
 }
 Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress){
     auto report=[&](const char* stage,float value){if(!progress.empty())writeJson(progress,{{"state","running"},{"stage",stage},{"progress",value},{"filename",utf8(source.filename().wstring())}});};

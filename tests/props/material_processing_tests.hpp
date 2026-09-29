@@ -32,4 +32,11 @@ void materialProcessingTests(){
     a=model(opaquePNG);analyzeMaterials(a);auto before=a.manifest;analyzeMaterials(a);check(a.manifest==before,"material reanalysis is not idempotent");
     check(a.textures[0].alphaKnown&&!a.textures[0].hasAlpha,"fresh opaque texture hint missing");
     auto cached=decode(encode(a));check(!cached.textures[0].alphaKnown,"cache supplied a trusted alpha hint");
+    // Images past the texture limit are scaled down to it, keeping the ratio, with one note.
+    const Bytes widePNG={137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,32,0,0,0,8,8,6,0,0,0,152,133,253,175,0,0,0,26,73,68,65,84,120,218,99,56,81,161,241,127,32,49,195,168,3,70,29,48,234,128,129,118,0,0,190,33,103,31,226,58,197,111,0,0,0,0,73,69,78,68,174,66,96,130};
+    auto wide=makeTexture(widePNG,16);check(wide.width==16&&wide.height==4&&wide.sourceWidth==32&&wide.sourceHeight==8,"a texture past the limit was not scaled down with its ratio");
+    auto square=makeTexture(atlasPNG,8);check(square.width==8&&square.height==8&&square.sourceWidth==16,"a square texture past the limit was not scaled down");
+    auto kept=makeTexture(atlasPNG,16);check(kept.width==16&&kept.height==16&&!kept.sourceWidth,"a texture within the limit was scaled");
+    auto noted=fixture();noted.manifest["warnings"]=Json::array();addTexture(noted,wide,"wide.png");addTexture(noted,wide,"wide.png");
+    check(noted.manifest["warnings"].size()==1&&noted.manifest["warnings"][0].get<std::string>().starts_with("Large texture wide.png (32 x 8) was scaled down to 16 x 4"),"scaled texture note missing or repeated");
 }

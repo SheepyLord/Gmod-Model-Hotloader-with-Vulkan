@@ -12,7 +12,9 @@ def png(width,height,rgba):
  def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
  return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(rows))+chunk(b'IEND',b'')
 def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),material_count=2,chain=0,chain_damping=.5,chain_mass_ratio=1,chain_masses=None,chain_locked=False,extra_vertices=0,bad='',morph_vertex=3,morph_offset=1,island=False,texture_name='checker.dds',group_chain=0,group_lattice=0):
- # bad: one non-finite or runaway value per section (the loader must reject it; a zero normal is repaired).
+ # bad: one non-finite or runaway value per section. The loader repairs them (soft bodies are
+ # rejected); the repair kinds mirror released models: a NaN vertex, NaN normal, BDEF4 weights
+ # of (1, 1, 1, -2) on one bone, a bone parented to itself, a 1e21 kg anchor, a 1e14 spring.
  nan=float('nan');inf=float('inf')
  b=bytearray(b'PMX '+pack('fB',2.1,8)+bytes([1,1,4,4,4,4,4,4]))
  b+=text('MMDHL regression rope' if rope else 'MMDHL regression cloth')+text('Generated fixture')+text('CC0 procedural test geometry')+text('')
@@ -25,9 +27,10 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
  if island:vertices += [(3,0,1),(4,0,1),(3,1,1)]
  b+=pack('i',len(vertices))
  for i,p in enumerate(vertices):
-  t=0 if i>=alone else i%5;b+=vec(*p)+(vec(0,0,0) if bad=='zero_normal' and i<3 else vec(0,0,-1))+(vec(nan,0) if bad=='uv' and i==0 else vec((i%5)/4,(i//5)/6))+vec(.2,.3,0,0)+pack('B',t)
+  t=0 if i>=alone else i%5;b+=(vec(nan,p[1],p[2]) if bad=='vertex_position' and i==0 else vec(*p))+(vec(0,0,0) if bad=='zero_normal' and i<3 else vec(nan,0,-1) if bad=='normal' and i==1 else vec(0,0,-1))+(vec(nan,0) if bad=='uv' and i==0 else vec((i%5)/4,(i//5)/6))+vec(.2,.3,0,0)+pack('B',t)
   if t==0:b+=pack('i',0)
   elif t in (1,3):b+=pack('ii',0,1)+vec(.6)
+  elif bad=='weights' and i==2:b+=pack('iiii',1,1,1,1)+vec(1,1,1,-2)
   else:b+=pack('iiii',0,1,0,1)+vec(.25,.25,.25,.25)
   if t==3:b+=vec(*p)+vec(0,0,0)+vec(0,0,0)
   b+=vec(1)
@@ -41,7 +44,7 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
  b+=pack('i',material_count)
  for i,count in enumerate([core,len(indices)-core]+[0]*(material_count-2)):
   b+=text('Core' if i==0 else 'Fabric')+text('')+vec(nan if bad=='material' else .3,.55,.8,1)+vec(.1,.1,.1)+vec(8)+vec(.15,.15,.15)+pack('B',31)+vec(0,0,0,1)+vec(.4)+pack('iiBB',0 if texture else -1,-1,0,1)+pack('B',0)+text('')+pack('i',count)
- bones=[('root',(0,0,0),1 if cycle else -1),('link',(0,5,0),0),('effector',(0,10,0),1),('IK',(2,9,0),0)]
+ bones=[('root',(0,0,0),1 if cycle else 0 if bad=='self_parent' else -1),('link',(0,5,0),0),('effector',(0,10,0),1),('IK',(2,9,0),0)]
  if humanoid:
   # Keep the authored cloth rig and add an independent standard primary skeleton.
   # Its pelvis drives the cloth root so moving-attachment feedback is exercised.
@@ -89,8 +92,8 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
   return bytes(b)
  b+=pack('i',3)
  for i,mode in enumerate([0,1,2]):
-  b+=text('body'+str(i))+text('')+pack('iBHB',i,0,0,0)+vec(.4,.4,.4)+vec(0,i*5,0)+vec(nan if bad=='body_orientation' and i==1 else 0,0,0)+vec(inf if bad=='body_mass' and i==1 else 1,nan if bad=='body_damping' and i==1 else .2,.2,0,.5)+pack('B',mode)
- b+=pack('i',1)+text('spring')+text('')+pack('Bii',0,*joint)+vec(0,5,0)+vec(0,0,0)+vec(0,0,0)*2+vec(nan if bad=='joint_limit' else -.4,-.4,-.4)+vec(.4,.4,.4)+vec(0,0,0)+vec(inf if bad=='joint_spring' else 1,1,1)
+  b+=text('body'+str(i))+text('')+pack('iBHB',i,0,0,0)+vec(.4,.4,.4)+vec(0,i*5,0)+vec(nan if bad=='body_orientation' and i==1 else 0,0,0)+vec(inf if bad=='body_mass' and i==1 else 1e21 if bad=='body_heavy' and i==1 else 1,nan if bad=='body_damping' and i==1 else .2,.2,0,.5)+pack('B',mode)
+ b+=pack('i',1)+text('spring')+text('')+pack('Bii',0,*joint)+vec(0,5,0)+vec(0,0,0)+vec(0,0,0)*2+vec(nan if bad=='joint_limit' else -.4,-.4,-.4)+vec(.4,.4,.4)+vec(0,0,0)+vec(inf if bad=='joint_spring' else 1e14 if bad=='joint_stiff' else 1,1,1)
  b+=pack('i',1)+text('soft fabric')+text('')+pack('BiBHBii',1 if rope else 0,1,1,0,1,2,0)+vec(.4,.08)+pack('i',0)
  b+=vec(nan if bad=='soft' else 1,.02,0,0,0,0,.5,0,1,.1,1,.7) # config
  b+=vec(1,.1,1,.5,.5,.5)+pack('iiii',0,10**9 if bad=='soft_iterations' else 6,0,4)+vec(.8,.8,.8)
@@ -131,8 +134,10 @@ if __name__=='__main__':
  (out/'native-group-lattice.pmx').write_bytes(make(humanoid=True,group_lattice=40))
  # NaN bone tails, as some exporters write: display data, so the model loads and the jiggle ignores them.
  (out/'native-nan-tail.pmx').write_bytes(make(humanoid=True,bad='bone_tail'))
- # One corrupt value per numeric section; the loader rejects them before caching (a zero normal is repaired).
- for bad in ['zero_normal','uv','material','ik','morph_vertex','morph_bone','morph_material','morph_group','morph_impulse','body_orientation','body_mass','body_damping','joint_limit','joint_spring','soft','soft_iterations']:
+ # One corrupt value per numeric section: the loader repairs them, except soft bodies, which
+ # it rejects before caching.
+ for bad in ['zero_normal','uv','material','ik','morph_vertex','morph_bone','morph_material','morph_group','morph_impulse','body_orientation','body_mass','body_damping','joint_limit','joint_spring','soft','soft_iterations',
+             'vertex_position','normal','weights','self_parent','body_heavy','joint_stiff']:
   (out/('corrupt-'+bad+'.pmx')).write_bytes(make(bad=bad))
  # One BC1 block with alternating red/green texels, stored in a standard DDS.
  header=[124,0x81007,4,4,8,0,1]+[0]*11+[32,4,struct.unpack('<I',b'DXT1')[0],0,0,0,0,0]+[0x1000,0,0,0,0]

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include "jobs.hpp"
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <immintrin.h>
 #include <intrin.h>
@@ -97,6 +98,129 @@ static void validateNumbers(const Model& m){
         default:break;}
         if(!good)fail("morph",i);}
 }
+// Exporters leave NaN, infinite or absurd numbers in models that MMD and PMX
+// Editor still open: a vertex or UV at NaN, BDEF4 weights of (1, 1, 1, -2) on
+// one bone, 1e21 kg anchor bodies, 1e14 joint springs. Repair the loaded nanoem
+// data in place before anything reads it, so skinning, morphs, physics and the
+// Source rig all see the same values, and note each kind of repair once. Only
+// values the checks above would reject change: models that loaded before load
+// exactly as before (their cached identity includes the warnings).
+static void repairModel(Model& m){
+    constexpr float Length=1e7f,Angle=1e4f,Factor=1e6f,Weight=1e3f,Stiffness=1e12f,Mass=1e15f;
+    auto model=m.source;
+    auto good=[](float v,float limit){return std::isfinite(v)&&std::fabs(v)<=limit;};
+    auto valid=[&](const nanoem_f128_t& v,int count,float limit){for(int k=0;k<count;k++)if(!good(v.values[k],limit))return false;return true;};
+    // Replace each bad component; true when one was replaced.
+    auto fix=[&](nanoem_f128_t& v,int count,float limit,float fallback){bool changed=false;for(int k=0;k<count;k++)if(!good(v.values[k],limit)){v.values[k]=fallback;changed=true;}return changed;};
+    auto fixOne=[&](float& v,float limit,float fallback){if(good(v,limit))return false;v=fallback;return true;};
+    auto boneOrigin=[&](int bone,nanoem_f128_t& out){for(int k=0;k<3;k++)out.values[k]=0;
+        if(bone>=0&&nanoem_rsize_t(bone)<model->num_bones&&valid(model->bones[bone]->origin,3,Length))for(int k=0;k<3;k++)out.values[k]=model->bones[bone]->origin.values[k];};
+    // "Repaired <what> (<count>[: names])<detail>." Every repair note starts with
+    // "Repaired ", which the addon lists as a note rather than a warning.
+    auto note=[&](size_t count,const std::string& what,const std::string& detail,const std::vector<std::string>& names={}){if(!count)return;
+        std::string list;for(auto& n:names)list+=(list.empty()?": ":", ")+n;if(!names.empty()&&count>names.size())list+=", ...";
+        m.warnings.push_back("Repaired "+what+" ("+std::to_string(count)+list+")"+detail+".");};
+    auto listed=[&](std::vector<std::string>& names,const nanoem_unicode_string_t* name){if(names.size()<3)if(auto text=m.text(name);!text.empty())names.push_back(text);};
+
+    std::vector<char> hidden(model->num_vertices,0);size_t lost=0,normals=0,uvs=0,edges=0,sdef=0,weights=0;
+    for(nanoem_rsize_t i=0;i<model->num_vertices;i++){auto v=model->vertices[i];
+        if(!valid(v->origin,3,Length)){
+            // Its triangles are hidden below, which is how MMD shows them; park it
+            // on its first bone so bounds and collision fitting stay meaningful.
+            boneOrigin(v->num_bone_indices?v->bone_indices[0]:-1,v->origin);hidden[i]=1;lost++;}
+        if(fix(v->normal,3,Length,0))normals++; // a zero normal is rebuilt from the faces
+        if(fix(v->uv,2,Factor,0)|fix(v->additional_uv[0],2,Factor,0))uvs++;
+        if(fixOne(v->edge_size,Factor,1))edges++;
+        if(!valid(v->sdef_c,3,Length)||!valid(v->sdef_r0,3,Length)||!valid(v->sdef_r1,3,Length)){
+            for(auto p:{&v->sdef_c,&v->sdef_r0,&v->sdef_r1})for(int k=0;k<3;k++)p->values[k]=0;
+            if(v->type==NANOEM_MODEL_VERTEX_TYPE_SDEF)v->type=NANOEM_MODEL_VERTEX_TYPE_BDEF2;sdef++;}
+        auto n=std::min<nanoem_rsize_t>(v->num_bone_weights,4);auto& w=v->bone_weights.values;bool broken=false;
+        for(nanoem_rsize_t k=0;k<n;k++)broken|=!std::isfinite(w[k])||w[k]<0;
+        if(broken){
+            // Weights split over one bone (1, 1, 1, -2 on the head) are that bone's
+            // weight; a stray negative is rounding.
+            for(nanoem_rsize_t k=0;k<n;k++)if(!std::isfinite(w[k]))w[k]=0;
+            for(nanoem_rsize_t k=1;k<n;k++)for(nanoem_rsize_t j=0;j<k;j++)if(v->bone_indices[j]==v->bone_indices[k]){w[j]+=w[k];w[k]=0;break;}
+            float total=0;for(nanoem_rsize_t k=0;k<n;k++){w[k]=std::max(w[k],0.f);total+=w[k];}
+            if(total>0)for(nanoem_rsize_t k=0;k<n;k++)w[k]/=total;
+            else{nanoem_rsize_t first=0;for(nanoem_rsize_t k=0;k<n;k++)if(v->bone_indices[k]>=0){first=k;break;}for(nanoem_rsize_t k=0;k<n;k++)w[k]=k==first?1.f:0.f;}
+            weights++;}
+    }
+    if(lost){size_t triangles=0;auto index=model->vertex_indices;
+        for(nanoem_rsize_t t=0;t+2<model->num_vertex_indices;t+=3){bool touches=false;for(int k=0;k<3;k++)touches|=index[t+k]<model->num_vertices&&hidden[index[t+k]];
+            if(touches){index[t+1]=index[t+2]=index[t];triangles++;}}
+        note(lost,"vertices without a valid position",": the "+std::to_string(triangles)+" triangles that use them are hidden, as in MMD");}
+    note(normals,"vertices with invalid normals",": they are rebuilt from the surrounding faces");
+    note(uvs,"vertices with invalid texture coordinates","");
+    note(edges,"vertices with an invalid outline size","");
+    note(sdef,"vertices with invalid SDEF data",": they blend linearly");
+    note(weights,"vertices with negative or invalid skin weights","");
+
+    auto constraint=[&](nanoem_model_constraint_t* c){if(!c)return false;bool changed=fixOne(c->angle_limit,Angle,1);
+        if(c->num_iterations<0||c->num_iterations>65535){c->num_iterations=std::clamp(c->num_iterations,0,65535);changed=true;}
+        for(nanoem_rsize_t k=0;k<c->num_joints;k++)if(auto j=c->joints[k];j&&(!valid(j->lower_limit,3,Angle)||!valid(j->upper_limit,3,Angle))){
+            j->has_angle_limit=0;for(int q=0;q<3;q++)j->lower_limit.values[q]=j->upper_limit.values[q]=0;changed=true;}
+        return changed;};
+    size_t bones=0;std::vector<std::string> boneNames;
+    for(nanoem_rsize_t i=0;i<model->num_bones;i++){auto b=model->bones[i];bool changed=false;
+        if(!valid(b->origin,3,Length)){boneOrigin(b->parent_bone_index!=int(i)?b->parent_bone_index:-1,b->origin);changed=true;}
+        changed|=fixOne(b->inherent_coefficient,Weight,0);
+        if(b->u.flags.has_fixed_axis&&!valid(b->fixed_axis,3,Length)){b->u.flags.has_fixed_axis=0;for(int k=0;k<3;k++)b->fixed_axis.values[k]=0;changed=true;}
+        changed|=constraint(b->constraint);
+        if(changed){bones++;listed(boneNames,b->name_ja);}
+    }
+    for(nanoem_rsize_t i=0;i<model->num_constraints;i++)bones+=constraint(model->constraints[i]);
+    note(bones,"bones with invalid positions, inherit or IK values","",boneNames);
+
+    size_t materials=0;
+    for(nanoem_rsize_t i=0;i<model->num_materials;i++){auto x=model->materials[i];
+        bool changed=fix(x->diffuse_color,3,Factor,1)|fix(x->specular_color,3,Factor,0)|fix(x->ambient_color,3,Factor,.5f)|fix(x->edge_color,3,Factor,0)
+            |fixOne(x->diffuse_opacity,Factor,1)|fixOne(x->specular_power,Factor,5)|fixOne(x->edge_opacity,Factor,1)|fixOne(x->edge_size,Factor,1);
+        materials+=changed;}
+    note(materials,"materials with invalid colours or sizes","");
+
+    size_t bodies=0,heavy=0;float heaviest=0;
+    for(nanoem_rsize_t i=0;i<model->num_rigid_bodies;i++){auto r=model->rigid_bodies[i];bool changed=false;
+        if(!valid(r->origin,3,Length)){boneOrigin(r->is_bone_relative?-1:r->bone_index,r->origin);changed=true;}
+        changed|=fix(r->size,3,Length,1)|fix(r->orientation,3,Angle,0);
+        if(!std::isfinite(r->mass)){r->mass=1;changed=true;}else if(r->mass<0){r->mass=-r->mass;changed=true;}
+        // Modellers pin anchors with absurd masses; 1e15 kg is as immovable.
+        if(r->mass>Mass){heaviest=std::max(heaviest,r->mass);r->mass=Mass;heavy++;}
+        changed|=fixOne(r->linear_damping,Factor,.5f)|fixOne(r->angular_damping,Factor,.5f)|fixOne(r->friction,Factor,.5f)|fixOne(r->restitution,Factor,0);
+        bodies+=changed;}
+    note(bodies,"rigid bodies with invalid shapes or physics values","");
+    if(heavy){char text[64];std::snprintf(text,sizeof(text),"%.3g",double(heaviest));note(heavy,"rigid body masses above 1e15 kg",std::string(", up to ")+text+" kg: they are 1e15 kg and still act as fixed anchors");}
+
+    size_t joints=0,stiff=0;
+    for(nanoem_rsize_t i=0;i<model->num_joints;i++){auto j=model->joints[i];
+        bool changed=fix(j->origin,3,Length,0)|fix(j->orientation,3,Angle,0)|fix(j->linear_lower_limit,3,Length,0)|fix(j->linear_upper_limit,3,Length,0)
+            |fix(j->angular_lower_limit,3,Angle,0)|fix(j->angular_upper_limit,3,Angle,0),clamped=false;
+        for(auto s:{&j->linear_stiffness,&j->angular_stiffness})for(int k=0;k<3;k++){float& v=s->values[k];
+            if(!std::isfinite(v)){v=0;changed=true;}else if(std::fabs(v)>Stiffness){v=std::copysign(Stiffness,v);clamped=true;}}
+        joints+=changed;stiff+=clamped;}
+    note(joints,"joints with invalid positions or limits","");
+    note(stiff,"joint springs stiffer than 1e12",": they are 1e12 and stay rigid");
+
+    size_t morphs=0;std::vector<std::string> morphNames;
+    for(nanoem_rsize_t i=0;i<model->num_morphs;i++){auto x=model->morphs[i];bool changed=false;auto n=x->num_objects;
+        switch(x->type){
+        case NANOEM_MODEL_MORPH_TYPE_VERTEX:for(nanoem_rsize_t k=0;k<n;k++)if(!valid(x->u.vertices[k]->position,3,Length)){x->u.vertices[k]->position={};changed=true;}break;
+        case NANOEM_MODEL_MORPH_TYPE_TEXTURE:case NANOEM_MODEL_MORPH_TYPE_UVA1:for(nanoem_rsize_t k=0;k<n;k++)if(!valid(x->u.uvs[k]->position,2,Factor)){x->u.uvs[k]->position={};changed=true;}break;
+        case NANOEM_MODEL_MORPH_TYPE_BONE:for(nanoem_rsize_t k=0;k<n;k++){auto e=x->u.bones[k];changed|=fix(e->translation,3,Length,0);
+            if(!valid(e->orientation,4,Angle)){e->orientation={{0,0,0,1}};changed=true;}}break;
+        case NANOEM_MODEL_MORPH_TYPE_MATERIAL:for(nanoem_rsize_t k=0;k<n;k++){auto e=x->u.materials[k];
+            float neutral=e->operation==NANOEM_MODEL_MORPH_MATERIAL_OPERATION_TYPE_ADD?0.f:1.f;
+            changed|=fix(e->diffuse_color,3,Factor,neutral)|fix(e->specular_color,3,Factor,neutral)|fix(e->ambient_color,3,Factor,neutral)|fix(e->edge_color,3,Factor,neutral)
+                |fixOne(e->diffuse_opacity,Factor,neutral)|fixOne(e->specular_power,Factor,neutral)|fixOne(e->edge_opacity,Factor,neutral)|fixOne(e->edge_size,Factor,neutral)
+                |fix(e->diffuse_texture_blend,4,Factor,neutral)|fix(e->sphere_map_texture_blend,4,Factor,neutral)|fix(e->toon_texture_blend,4,Factor,neutral);}break;
+        case NANOEM_MODEL_MORPH_TYPE_GROUP:for(nanoem_rsize_t k=0;k<n;k++)changed|=fixOne(x->u.groups[k]->weight,Weight,0);break;
+        case NANOEM_MODEL_MORPH_TYPE_FLIP:for(nanoem_rsize_t k=0;k<n;k++)changed|=fixOne(x->u.flips[k]->weight,Weight,0);break;
+        case NANOEM_MODEL_MORPH_TYPE_IMPULUSE:for(nanoem_rsize_t k=0;k<n;k++)changed|=fix(x->u.impulses[k]->velocity,3,Length,0)|fix(x->u.impulses[k]->torque,3,Length,0);break;
+        default:break;}
+        if(changed){morphs++;listed(morphNames,x->name_ja);}
+    }
+    note(morphs,"morphs with invalid offsets","",morphNames);
+}
 std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     if(bytes.size()<8)throw std::runtime_error("Model file size is invalid");
     if(memcmp(bytes.data(),"PMX ",4)&&memcmp(bytes.data(),"Pmd",3))throw std::runtime_error("Select a PMX or PMD model");
@@ -106,6 +230,7 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     auto b=nanoemBufferCreate(bytes.data(),bytes.size(),&status);
     bool ok=nanoemModelLoadFromBuffer(m->source,b,&status);nanoemBufferDestroy(b);
     if(!ok||status!=NANOEM_STATUS_SUCCESS)throw std::runtime_error("Invalid/truncated PMX/PMD model (nanoem status "+std::to_string(status)+")");
+    repairModel(*m);
     auto advise=[&](size_t count,size_t budget,const char* noun){if(count>budget)m->warnings.push_back("Large model: "+std::to_string(count)+" "+noun+". Import continues with full detail; memory use and frame time may be high.");};
     advise(bytes.size(),256ull<<20,"bytes");
     m->name=m->text(nanoemModelGetName(m->source,NANOEM_LANGUAGE_TYPE_JAPANESE));
@@ -125,13 +250,22 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     }
     // Parents and inherit sources come before each bone. Depth-first with an
     // explicit stack: a file may chain every bone, child before parent, deeper
-    // than a loading thread's stack.
-    std::vector<int> visited(n,0);std::vector<std::pair<int,int>> pending;
+    // than a loading thread's stack. The link that closes a loop (a root bone
+    // parented to itself is common) is dropped in the nanoem data too, so the
+    // Source rig and physics read the same hierarchy.
+    struct Step{int bone,step,from;bool inherit;};
+    std::vector<int> visited(n,0);std::vector<Step> pending;
+    auto cut=[&](int from,bool inherit,bool self){
+        auto& b=m->bones[from];auto s=const_cast<nanoem_model_bone_t*>(b.source);
+        if(inherit){b.inherit=-1;b.inheritRotation=b.inheritTranslation=false;s->parent_inherent_bone_index=-1;s->u.flags.has_inherent_orientation=s->u.flags.has_inherent_translation=0;}
+        else{b.parent=-1;s->parent_bone_index=-1;}
+        m->warnings.push_back("Repaired bone "+std::to_string(from)+(b.name.empty()?"":" ("+b.name+")")+(inherit?": it inherited from a bone that depends on it; that inherit link is removed."
+            :self?": it was its own parent and is now a root bone.":": its parent chain looped back to it; it is now a root bone."));};
     auto visit=[&](int root){
-        pending.push_back({root,0});
-        while(!pending.empty()){auto [i,step]=pending.back();pending.pop_back();if(i<0)continue;
-            if(step==0){if(visited[i]==2)continue;if(visited[i]==1)throw std::runtime_error("Cyclic bone hierarchy/inheritance");visited[i]=1;pending.push_back({i,1});pending.push_back({m->bones[i].parent,0});}
-            else if(step==1){pending.push_back({i,2});if((m->bones[i].inheritRotation||m->bones[i].inheritTranslation)&&m->bones[i].inherit!=i)pending.push_back({m->bones[i].inherit,0});}
+        pending.push_back({root,0,-1,false});
+        while(!pending.empty()){auto [i,step,from,inherit]=pending.back();pending.pop_back();if(i<0)continue;
+            if(step==0){if(visited[i]==2)continue;if(visited[i]==1){cut(from,inherit,from==i);continue;}visited[i]=1;pending.push_back({i,1,-1,false});pending.push_back({m->bones[i].parent,0,i,false});}
+            else if(step==1){pending.push_back({i,2,-1,false});if((m->bones[i].inheritRotation||m->bones[i].inheritTranslation)&&m->bones[i].inherit!=i)pending.push_back({m->bones[i].inherit,0,i,true});}
             else{visited[i]=2;m->order.push_back(i);}
         }
     };

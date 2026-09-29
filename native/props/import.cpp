@@ -9,6 +9,7 @@
 #include <assimp/config.h>
 #include <assimp/GltfMaterial.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <set>
@@ -19,7 +20,7 @@
 #include <assimp/ProgressHandler.hpp>
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
-#define STBI_MAX_DIMENSIONS 4096
+#define STBI_MAX_DIMENSIONS 16384
 #include <stb_image.h>
 static unsigned char* fastPngDeflate(unsigned char* data,int length,int* outputLength,int quality){
     uLongf size=compressBound(uLong(length));auto out=static_cast<unsigned char*>(std::malloc(size));
@@ -31,6 +32,9 @@ static unsigned char* fastPngDeflate(unsigned char* data,int length,int* outputL
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#define STB_IMAGE_RESIZE_STATIC
+#include <stb_image_resize2.h>
 
 namespace props {
 class MemoryStream final:public Assimp::IOStream {
@@ -52,18 +56,30 @@ public:
     Assimp::IOStream* Open(const char* p,const char* mode="rb")override{try{if(std::strchr(mode,'w')||std::strchr(mode,'a'))return nullptr;return new MemoryStream(readFile(path(p)));}catch(...){return nullptr;}}
     void Close(Assimp::IOStream* s)override{delete s;}
 };
-Texture makeTexture(std::span<const uint8_t> input,uint32_t limit){
+// Images larger than the limit are scaled down to it, keeping the ratio: the
+// game shows no more detail. Linear filtering suits colour and normal maps alike.
+static Texture encodeTexture(const uint8_t* rgba,int w,int h,uint32_t limit){
     stbi_write_png_compression_level=1; // Lossless fast encoding; pixels/alpha are unchanged.
     stbi_write_force_png_filter=1; // Sub filter avoids five full-image filter trials.
-    int w=0,h=0,c=0;if(input.size()>128u<<20||!stbi_info_from_memory(input.data(),int(input.size()),&w,&h,&c)||w<=0||h<=0||uint32_t(w)>limit||uint32_t(h)>limit)throw std::runtime_error("Unsupported texture or texture exceeds 4096 pixels");
-    auto pixels=stbi_load_from_memory(input.data(),int(input.size()),&w,&h,&c,4);if(!pixels)throw std::runtime_error("Texture decoding failed");Texture t;t.width=w;t.height=h;for(size_t i=3;i<size_t(w)*h*4;i+=4){t.hasAlpha|=pixels[i]<255;t.fractionalAlpha|=pixels[i]>0&&pixels[i]<255;}
+    Texture t;for(size_t i=3;i<size_t(w)*h*4;i+=4){t.hasAlpha|=rgba[i]<255;t.fractionalAlpha|=rgba[i]>0&&rgba[i]<255;}
+    t.alphaKnown=true;Bytes scaled;
+    if(uint32_t(w)>limit||uint32_t(h)>limit){
+        double factor=double(limit)/std::max(w,h);int sw=std::clamp(int(std::lround(w*factor)),1,int(limit)),sh=std::clamp(int(std::lround(h*factor)),1,int(limit));
+        scaled.resize(size_t(sw)*sh*4);if(!stbir_resize_uint8_linear(rgba,w,h,0,scaled.data(),sw,sh,0,STBIR_RGBA))throw std::runtime_error("Cannot scale down a large texture");
+        t.sourceWidth=uint32_t(w);t.sourceHeight=uint32_t(h);rgba=scaled.data();w=sw;h=sh;
+    }
+    t.width=w;t.height=h;
     auto output=[](void* p,void* data,int size){auto& b=*static_cast<Bytes*>(p);auto q=static_cast<uint8_t*>(data);b.insert(b.end(),q,q+size);};
-    t.alphaKnown=true;
-    int ok=stbi_write_png_to_func(output,&t.png,w,h,4,pixels,w*4);stbi_image_free(pixels);if(!ok)throw std::runtime_error("Texture conversion failed");t.hash=sha256(t.png);return t;
+    if(!stbi_write_png_to_func(output,&t.png,w,h,4,rgba,w*4))throw std::runtime_error("Texture conversion failed");t.hash=sha256(t.png);return t;
+}
+Texture makeTexture(std::span<const uint8_t> input,uint32_t limit){
+    int w=0,h=0,c=0;if(input.size()>MaxTextureFileBytes||!stbi_info_from_memory(input.data(),int(input.size()),&w,&h,&c)||w<=0||h<=0)throw std::runtime_error("Unsupported texture or texture exceeds 16384 pixels");
+    std::unique_ptr<stbi_uc,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(input.data(),int(input.size()),&w,&h,&c,4),stbi_image_free);if(!pixels)throw std::runtime_error("Texture decoding failed");
+    return encodeTexture(pixels.get(),w,h,limit);
 }
 Texture makeMaskedTexture(std::span<const uint8_t> base,std::span<const uint8_t> mask,uint32_t limit,bool white){
     auto decode=[&](std::span<const uint8_t> data,int& w,int& h){int c=0;
-        if(data.size()>128u<<20||!stbi_info_from_memory(data.data(),int(data.size()),&w,&h,&c)||w<=0||h<=0||uint32_t(w)>limit||uint32_t(h)>limit)throw std::runtime_error("Opacity image exceeds supported dimensions");
+        if(data.size()>MaxTextureFileBytes||!stbi_info_from_memory(data.data(),int(data.size()),&w,&h,&c)||w<=0||h<=0)throw std::runtime_error("Opacity image exceeds supported dimensions");
         std::unique_ptr<stbi_uc,decltype(&stbi_image_free)> result(stbi_load_from_memory(data.data(),int(data.size()),&w,&h,&c,4),stbi_image_free);
         if(!result)throw std::runtime_error("Cannot decode opacity image");return result;};
     int w,h,mw,mh;auto rgba=decode(base,w,h),alpha=decode(mask,mw,mh);
@@ -71,17 +87,17 @@ Texture makeMaskedTexture(std::span<const uint8_t> base,std::span<const uint8_t>
         rgba.get()[i+3]=uint8_t(unsigned(rgba.get()[i+3])*alpha.get()[mi]/255);
         if(white)rgba.get()[i]=rgba.get()[i+1]=rgba.get()[i+2]=255;
     }
-    Bytes png;stbi_write_png_compression_level=1;stbi_write_force_png_filter=1;
-    if(!stbi_write_png_to_func([](void* p,void* data,int n){auto& b=*static_cast<Bytes*>(p);auto q=static_cast<uint8_t*>(data);b.insert(b.end(),q,q+n);},&png,w,h,4,rgba.get(),w*4))throw std::runtime_error("Cannot encode opacity image");
-    return makeTexture(png,limit);
+    return encodeTexture(rgba.get(),w,h,limit);
 }
-void addTexture(Asset& a,Texture t){for(auto& e:a.textures)if(e.hash==t.hash)return;a.textures.push_back(std::move(t));}
+void addTexture(Asset& a,Texture t,const std::string& name){for(auto& e:a.textures)if(e.hash==t.hash)return;
+    if(t.sourceWidth)a.manifest["warnings"].push_back("Large texture "+(name.empty()?std::string():name+" ")+"("+std::to_string(t.sourceWidth)+" x "+std::to_string(t.sourceHeight)+") was scaled down to "+std::to_string(t.width)+" x "+std::to_string(t.height)+"; the game shows no more detail than that.");
+    a.textures.push_back(std::move(t));}
 static Json material(){return {{"alpha_explicit",false},{"specular",{0,0,0}},{"shininess",1},{"name","Material"},{"color",{1,1,1,1}},{"two_sided",false},{"alpha_mode","opaque"},{"alpha_cutoff",0.5},{"base_texture",""},{"normal_texture",""}};}
 static Texture rawTexture(const aiTexture* t,uint32_t limit){
     if(!t->mHeight)return makeTexture({reinterpret_cast<const uint8_t*>(t->pcData),t->mWidth},limit);
-    if(t->mWidth>limit||t->mHeight>limit)throw std::runtime_error("Embedded texture exceeds dimension limit");
-    Bytes rgba(size_t(t->mWidth)*t->mHeight*4);for(size_t i=0;i<rgba.size()/4;i++){auto p=t->pcData[i];rgba[i*4]=p.r;rgba[i*4+1]=p.g;rgba[i*4+2]=p.b;rgba[i*4+3]=p.a;}Bytes png;
-    stbi_write_png_to_func([](void* p,void* d,int n){auto& b=*static_cast<Bytes*>(p);auto q=static_cast<uint8_t*>(d);b.insert(b.end(),q,q+n);},&png,t->mWidth,t->mHeight,4,rgba.data(),t->mWidth*4);return makeTexture(png,limit);
+    if(t->mWidth>unsigned(STBI_MAX_DIMENSIONS)||t->mHeight>unsigned(STBI_MAX_DIMENSIONS))throw std::runtime_error("Embedded texture exceeds 16384 pixels");
+    Bytes rgba(size_t(t->mWidth)*t->mHeight*4);for(size_t i=0;i<rgba.size()/4;i++){auto p=t->pcData[i];rgba[i*4]=p.r;rgba[i*4+1]=p.g;rgba[i*4+2]=p.b;rgba[i*4+3]=p.a;}
+    return encodeTexture(rgba.data(),int(t->mWidth),int(t->mHeight),limit);
 }
 Asset importModel(const fs::path& source,const Options& options,const Progress& progress){
     auto ext=utf8(source.extension().wstring());std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return char(std::tolower(c));});
@@ -108,6 +124,15 @@ Asset importModel(const fs::path& source,const Options& options,const Progress& 
                 for(unsigned k=0;k<m->mNumProperties;++k){auto p=m->mProperties[k];if(p&&p->mSemantic==aiTextureType_SPECULAR&&p->mIndex==1)p->mIndex=0;}
         }
     }
+    // A bone listed twice in one mesh fails Assimp's validation. The FBX importer
+    // can even give a mesh the same bone object twice (and would delete it
+    // twice). Bones only describe the skeleton of a prop: drop repeated objects
+    // and rename repeated names.
+    for(unsigned i=0;i<scene->mNumMeshes;++i){auto mesh=scene->mMeshes[i];if(!mesh||!mesh->mBones)continue;std::set<const aiBone*> listed;std::set<std::string> seen;unsigned kept=0;
+        for(unsigned b=0;b<mesh->mNumBones;++b){auto bone=mesh->mBones[b];if(!bone||!listed.insert(bone).second)continue;mesh->mBones[kept++]=bone;
+            std::string n=bone->mName.C_Str();if(seen.insert(n).second)continue;
+            for(int k=2;;++k){auto renamed=n+"#"+std::to_string(k);if(seen.insert(renamed).second){bone->mName.Set(renamed);break;}}}
+        mesh->mNumBones=kept;}
     scene=imp.ApplyPostProcessing(flags);
     if(!scene||!scene->mRootNode)throw std::runtime_error(std::string("Model parser: ")+imp.GetErrorString());
     uint64_t sceneTriangles=0,sceneVertices=0;
@@ -154,7 +179,7 @@ Asset importModel(const fs::path& source,const Options& options,const Progress& 
             if(kind==2){if(!j["base_texture"].get<std::string>().empty())continue;m->Get(AI_MATKEY_COLOR_EMISSIVE,emission);if(std::max({emission.r,emission.g,emission.b})<=0)continue;}
             auto type=kind==2?aiTextureType_EMISSIVE:kind==1?aiTextureType_NORMALS:aiTextureType_BASE_COLOR;
             if(m->GetTexture(type,0,&ref)!=AI_SUCCESS){if(kind||m->GetTexture(aiTextureType_DIFFUSE,0,&ref)!=AI_SUCCESS)continue;}
-            try{Texture tex;auto embedded=scene->GetEmbeddedTexture(ref.C_Str());fs::path texturePath;auto key=std::string(ref.C_Str());if(!embedded){auto resolved=resources.resolve(key);texturePath=resolved.path;repairedTextures+=resolved.repaired;key=utf8(texturePath.wstring());}auto found=convertedTextures.find(key);if(found!=convertedTextures.end()){const auto& cached=a.textures[found->second];j[kind==1?"normal_texture":"base_texture"]=cached.hash;if(kind==2){j["color"]={std::clamp(emission.r,0.f,1.f),std::clamp(emission.g,0.f,1.f),std::clamp(emission.b,0.f,1.f),j["color"][3].get<float>()};j["unlit"]=true;j["emissive_baked"]=true;}continue;}if(embedded)tex=rawTexture(embedded,options.limits.textureDimension);else tex=makeTexture(readFile(texturePath,128ull<<20),options.limits.textureDimension);j[kind==1?"normal_texture":"base_texture"]=tex.hash;auto hash=tex.hash;addTexture(a,std::move(tex));for(size_t index=0;index<a.textures.size();++index)if(a.textures[index].hash==hash){convertedTextures[key]=index;break;}}
+            try{Texture tex;auto embedded=scene->GetEmbeddedTexture(ref.C_Str());fs::path texturePath;auto key=std::string(ref.C_Str());if(!embedded){auto resolved=resources.resolve(key);texturePath=resolved.path;repairedTextures+=resolved.repaired;key=utf8(texturePath.wstring());}auto found=convertedTextures.find(key);if(found!=convertedTextures.end()){const auto& cached=a.textures[found->second];j[kind==1?"normal_texture":"base_texture"]=cached.hash;if(kind==2){j["color"]={std::clamp(emission.r,0.f,1.f),std::clamp(emission.g,0.f,1.f),std::clamp(emission.b,0.f,1.f),j["color"][3].get<float>()};j["unlit"]=true;j["emissive_baked"]=true;}continue;}if(embedded)tex=rawTexture(embedded,options.limits.textureDimension);else tex=makeTexture(readFile(texturePath,MaxTextureFileBytes),options.limits.textureDimension);j[kind==1?"normal_texture":"base_texture"]=tex.hash;auto hash=tex.hash;addTexture(a,std::move(tex),embedded?key:utf8(texturePath.filename().wstring()));for(size_t index=0;index<a.textures.size();++index)if(a.textures[index].hash==hash){convertedTextures[key]=index;break;}}
             catch(const std::exception& e){auto message=std::string("Texture for material ")+name.C_Str()+": "+e.what();a.manifest["warnings"].push_back(message);j["missing_texture"]=true;j["texture_errors"][kind==1?"normal_texture":"base_texture"]=message;}
             if(kind==2&&!j["base_texture"].get<std::string>().empty()){
                 j["color"]={std::clamp(emission.r,0.f,1.f),std::clamp(emission.g,0.f,1.f),std::clamp(emission.b,0.f,1.f),j["color"][3].get<float>()};j["unlit"]=true;j["emissive_baked"]=true;

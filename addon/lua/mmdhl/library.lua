@@ -219,12 +219,13 @@ local function hints() return {
 } end
 -- Import messages that need no action are notes, not warnings: joints MMD
 -- itself ignores (a body linked to itself or two world anchors), large
--- textures, and the generic notices that Source shading approximates glTF or
--- PMX materials. Sorting happens here so models imported earlier follow suit.
+-- textures (scaled down to 4096), broken numbers the loader repaired, and
+-- the generic notices that Source shading approximates glTF or PMX
+-- materials. Sorting happens here so models imported earlier follow suit.
 local function isNote(text)
  text=tostring(text or '')
  if text:sub(1,14)=='Skipped joint ' then return text:find(': identical body references',1,true)~=nil or text:find(': both endpoints are world anchors',1,true)~=nil end
- return text:sub(1,14)=='Large texture ' or text:sub(1,43)=='Source shading approximates glTF materials;'
+ return text:sub(1,14)=='Large texture ' or text:sub(1,9)=='Repaired ' or text:sub(1,43)=='Source shading approximates glTF materials;'
   or text:find(': PMX sphere/toon shading is approximated',1,true)~=nil
   or text:sub(1,31)=='Source shading approximates VRM' or text:sub(1,18)=='VRM approximation:'
 end

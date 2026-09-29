@@ -18,6 +18,9 @@ constexpr uint32_t Protocol = 2;
 struct Limits {
     uint32_t triangleWarning = 1000000, materials = 128, textureDimension = 4096;
     uint64_t packageBytes = 256ull << 20, expandedBytes = 1ull << 30;
+    // A .blend is held whole while its objects are read; packed textures and
+    // high-resolution sculpts make valid character files well over 1 GiB.
+    uint64_t blendBytes = 3ull << 30; // below zlib's 32-bit total_out
 };
 struct Vec {
     float x{}, y{}, z{};
@@ -34,7 +37,10 @@ inline void from_json(const Json& j,Vec& v){if(!j.is_array()||j.size()!=3) throw
 struct Vertex { Vec pos, normal; float u{},v{}; std::array<float,4> tangent{1,0,0,1}; };
 static_assert(sizeof(Vertex)==48);
 struct Hull { std::vector<Vec> points; std::vector<uint32_t> indices; };
-struct Texture { std::string hash; Bytes png; uint32_t width{},height{}; bool hasAlpha=false, fractionalAlpha=false, alphaKnown=false; };
+// sourceWidth/sourceHeight: the image's size before it was scaled down to the limit (0 when it was not).
+struct Texture { std::string hash; Bytes png; uint32_t width{},height{}; bool hasAlpha=false, fractionalAlpha=false, alphaKnown=false; uint32_t sourceWidth{},sourceHeight{}; };
+// Largest texture file read; the decoded image is then scaled down to Limits::textureDimension.
+constexpr uint64_t MaxTextureFileBytes = 1ull << 30;
 struct Asset {
     Json manifest;
     std::vector<Vertex> vertices;
@@ -105,7 +111,8 @@ Hull hullFromPoints(const std::vector<Vec>& points);
 Texture makeTexture(std::span<const uint8_t>,uint32_t limit);
 Texture makeMaskedTexture(std::span<const uint8_t>,std::span<const uint8_t>,uint32_t limit,bool white=false);
 void applyMaterialOverrides(Asset&,const fs::path&,const Options&);
-void addTexture(Asset&,Texture);
+// Adds the texture once, with a note when it was scaled down; `name` labels that note.
+void addTexture(Asset&,Texture,const std::string& name={});
 struct Hit { float fraction=1; Vec normal{}; bool hit=false; };
 Hit trace(const std::vector<Hull>&,Vec start,Vec delta,const std::array<Vec,3>& boxAxes={});
 float propScale(double);

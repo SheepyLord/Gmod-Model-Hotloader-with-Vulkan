@@ -3,6 +3,7 @@
 #include "secondary.hpp"
 #include "fitter.hpp"
 #include "rig.hpp"
+#include "rig_writer.hpp"
 #include <fstream>
 #include <iostream>
 #include <cmath>
@@ -165,14 +166,36 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
     {ConvexFit fit;fit.vertices={{-1,-1,-1},{1,-1,-1},{-1,1,-1},{1,1,-1},{-1,-1,1},{1,-1,1},{-1,1,1},{1,1,1},{1,.99999f,1}};convexTopology(fit);check(fit.repaired&&fit.vertices.size()==8,"near duplicate collision vertices are welded into a closed hull");}
     { ConvexFit thin;thin.vertices={{0,0,0},{1,0,0},{2,0,0},{3,0,0}};convexTopology(thin);check(thin.fallback&&thin.faces.size()>=4&&thin.extent.y()>0&&thin.extent.z()>0,"collapsed collision hull becomes a bounded closed anatomical fallback"); }
 
-    // One non-finite or runaway value per numeric section never reaches Bullet or the GPU.
-    for(auto bad:{"uv","material","ik","morph_vertex","morph_bone","morph_material","morph_group","morph_impulse","body_orientation","body_mass","body_damping","joint_limit","joint_spring","soft","soft_iterations"}){
+    // One non-finite or runaway value per numeric section never reaches Bullet or the GPU:
+    // the loader repairs it (with a "Repaired ..." note) or, for soft bodies, rejects the model.
+    for(auto bad:{"uv","material","ik","morph_vertex","morph_bone","morph_material","morph_group","morph_impulse","body_orientation","body_mass","body_damping","joint_limit","joint_spring",
+                  "vertex_position","normal","weights","self_parent","body_heavy","joint_stiff"}){
+     bool noted=false;try{auto m=parse(readFile(std::string("tests/fixtures/corrupt-")+bad+".pmx"));for(auto& w:m->warnings)noted|=w.starts_with("Repaired ");}catch(const std::exception& e){std::cerr<<bad<<": "<<e.what()<<"\n";}
+     check(noted,(std::string("a corrupt ")+bad+" value is repaired at load, with a note").c_str());}
+    for(auto bad:{"soft","soft_iterations"}){
      bool rejected=false;try{parse(readFile(std::string("tests/fixtures/corrupt-")+bad+".pmx"));}catch(const std::runtime_error&){rejected=true;}
      check(rejected,(std::string("a corrupt ")+bad+" value is rejected at load").c_str());}
+    try{
+     auto hidden=parse(readFile("tests/fixtures/corrupt-vertex_position.pmx"));
+     check(hidden->indices[0]==hidden->indices[1]&&hidden->indices[1]==hidden->indices[2]&&std::isfinite(hidden->vertices[0].position.x()),"a vertex without a position is parked and its triangles are hidden");
+     auto weights=parse(readFile("tests/fixtures/corrupt-weights.pmx"));const auto& v=weights->vertices[2];
+     check(v.bones[0]==1&&std::fabs(v.weights[0]-1)<1e-6f&&v.weights[1]==0&&v.weights[2]==0&&v.weights[3]==0,"BDEF4 weights of (1, 1, 1, -2) on one bone become that bone's whole weight");
+     auto normal=parse(readFile("tests/fixtures/corrupt-normal.pmx"));
+     check(std::fabs(normal->vertices[1].normal.length()-1)<1e-4f,"a NaN normal is rebuilt from the faces");
+     auto root=parse(readFile("tests/fixtures/corrupt-self_parent.pmx"));
+     check(root->bones[0].parent==-1&&!nanoemModelBoneGetParentBoneObject(root->bones[0].source)&&root->order.size()==root->bones.size(),"a bone parented to itself becomes a root bone");
+     auto heavy=parse(readFile("tests/fixtures/corrupt-body_heavy.pmx"));
+     check(nanoemModelRigidBodyGetMass(heavy->bodies[1])==1e15f,"a 1e21 kg anchor body is limited to 1e15 kg");
+     auto stiff=parse(readFile("tests/fixtures/corrupt-joint_stiff.pmx"));
+     check(nanoemModelJointGetAngularStiffness(stiff->joints[0])[0]==1e12f,"a 1e14 joint spring is limited to 1e12");
+     for(auto name:{"native-cloth21.pmx","native-chain.pmx","native-heavy-chain.pmx","native-nan-tail.pmx","corrupt-zero_normal.pmx"}){
+      auto m=parse(readFile(std::string("tests/fixtures/")+name));bool quiet=true;for(auto& w:m->warnings)quiet&=!w.starts_with("Repaired ");
+      check(quiet,(std::string(name)+" loads without repairs (its cached identity is unchanged)").c_str());}
+    }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"model repair regression");}
     try{auto repaired=parse(readFile("tests/fixtures/corrupt-zero_normal.pmx"));bool finite=true;
      for(size_t i=0;i<3;i++){auto n=repaired->vertices[i].normal;auto t=repaired->tangents[i];for(int k=0;k<3;k++)finite&=std::isfinite(n[k])&&std::isfinite(t[k]);finite&=std::fabs(n.length()-1)<1e-4f;}
      check(finite,"a zero normal is repaired to a unit normal with a finite tangent");}catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"a zero normal is repaired to a unit normal with a finite tangent");}
-    {auto cache=fs::absolute("test-output/corrupt-cache");fs::remove_all(cache);bool rejected=false;try{importAsset(fs::absolute("tests/fixtures/corrupt-body_orientation.pmx"),cache,Json::object());}catch(...){rejected=true;}
+    {auto cache=fs::absolute("test-output/corrupt-cache");fs::remove_all(cache);bool rejected=false;try{importAsset(fs::absolute("tests/fixtures/corrupt-soft.pmx"),cache,Json::object());}catch(...){rejected=true;}
      check(rejected&&(!fs::exists(cache/"assets")||fs::is_empty(cache/"assets")),"a corrupt model is rejected before its cache entry exists");fs::remove_all(cache);}
     // The share of a part's surface whose texels pass the 0.5 alpha test, sampled at its
     // triangle's UVs (the RTX Remix renderer skips or blends by it). The Core triangle maps
@@ -217,6 +240,25 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      check(materialPath(model->id,0,"顏2+").ends_with("face_2_plus_1"),"common material terms have meaningful English paths");
      auto cache=fs::absolute("test-output/delete-cache");auto first=importAsset(fs::absolute("tests/fixtures/textured21.pmx"),cache,Json::object());
      std::string id=first.at("asset");auto manifest=first.at("info");auto texture=manifest["textures"][0]["base"].get<std::string>();
+     // Peers derive the materials package and compare its hash: the streamed package and the
+     // in-place mip chain keep the bytes of the earlier in-memory builds.
+     {auto vtf=readFile(cache/"textures"/(texture+".vtf"));uint16_t w0=0,h0=0;std::memcpy(&w0,vtf.data()+16,2);std::memcpy(&h0,vtf.data()+18,2);
+      std::vector<Bytes> mips;int w=w0,h=h0;mips.emplace_back(vtf.end()-std::ptrdiff_t(size_t(w)*h*4),vtf.end());
+      while(w>1||h>1){int nw=std::max(1,w/2),nh=std::max(1,h/2);Bytes next(size_t(nw)*nh*4);auto& prior=mips.back();for(int y=0;y<nh;y++)for(int x=0;x<nw;x++)for(int c=0;c<4;c++){unsigned sum=0;for(int yy=0;yy<2;yy++)for(int xx=0;xx<2;xx++)sum+=prior[(size_t(std::min(h-1,y*2+yy))*w+std::min(w-1,x*2+xx))*4+c];next[(size_t(y)*nw+x)*4+c]=uint8_t(sum/4);}mips.push_back(std::move(next));w=nw;h=nh;}
+      Bytes expected(vtf.begin(),vtf.begin()+80);for(auto it=mips.rbegin();it!=mips.rend();++it)expected.insert(expected.end(),it->begin(),it->end());
+      check(w0>1&&vtf==expected&&vtf[56]==mips.size(),"the in-place mip chain matches the per-level VTF build");
+      Bytes large(9u<<20);for(size_t i=0;i<large.size();i++)large[i]=uint8_t(i*31+(i>>11));auto source=cache/"stream-source.bin";writeAtomic(source,large);
+      std::map<std::string,GmaEntry> streamed;streamed["materials/a.vmt"].data={'v','m','t'};streamed["materials/b.vtf"].file=source;streamed["materials/c.vtf"].file=cache/"textures"/(texture+".vtf");
+      writeGma(cache/"streamed.gma",streamed,"Model Hotloader materials test");
+      std::map<std::string,Bytes> memory={{"materials/a.vmt",{'v','m','t'}},{"materials/b.vtf",large},{"materials/c.vtf",vtf}};
+      check(readFile(cache/"streamed.gma")==makeGma(memory,"Model Hotloader materials test"),"the streamed package is byte-identical to the in-memory one");
+      // makeGma as released before 2.2 (bitwise CRC-32, one buffer).
+      auto released=[](const std::map<std::string,Bytes>& files,const std::string& title){
+       auto crc=[](const Bytes& b){uint32_t c=~0u;for(auto v:b){c^=v;for(int i=0;i<8;i++)c=(c>>1)^((0u-(c&1))&0xedb88320u);}return ~c;};
+       StudioWriter g;g.b={'G','M','A','D',3};g.b.resize(21);g.str("");g.str(title);g.str("{\"type\":\"model\",\"tags\":[]}");g.str("Model Hotloader");size_t p=g.b.size();g.b.resize(p+4);g.i(p,1);int id=0;for(auto& [name,data]:files){p=g.b.size();g.b.resize(p+4);g.i(p,++id);g.str(name);p=g.b.size();g.b.resize(p+12);g.put<uint64_t>(p,data.size());g.put<uint32_t>(p+8,crc(data));}p=g.b.size();g.b.resize(p+4);for(auto& [name,data]:files)g.b.insert(g.b.end(),data.begin(),data.end());p=g.b.size();g.b.resize(p+4);g.put<uint32_t>(p,0);
+       return g.b;};
+      check(makeGma(memory,"Model Hotloader materials test")==released(memory,"Model Hotloader materials test"),"packages keep the bytes of earlier releases");
+      fs::remove(source);fs::remove(cache/"streamed.gma");}
      std::string other(64,'a');writeJson(cache/"assets"/other/"manifest.json",manifest);
      model->id=id;auto rig=fitRig(*model,Json::object());packageCarrier(cache,rig,{});
      writeJson(cache/"fits"/("g18-"+id+".json"),{{"fit",rig.manifest}});
@@ -291,8 +333,11 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      auto deep=parse(b);std::vector<int> position(deep->bones.size(),-1);for(size_t k=0;k<deep->order.size();k++)position[size_t(deep->order[k])]=int(k);
      bool parentsFirst=deep->order.size()==size_t(bones);for(int k=0;k<bones&&parentsFirst;k++){int parent=deep->bones[size_t(k)].parent;parentsFirst=parent<0||position[size_t(parent)]<position[size_t(k)];}
      check(parentsFirst,"a 100,000-bone chain stored child before parent is ordered parents first");
-     bool cyclic=false;try{parse(readFile("tests/fixtures/cycle.pmx"));}catch(const std::exception& e){cyclic=std::string(e.what()).find("Cyclic")!=std::string::npos;}
-     check(cyclic,"a cyclic bone hierarchy is still rejected");
+     // A loop loses the link that closes it (MMD shows such a bone unparented).
+     auto cycle=parse(readFile("tests/fixtures/cycle.pmx"));std::vector<int> at(cycle->bones.size(),-1);for(size_t k=0;k<cycle->order.size();k++)at[size_t(cycle->order[k])]=int(k);
+     bool ordered=cycle->order.size()==cycle->bones.size(),noted=false;for(size_t k=0;k<cycle->bones.size()&&ordered;k++){int parent=cycle->bones[k].parent;ordered=parent<0||at[size_t(parent)]<at[k];}
+     for(auto& w:cycle->warnings)noted|=w.starts_with("Repaired bone ");
+     check(ordered&&noted,"a cyclic bone hierarchy loads with the loop broken, parents first");
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"deep bone chain regression");}
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }

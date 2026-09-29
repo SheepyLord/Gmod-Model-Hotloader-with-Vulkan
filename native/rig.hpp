@@ -21,6 +21,10 @@ void validateRig(const Rig&,const Model&);
 void prepareModelFit(Model&,const fs::path& cache);
 std::map<std::string,Bytes> carrierFiles(const Rig&,const Model* armsModel=nullptr);
 Bytes makeGma(const std::map<std::string,Bytes>&,const std::string& title);
+// A package entry held in memory, or streamed from `file` when that is set.
+struct GmaEntry { Bytes data; fs::path file; };
+// Writes the same bytes as makeGma without loading the file entries into memory.
+void writeGma(const fs::path&,const std::map<std::string,GmaEntry>&,const std::string& title);
 void prepareSourceMaterials(const fs::path&,const std::string&);
 Json packageCarrier(const fs::path& cache,const Rig&,Bytes physics);
 }

@@ -154,6 +154,8 @@ size_t sweepJobFolders(const fs::path& cache,std::chrono::hours age);
 // CPU skinning's SIMD path needs AVX2, FMA3 and OS-saved YMM registers (XCR0 bits 1-2).
 bool simdDeformSupported(bool avx2,bool fma,bool osxsave,uint64_t xcr0);
 void writeAtomic(const fs::path&,std::span<const unsigned char>);
+// Streams the content through `write` into a temporary file, then replaces the target.
+void writeAtomic(const fs::path&,const std::function<void(std::ostream&)>& write);
 void writeJson(const fs::path&,const Json&);
 Json readJson(const fs::path&);
 std::string hash(std::span<const unsigned char>);
