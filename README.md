@@ -7,6 +7,8 @@ Preview video:
 
 Unlike most modern sandbox games, in *Garry's Mod* you must first convert models or characters to the Source Engine format before you can actually use them. While being able to provide a Source engine native asset, this process is usually tedious and time consuming. We're pleased to introduce the GSCMI-SS which bypasses all limitations of the Source Engine compiler (include bone, material, physics rigidbody, shapekey count) by writing runtime model information directly into the game memory and the rendering pipeline, thereby completely resolving this issue by hotloading models into the game. The imported model is algorithmically identical to a normally spawned model in game, at least at the engine level, making the model porting process obsolete with moderate performance tradeoff when multiple models are processed in the player's view. For models with PBR textures, [Advanced Material Editor](https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326) could allow further finetune of the rendering of the model in game. 
 
+If any issue appears when using Vulkan version (likely due to limited memory or old devices), please delete this file in your Gmod installation: Drive:\SteamLibrary\steamapps\common\GarrysMod\bin\win64\d3d9.dll
+
 <img width="3840" height="2160" alt="20260924000541_1" src="https://github.com/user-attachments/assets/7d783459-ea74-42f5-a42b-1914ca347b0e" />
 
 ## Install and use
