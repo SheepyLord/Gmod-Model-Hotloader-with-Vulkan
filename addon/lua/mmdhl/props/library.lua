@@ -147,13 +147,18 @@ local options={
  yaw=CreateClientConVar('mmdhl_prop_import_yaw','0',true,false,'Turn static props when importing (degrees)',-180,180),
 }
 CreateClientConVar('mmdhl_prop_spawn_frozen','0',true,false,'Freeze newly placed static props',0,1)
--- Shared with the Static Prop tool (its ClientConVars collide and gravity), so
--- they are user info the server can read.
+-- Shared with the Static Prop tool (its ClientConVars collide, gravity and
+-- physprop), so they are user info the server can read.
 CreateClientConVar('mmdhl_prop_collide','world',true,true,'What new static props collide with: none, world, noactors, noplayers or all')
 CreateClientConVar('mmdhl_prop_gravity','1',true,true,'Gravity for new static props (always off when they collide with nothing)',0,1)
+CreateClientConVar('mmdhl_prop_physprop','default',true,true,'Surface material of new static props: default, wood, metal, plastic, rubber, glass, …')
 function P.PlacementCollision()
  local mode=GetConVar('mmdhl_prop_collide'):GetString()
  return P.CollisionModeIds[mode] and mode or P.DefaultCollision,GetConVar('mmdhl_prop_gravity'):GetBool()
+end
+function P.PlacementSurface()
+ local surface=GetConVar('mmdhl_prop_physprop'):GetString()
+ return P.SurfaceMaterialIds[surface] and surface or P.DefaultSurface
 end
 function P.ImportOptions()
  local axis=options.axis:GetString() if axis~='y_up' and axis~='z_up' then axis='auto' end

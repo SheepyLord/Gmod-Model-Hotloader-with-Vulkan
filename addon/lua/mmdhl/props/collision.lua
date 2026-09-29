@@ -1,6 +1,6 @@
--- What a placed static prop collides with, and its gravity. Both realms run
--- the same rules (the mode is networked) so player movement prediction agrees
--- with the server. New placements default to the world only.
+-- What a placed static prop collides with, its gravity and what it is made of.
+-- Both realms run the same rules (the mode is networked) so player movement
+-- prediction agrees with the server. New placements default to the world only.
 local P=mmdhl.props
 local L=mmdhl.L
 local lazy=mmdhl.I18n.Lazy
@@ -13,6 +13,16 @@ P.CollisionModes={
 }
 P.CollisionModeIds={} for _,m in ipairs(P.CollisionModes) do P.CollisionModeIds[m.id]=m end
 P.DefaultCollision='world'
+-- Surface materials (the game's surface properties) a new prop can be made of:
+-- its impact sounds, bullet marks, friction and bounce. Placements accept these.
+-- i18n-keys: props.surface.default props.surface.wood props.surface.metal props.surface.metal_bouncy props.surface.concrete props.surface.glass props.surface.plastic props.surface.rubber props.surface.flesh props.surface.ice
+-- i18n-keys: props.surface.paper props.surface.dirt props.surface.gravel props.surface.foliage props.surface.cardboard props.surface.porcelain props.surface.carpet props.surface.gmod_ice props.surface.gmod_bouncy props.surface.gmod_silent
+P.SurfaceMaterials={}
+for _,id in ipairs({'default','wood','metal','metal_bouncy','concrete','glass','plastic','rubber','flesh','ice','paper','dirt','gravel','foliage','cardboard','porcelain','carpet','gmod_ice','gmod_bouncy','gmod_silent'}) do
+ P.SurfaceMaterials[#P.SurfaceMaterials+1]=lazy({id=id},{label=function() return L('props.surface.'..id) end})
+end
+P.SurfaceMaterialIds={} for _,m in ipairs(P.SurfaceMaterials) do P.SurfaceMaterialIds[m.id]=m end
+P.DefaultSurface='default'
 -- Props placed before modes existed report what their collision group does.
 function P.CollisionMode(ent)
  local mode=ent:GetNW2String('MMDHLCollide','')
@@ -23,12 +33,20 @@ function P.GravityWanted(ent) return ent:GetNW2Bool('MMDHLGravity',true) end
 -- A prop that collides with nothing would fall out of the map.
 function P.GravityOn(ent) return P.CollisionMode(ent)~='none' and P.GravityWanted(ent) end
 local function custom(mode) return mode=='noactors' or mode=='noplayers' end
+-- The engine's own traces from a player (the Physics Gun's grab, bullets, the
+-- gravity gun) ask this hook too: a prop that players pass through was out of
+-- their reach. While a player attacks, the prop they aim at is solid to them;
+-- a Physics Gun that holds something passes through again.
+local function reaching(ply,prop)
+ if not (ply:KeyDown(IN_ATTACK) or ply:KeyDown(IN_ATTACK2)) or ply:GetNW2Bool('MMDHLPhysgunHolding',false) then return false end
+ return util.IntersectRayWithOBB(ply:EyePos(),ply:GetAimVector()*32768,prop:GetPos(),prop:GetAngles(),prop:OBBMins(),prop:OBBMaxs())~=nil
+end
 local function passes(prop,other)
  if prop:GetClass()~='mmdhl_prop' then return false end
  local mode=prop:GetNW2String('MMDHLCollide','')
- if mode=='noplayers' then return other:IsPlayer() end
- if mode=='noactors' then return other:IsPlayer() or other:IsNPC() or other:IsNextBot() end
- return false
+ if not custom(mode) then return false end
+ if other:IsPlayer() then return not reaching(other,prop) end
+ return mode=='noactors' and (other:IsNPC() or other:IsNextBot())
 end
 hook.Add('ShouldCollide','MMDHL.PropCollision',function(a,b)
  if passes(a,b) or passes(b,a) then return false end
@@ -56,6 +74,13 @@ if SERVER then
   ent:SetNW2String('MMDHLCollide',mode) ent:SetNW2Bool('MMDHLGravity',gravity==true)
   P.ApplyCollision(ent)
  end
+ -- Reaching starts and ends with the attack buttons, the grab and the drop. The
+ -- physics engine keeps its pair decisions until told the rules changed.
+ local function attack(key) return key==IN_ATTACK or key==IN_ATTACK2 end
+ hook.Add('KeyPress','MMDHL.PropReach',function(ply,key) if attack(key) then ply:CollisionRulesChanged() end end)
+ hook.Add('KeyRelease','MMDHL.PropReach',function(ply,key) if attack(key) then ply:CollisionRulesChanged() end end)
+ hook.Add('OnPhysgunPickup','MMDHL.PropReach',function(ply) ply:SetNW2Bool('MMDHLPhysgunHolding',true) ply:CollisionRulesChanged() end)
+ hook.Add('PhysgunDrop','MMDHL.PropReach',function(ply) if IsValid(ply) then ply:SetNW2Bool('MMDHLPhysgunHolding',false) ply:CollisionRulesChanged() end end)
 else
  -- The custom check must be enabled in both realms.
  function P.WatchCollision(ent)

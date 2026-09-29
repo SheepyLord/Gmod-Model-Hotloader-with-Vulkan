@@ -85,7 +85,7 @@ if CLIENT then
   panel:CheckBox(L'tool.prop.gravity','mmdhl_prop_gravity')
   panel:ControlHelp(L'tool.prop.collision_help')
   local material=panel:ComboBox(L'tool.prop.physics_material','mmdhl_prop_physprop')
-  for _,name in ipairs({'default','wood','metal','metal_bouncy','concrete','glass','plastic','rubber','flesh','ice','paper','dirt','gravel','foliage','cardboard','porcelain','carpet','gmod_ice','gmod_bouncy','gmod_silent'}) do material:AddChoice(name,name) end
+  for _,m in ipairs(P and P.SurfaceMaterials or {}) do material:AddChoice(m.label,m.id,GetConVar('mmdhl_prop_physprop'):GetString()==m.id) end
   local mixer=vgui.Create('DColorMixer') mixer:SetPalette(true) mixer:SetAlphaBar(false) mixer:SetWangs(true) mixer:SetTall(150)
   mixer:SetConVarR('mmdhl_prop_r') mixer:SetConVarG('mmdhl_prop_g') mixer:SetConVarB('mmdhl_prop_b') panel:AddItem(mixer)
   panel:Help(L'tool.prop.attach_help')

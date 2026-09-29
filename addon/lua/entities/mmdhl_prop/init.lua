@@ -10,5 +10,6 @@ function ENT:OnEntityCopyTableFinish(data)
  local phys=self:GetPhysicsObject()
  local scale=mmdhl.props and mmdhl.props.ScaleOf(self) or 1
  data.MMDHLProp={asset=self:GetAssetID(),scale=scale,mass=IsValid(phys) and phys:GetMass() or nil,frozen=IsValid(phys) and not phys:IsMotionEnabled() or false,
-  collide=mmdhl.props and mmdhl.props.CollisionMode(self) or nil,gravity=self:GetNW2Bool('MMDHLGravity',true)}
+  collide=mmdhl.props and mmdhl.props.CollisionMode(self) or nil,gravity=self:GetNW2Bool('MMDHLGravity',true),
+  surface=IsValid(phys) and phys:GetMaterial() or self.MMDHLSurface}
 end

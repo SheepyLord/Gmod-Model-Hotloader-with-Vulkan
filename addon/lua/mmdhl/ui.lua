@@ -362,6 +362,17 @@ function PANEL:BuildPropActions()
  end,'MMDHL.PropPanelCollide')
  cvars.AddChangeCallback('mmdhl_prop_gravity',function() if IsValid(self) and IsValid(self.PropGravity) then syncGravity(GetConVar('mmdhl_prop_collide'):GetString()) end end,'MMDHL.PropPanelGravity')
  syncGravity(GetConVar('mmdhl_prop_collide'):GetString())
+ -- What new placements are made of: impact sounds, friction and bounce.
+ local surfaceRow=panel:Add('DPanel') surfaceRow:Dock(TOP) surfaceRow:SetTall(s(30)) surfaceRow:SetPaintBackground(false) surfaceRow:DockMargin(0,0,0,s(6))
+ local surfaceLabel=label(surfaceRow,L'ui.prop.surface',f.Body,s(30)) surfaceLabel:Dock(LEFT) surfaceLabel:SizeToContentsX(s(12))
+ local width=math.max(collideLabel:GetWide(),surfaceLabel:GetWide()) collideLabel:SetWide(width) surfaceLabel:SetWide(width)
+ local surfaces={} for _,m in ipairs(mmdhl.props.SurfaceMaterials) do surfaces[#surfaces+1]={m.id,m.label} end
+ self.PropSurface=convarChoices(surfaceRow,'mmdhl_prop_physprop',surfaces,s,f.Body) self.PropSurface:Dock(FILL)
+ self.PropSurface:SetTooltip(L'ui.tooltip.prop_surface')
+ cvars.AddChangeCallback('mmdhl_prop_physprop',function(_,_,surface)
+  if not IsValid(self) or not IsValid(self.PropSurface) then return end
+  for i,m in ipairs(mmdhl.props.SurfaceMaterials) do if m.id==surface and self.PropSurface:GetSelectedID()~=i then self.PropSurface:ChooseOptionID(i) end end
+ end,'MMDHL.PropPanelSurface')
  self.PropSpawn=button(panel,L'ui.spawn.prop',function() self:PlaceProp() end,s(40),f.Strong,true) self.PropSpawn:SetEnabled(false)
  self.PropSpawn:SetTooltip(L'ui.tooltip.prop_spawn')
  self.PropTool=button(panel,L'ui.prop.tool',function() self:ToolProp() end,s(40),f.Strong,'success') self.PropTool:SetEnabled(false)
@@ -661,8 +672,14 @@ function PANEL:DeleteSelected()
  local provided=0 if W and W.Provided and mode~='scene' then for _,id in ipairs(ids) do if W.Provided(kindOf(mode),id) then provided=provided+1 end end end
  local function apply()
   if mode=='scene' then for _,ent in ipairs(entities) do if IsValid(ent) and not mmdhl.RemoveClientRagdoll(ent) then mmdhl.Action('remove',nil,ent) end end self:SetStatus(L('ui.status.removed_characters',{count=#rows})) timer.Simple(.2,function() if IsValid(self) then self:Refresh() end end)
-  elseif mode=='static' then releasePreview(self) (W and W.Delete and function(i,d) W.Delete('static',i,d) end or mmdhl.props.library.Delete)(ids,function(ok,message) if IsValid(self) then self:Refresh() self:SetStatus(message,not ok) end end)
-  else (W and W.Delete and function(i,d) W.Delete('character',i,d) end or library.Delete)(ids,function(ok,message) if IsValid(self) then self:Refresh() self:SetStatus(message,not ok) end end) end
+  elseif mode=='static' then
+   releasePreview(self)
+   local delete=W and W.Delete and function(i,d) W.Delete('static',i,d) end or mmdhl.props.library.Delete
+   delete(ids,function(ok,message) if IsValid(self) then self:Refresh() self:SetStatus(message,not ok) end end)
+  else
+   local delete=W and W.Delete and function(i,d) W.Delete('character',i,d) end or library.Delete
+   delete(ids,function(ok,message) if IsValid(self) then self:Refresh() self:SetStatus(message,not ok) end end)
+  end
  end
  local question=mode=='scene' and L('ui.delete.scene_question',{count=#rows})
   or mode=='static' and L('ui.delete.props_question',{count=#rows})
@@ -716,7 +733,7 @@ function PANEL:PlaceProp()
  local scale=self.PropScale:GetValue()
  P.library.Update(self.selected,{spawn={scale=scale}})
  local collide,gravity=P.PlacementCollision()
- local ok,err=P.RequestSpawn(self.selected,{scale=scale,frozen=GetConVar('mmdhl_prop_spawn_frozen'):GetBool(),collide=collide,gravity=gravity},function(state,message)
+ local ok,err=P.RequestSpawn(self.selected,{scale=scale,frozen=GetConVar('mmdhl_prop_spawn_frozen'):GetBool(),collide=collide,gravity=gravity,physprop=P.PlacementSurface()},function(state,message)
   if not IsValid(self) then return end self:SetStatus(message,state=='error') self:EnableActions(state~='loading')
   if state=='ready' then mmdhl.CloseLibrary() end
  end)

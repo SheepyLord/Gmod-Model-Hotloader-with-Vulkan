@@ -73,12 +73,16 @@ function P.ApplyPhysics(ent,id,scale,wait)
  local allowed,why=P.CheckScale(scale,info) if not allowed then return false,why end
  local hulls,err=native.PropHulls(id,scale,wait==true)
  if not hulls then return false,err end
+ -- A new body starts as 'default': keep what the prop is made of.
+ local old=ent:GetPhysicsObject() local surface=IsValid(old) and old:GetMaterial() or ent.MMDHLSurface
  ent:SetModel(P.Placeholder) ent:SetSolid(SOLID_VPHYSICS)
  if not ent:PhysicsInitMultiConvex(hulls) then return false,L'props.error.collider_rejected' end
  ent:SetMoveType(MOVETYPE_VPHYSICS) ent:EnableCustomCollisions(true)
  ent:SetCollisionBounds(P.Vector(info.mins)*scale,P.Vector(info.maxs)*scale)
  local phys=ent:GetPhysicsObject()
  if not IsValid(phys) then return false,L'props.error.no_body_created' end
+ if isstring(surface) and surface~='' and surface~=phys:GetMaterial() then phys:SetMaterial(surface) end
+ ent.MMDHLSurface=phys:GetMaterial()
  ent:SetAssetID(id) ent:SetPropScale(scale)
  -- A new physics body starts with default collision; restore the prop's mode.
  P.ApplyCollision(ent)
@@ -91,6 +95,7 @@ function P.CreateProp(p,id,pos,ang,scale,options)
  if not info then return nil,L'props.error.not_loaded' end
  if IsValid(p) and gamemode.Call('PlayerSpawnProp',p,P.Placeholder)==false then return nil,L'props.error.spawn_blocked' end
  local ent=ents.Create('mmdhl_prop') if not IsValid(ent) then return nil,L'props.error.create_failed' end
+ ent.MMDHLSurface=options.surface
  ent:SetPos(pos) ent:SetAngles(ang or angle_zero) ent:Spawn() ent:Activate()
  local ok,err=P.ApplyPhysics(ent,id,scale,options.wait) if not ok then ent:Remove() return nil,err end
  local phys=ent:GetPhysicsObject()
@@ -115,8 +120,7 @@ local function reply(p,request,state,message,created)
 end
 -- Placement shared by the library's Spawn Prop and the Static Prop tool.
 -- settings: scale, yaw (extra turn), frozen, collide (a P.CollisionModes id),
--- gravity, physprop, color.
-P.PhysicsMaterials={default=true,wood=true,metal=true,metal_bouncy=true,concrete=true,glass=true,plastic=true,rubber=true,flesh=true,ice=true,paper=true,dirt=true,gravel=true,foliage=true,cardboard=true,porcelain=true,carpet=true,gmod_ice=true,gmod_bouncy=true,gmod_silent=true}
+-- gravity, physprop (a P.SurfaceMaterials id), color.
 function P.PlaceAt(p,id,tr,settings,callback)
  local scale=P.CanonicalScale(tonumber(settings.scale) or 1)
  if not tr.Hit or tr.HitSky or tr.StartSolid or tr.HitPos:DistToSqr(p:EyePos())>4096^2 then callback(nil,L'props.error.aim_surface') return end
@@ -127,10 +131,9 @@ function P.PlaceAt(p,id,tr,settings,callback)
   if not info then callback(nil,err or L'props.error.load_failed') return end
   local allowed,why=P.CheckScale(scale,info) if not allowed then callback(nil,why) return end
   local pos,ang=P.SpawnPose(p,info,scale,tr,settings.yaw)
-  local ent,e=P.CreateProp(p,id,pos,ang,scale,{frozen=settings.frozen==true})
+  local surface=isstring(settings.physprop) and P.SurfaceMaterialIds[settings.physprop] and settings.physprop or nil
+  local ent,e=P.CreateProp(p,id,pos,ang,scale,{frozen=settings.frozen==true,surface=surface})
   if not IsValid(ent) then callback(nil,e) return end
-  local phys=ent:GetPhysicsObject()
-  if isstring(settings.physprop) and P.PhysicsMaterials[settings.physprop] and IsValid(phys) then phys:SetMaterial(settings.physprop) end
   P.SetCollision(ent,P.CollisionModeIds[settings.collide] and settings.collide or P.DefaultCollision,settings.gravity~=false)
   if istable(settings.color) then ent:SetColor(Color(math.Clamp(tonumber(settings.color[1]) or 255,0,255),math.Clamp(tonumber(settings.color[2]) or 255,0,255),math.Clamp(tonumber(settings.color[3]) or 255,0,255))) end
   undo.Create('mmdhl.undo.static_prop') undo.AddEntity(ent) undo.SetPlayer(p) customUndoText(info) undo.Finish()
@@ -148,6 +151,8 @@ end
 -- It is parented (engine bone following, smooth on clients), non-solid to
 -- players and physics, still hit by traces so the tool can edit it again.
 function P.Attach(ent,target,bone,pos,ang)
+ -- Detaching builds a new body; it is made of the same material.
+ local phys=ent:GetPhysicsObject() if IsValid(phys) then ent.MMDHLSurface=phys:GetMaterial() end
  ent:PhysicsDestroy() ent:SetMoveType(MOVETYPE_NONE) ent:SetSolid(SOLID_OBB) ent:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
  local info=P.Info[ent:GetAssetID()] local scale=P.ScaleOf(ent)
  if info then ent:SetCollisionBounds(P.Vector(info.mins)*scale,P.Vector(info.maxs)*scale) end
@@ -338,7 +343,9 @@ duplicator.RegisterEntityClass('mmdhl_prop',function(p,data)
  local entry=data.MMDHLProp
  if not istable(entry) or not P.ValidID(entry.asset) then return end
  if not P.CanUse(p,entry.asset) or not native.PropHas(entry.asset) then notice(p,L'props.error.dupe_unavailable') return end
- local ent,err=P.CreateProp(p,entry.asset,data.Pos,data.Angle,tonumber(entry.scale) or 1,{wait=true,mass=entry.mass,frozen=entry.frozen})
+ -- Any surface property the game knows (the Physical Properties tool offers more).
+ local surface=isstring(entry.surface) and #entry.surface<=64 and util.GetSurfaceIndex(entry.surface)>=0 and entry.surface or nil
+ local ent,err=P.CreateProp(p,entry.asset,data.Pos,data.Angle,tonumber(entry.scale) or 1,{wait=true,mass=entry.mass,frozen=entry.frozen,surface=surface})
  if not IsValid(ent) then notice(p,err) return end
  duplicator.DoGeneric(ent,data)
  -- Copies made before collision modes collided with everything.

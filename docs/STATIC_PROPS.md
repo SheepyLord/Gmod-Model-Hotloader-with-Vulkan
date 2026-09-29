@@ -24,9 +24,10 @@ The importer is ported from the GModel Hot Loader project (its "Build binary mod
 - Props are ordinary Sandbox props for gameplay purposes:
   - They obey `PlayerSpawnProp` and the prop limit, and have undo and cleanup entries.
   - The Physics Gun, tool gun and bullets hit their collision shape on both server and client.
-  - Duplicator and saves record the model ID, size, mass and frozen state.
+  - Duplicator and saves record the model ID, size, mass, frozen state and surface material.
   - Spawned props are titled "Static prop" in the undo list.
 - **Collides with** and **Gravity** set how new placements behave (see [Collision and gravity](#collision-and-gravity)). The default is **World only**.
+- **Surface material** sets what new placements are made of: Default, Wood, Metal, Bouncy metal, Concrete, Glass, Plastic, Rubber, Flesh, Ice, Paper, Dirt, Gravel, Foliage, Cardboard, Porcelain, Carpet, and Garry's Mod's Frictionless ice, Very bouncy and Silent. It sets their impact sounds, bullet marks, friction and bounce. The Static Prop tool shares the choice. Resizing, reimport, attaching and detaching, the duplicator and saves keep a prop's material, including one set with Sandbox's Physical Properties tool.
 - **Place with tool gun** equips the **Static Prop** tool with the selected prop (see [Tool gun](#tool-gun)).
 - **Edit parts…** makes part presets: pieces of the model kept by material or by a 3D region (see [Parts presets](#parts-presets)).
 - In multiplayer, an administrator's first **Spawn Prop** shares the prop with the server automatically; **Share prop with server (admin)** does it explicitly. Other players download shared props on demand through the existing model transfer (compressed, pipelined, SHA-256 checked, and decoded and validated before use). Their collision arrives first, so traces work while the rest downloads.
@@ -43,7 +44,7 @@ Each placed prop has a collision level and a gravity setting. New placements tak
 | Everything except players | The map, props and NPCs (NPCs walk around it) | Players pass through |
 | Everything | Everything | Blocked |
 
-The Physics Gun, tool gun and bullets still hit the prop at every level, so it can always be grabbed or edited. Switching from **Nothing** to another level restores the prop's gravity setting. Levels and gravity survive resizing, reimport, detaching, the duplicator and saves. Copies made before these settings existed keep colliding with everything. On static props, Sandbox's own Collision and Gravity context-menu toggles are replaced by these two entries.
+The Physics Gun, tool gun and bullets still hit the prop at every level, so it can always be grabbed, shot or edited. At the levels players pass through, the prop a player aims at while holding primary or secondary attack is solid to that player: the engine traces of the Physics Gun, bullets and the gravity gun start at the player and would otherwise pass through as well. A Physics Gun that carries something passes through again, and players walking or aiming elsewhere are not affected. Switching from **Nothing** to another level restores the prop's gravity setting. Levels and gravity survive resizing, reimport, detaching, the duplicator and saves. Copies made before these settings existed keep colliding with everything. On static props, Sandbox's own Collision and Gravity context-menu toggles are replaced by these two entries.
 
 ## Tool gun
 
@@ -55,7 +56,7 @@ The **Static Prop** tool (Construction category) places and attaches imported pr
 | Right click | Attach it to the character, NPC, ragdoll or prop you aim at. A panel opens with the target's bones (nearest preselected, searchable), offset, rotation and size sliders, and a live ghost; **Attach** confirms. Right-clicking an attached prop reopens the panel to adjust it |
 | Reload | On an attached prop: detach it (it becomes a normal physics prop). On any static prop: copy its model and size into the tool |
 
-The menu sets size, turn, freeze, collision level, gravity, physics material and colour for new placements. Attached props follow the bone (`FollowBone`), have no physics of their own and do not collide. They are removed with their target, and the duplicator and saves copy them with the target and attach them again on paste. Attaching to another player's entity follows the tool permissions (`CanTool`); other players' characters need an administrator.
+The menu sets size, turn, freeze, collision level, gravity, surface material and colour for new placements. Attached props follow the bone (`FollowBone`), have no physics of their own and do not collide. They are removed with their target, and the duplicator and saves copy them with the target and attach them again on paste. Attaching to another player's entity follows the tool permissions (`CanTool`); other players' characters need an administrator.
 
 ## Parts presets
 
