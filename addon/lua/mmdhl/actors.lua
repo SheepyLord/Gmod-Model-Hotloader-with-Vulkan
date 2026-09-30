@@ -185,14 +185,50 @@ if SERVER then
   end)
  end)
  local references={}
- -- The model's metadata; nil and no error when the game lacks the file.
- local function readReference(source)
-  if not references[source] then
-   local bytes=file.Read(source,'GAME') if not bytes then return nil end
+ -- The model's metadata as the game loads it ('GAME', with addons' replacements)
+ -- or as the game ships it ('MOD': no Workshop or mounted addons); nil and no
+ -- error when that copy is missing.
+ local function readReference(source,path)
+  path=path or 'GAME'
+  local key=path..'|'..source
+  if not references[key] then
+   local bytes=file.Read(source,path) if not bytes then return nil end
    local raw,err=native.ReadAnimationModel(bytes) if not raw then return nil,err end
-   references[source]=util.JSONToTable(raw)
+   references[key]=util.JSONToTable(raw)
   end
-  return references[source]
+  return references[key]
+ end
+ -- The carrier takes its IK chains from the donor and its proportions from the
+ -- reference skeleton (native configureAnimations): the chains must name
+ -- ValveBiped bones, and the skeleton must have 40 of them and both arm chains.
+ local function usableDonor(model)
+  for _,chain in ipairs(model.ikChains or {}) do for _,link in ipairs(chain.links or {}) do
+   if not isstring(link.bone) or link.bone:sub(1,11)~='ValveBiped.' then return false end
+  end end
+  return true
+ end
+ local function usableSkeleton(model)
+  local names,count={},0
+  for _,bone in ipairs(model.bones or {}) do
+   local name=bone.name
+   if isstring(name) and not names[name] then names[name]=true if name:sub(1,17)=='ValveBiped.Bip01_' then count=count+1 end end
+  end
+  for _,side in ipairs({'L','R'}) do for _,part in ipairs({'UpperArm','Forearm','Hand'}) do
+   if not names['ValveBiped.Bip01_'..side..'_'..part] then return false end
+  end end
+  return count>=40
+ end
+ -- Addons that replace an animation pack (or a donor model) may compile it on a
+ -- skeleton of their own: a retargeted rig without fingers, or a pack that only
+ -- includes others. Its animations still play by bone name, but the carrier's
+ -- proportions and IK then come from the game's own copy of the file.
+ local function readUsable(source,usable)
+  local model,err=readReference(source)
+  if model and usable(model) then return model end
+  local own=readReference(source,'MOD')
+  if own and usable(own) then return own end
+  if model then return nil,L('actors.error.replaced_animation_reference',{path=source}) end
+  return nil,err
  end
  function mmdhl.ActorOptions(options)
   options=table.Copy(options or {}) local role=options.role or 'ragdoll'
@@ -206,11 +242,11 @@ if SERVER then
   local source=profile[options.gender]
   local animationProfile=mmdhl.actorAnimationReferences[profileRole]
   local referenceSource=animationProfile and animationProfile[options.gender] or source
-  local donor,err=readReference(source)
+  local donor,err=readUsable(source,usableDonor)
   if not donor and not err then err=L('actors.error.missing_animation_reference',{path=source}) end
   local skeleton
   if donor then
-   skeleton,err=readReference(referenceSource)
+   skeleton,err=readUsable(referenceSource,animationProfile and usableSkeleton or usableDonor)
    if not skeleton and not err then err=L('actors.error.missing_animation_skeleton',{path=referenceSource}) end
   end
   if not skeleton then
