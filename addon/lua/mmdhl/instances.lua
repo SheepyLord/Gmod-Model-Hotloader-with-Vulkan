@@ -6,7 +6,8 @@ function mmdhl.ShadowKey(ent,instance) return ent:EntIndex()>=0 and ent:EntIndex
 local function removeFallback(ent) if IsValid(ent.MMDHLFallback) then ent.MMDHLFallback:Remove() end ent.MMDHLFallback=nil end
 local function fallback(ent)
  if mmdhl.PresentationSuppressed(ent) then removeFallback(ent) return end
- if ent==LocalPlayer() then return end
+ -- A copy is drawn by its own addon, often at the camera: no placeholder there.
+ if ent==LocalPlayer() or ent.MMDHLCopyOf then return end
  if not IsValid(ent.MMDHLFallback) then
   local model=ClientsideModel('models/player/kleiner.mdl',RENDERGROUP_TRANSLUCENT)
   if not IsValid(model) then return end
@@ -116,21 +117,23 @@ end
 function mmdhl.SyncActorMorphs(ent)
  -- Two buffers alternate: nothing is allocated unless a weight changed.
  local previous=ent.MMDHLClientMorphs or {} local weights=ent.MMDHLMorphBuffer or {} local changed=false
- local scale=ent:GetFlexScale() local localMorphs=ent.MMDHLLocalMorphs
+ -- Another addon's copy of a player model shows that player's expressions and poses.
+ local source=IsValid(ent.MMDHLCopyOf) and ent.MMDHLCopyOf or ent
+ local scale=source:GetFlexScale() local localMorphs=source.MMDHLLocalMorphs
  for i,m in ipairs(mmdhl.GetMorphs(ent)) do
   local value
-  if m.native>=0 then value=ent:GetFlexWeight(m.native)
+  if m.native>=0 then value=source:GetFlexWeight(m.native)
   elseif localMorphs then value=localMorphs[i] or 0
-  else m.networkKey=m.networkKey or ('MMDHLMorph'..m.mmd) value=ent:GetNW2Float(m.networkKey,0) end
+  else m.networkKey=m.networkKey or ('MMDHLMorph'..m.mmd) value=source:GetNW2Float(m.networkKey,0) end
   weights[i]=value*scale changed=changed or weights[i]~=previous[i]
  end
  for i=#mmdhl.GetMorphs(ent)+1,#weights do weights[i]=nil changed=true end
  if #previous~=#weights then changed=true end
  if changed then native.SetMorphs(mmdhl.GetInstance(ent),util.TableToJSON(weights)) ent.MMDHLClientMorphs=weights ent.MMDHLMorphBuffer=previous end
- local revision=ent:GetNW2Int('MMDHLManualRevision',0)
+ local revision=source:GetNW2Int('MMDHLManualRevision',0)
  if ent.MMDHLManualApplied~=revision then
   for i=0,(mmdhl.assets[mmdhl.GetAsset(ent)].bones or 0)-1 do
-   local raw=ent:GetNW2String('MMDHLManual'..i,'')
+   local raw=source:GetNW2String('MMDHLManual'..i,'')
    if raw~='' then native.SetBonePose(mmdhl.GetInstance(ent),i,raw) end
   end
   ent.MMDHLManualApplied=revision

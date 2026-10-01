@@ -113,13 +113,15 @@ end
 -- (staggered per model) and immediately after a local edit, not every frame.
 local SyncInterval=8
 function mmdhl.SyncMaterialState(ent,instance)
- local frame=CLIENT and FrameNumber() or 0 local revision=ent.MMDHLMaterialRevision or 0
+ -- Another addon's copy of a player model shows the parts that player shows.
+ local look=IsValid(ent.MMDHLCopyOf) and ent.MMDHLCopyOf or ent
+ local frame=CLIENT and FrameNumber() or 0 local revision=look.MMDHLMaterialRevision or 0
  if CLIENT and ent.MMDVisibilitySent and ent.MMDVisibilityRevision==revision and frame<(ent.MMDVisibilityNext or 0) then return true end
  -- The first sync spreads models over the interval so they do not all re-sync on one frame.
  ent.MMDVisibilityNext=frame+SyncInterval+(ent.MMDVisibilityNext and 0 or ent:EntIndex()%SyncInterval) ent.MMDVisibilityRevision=revision
  local visible,opaque={},{}
  for i,m in ipairs(mmdhl.GetMaterials(ent)) do
-  visible[i]=mmdhl.IsMaterialVisible(ent,i-1)
+  visible[i]=mmdhl.IsMaterialVisible(look,i-1)
   opaque[i]=not not (m.defaultHidden and visible[i])
  end
  local encoded=util.TableToJSON({visible=visible,forceOpaque=opaque})

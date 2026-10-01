@@ -183,14 +183,16 @@ local function draw(ent,translucent,depth)
   render.SuppressEngineLighting(false) render.SetLightingOrigin(center)
   local ok,err=native.SetupSourceLighting(center) if not ok then mmdhl.renderError=err return end
  end
- local color=ent:GetColor() local r,g,b=render.GetColorModulation() local blend=render.GetBlend()
+ -- Another addon's copy of a player model wears that player's colour and materials.
+ local look=IsValid(ent.MMDHLCopyOf) and ent.MMDHLCopyOf or ent
+ local color=look:GetColor() local r,g,b=render.GetColorModulation() local blend=render.GetBlend()
  render.SetColorModulation(color.r/255,color.g/255,color.b/255) render.SetBlend(color.a/255)
  -- Material overrides are gathered once per frame; the native loop applies them per pass.
  -- Re-read every few frames (staggered with the visibility sync) or right after a local edit.
- local frame=FrameNumber() local revision=ent.MMDHLMaterialRevision or 0
+ local frame=FrameNumber() local revision=look.MMDHLMaterialRevision or 0
  if frame>=(ent.MMDOverrideNext or 0) or ent.MMDOverrideRevision~=revision then
-  ent.MMDOverrideNext=frame+8+(ent.MMDOverrideNext and 0 or ent:EntIndex()%8) ent.MMDOverrideRevision=revision ent.MMDOverrideFrame=frame local overrides local base=ent:GetMaterial()
-  for i=1,#info.materials do local override=ent:GetSubMaterial(i-1) if override=='' then override=base end if override~='' then overrides=overrides or {} overrides[tostring(i-1)]=override end end
+  ent.MMDOverrideNext=frame+8+(ent.MMDOverrideNext and 0 or ent:EntIndex()%8) ent.MMDOverrideRevision=revision ent.MMDOverrideFrame=frame local overrides local base=look:GetMaterial()
+  for i=1,#info.materials do local override=look:GetSubMaterial(i-1) if override=='' then override=base end if override~='' then overrides=overrides or {} overrides[tostring(i-1)]=override end end
   ent.MMDOverrideJson=overrides and util.TableToJSON(overrides) or nil
  end
  -- The first-person camera can sit inside a collar/cape weighted to the torso.
@@ -199,11 +201,13 @@ local function draw(ent,translucent,depth)
  local clipState
  if firstPerson==true then
   clipState=render.EnableClipping(true)
-  local up=ent:GetUp() render.PushCustomClipPlane(-up,-up:Dot(EyePos()-up*12))
+  -- Another addon's copy turns with that addon's camera, not the player: world up.
+  local up=ent.MMDHLCopyOf and Vector(0,0,1) or ent:GetUp() render.PushCustomClipPlane(-up,-up:Dot(EyePos()-up*12))
  end
  -- Default parts draw in the opaque pass only; the translucent pass has work only for override materials.
+ -- 'mask': the first-person mask alone, for a body whose own addon sets the clip planes.
  if not (translucent and not depth and not ent.MMDOverrideJson) then
-  local _,err=native.DrawInstance(instance,translucent,depth,ent.MMDOverrideJson,Vector(color.r/255,color.g/255,color.b/255),color.a/255,firstPerson==true)
+  local _,err=native.DrawInstance(instance,translucent,depth,ent.MMDOverrideJson,Vector(color.r/255,color.g/255,color.b/255),color.a/255,firstPerson==true or firstPerson=='mask')
   if err then mmdhl.renderError=err end
  end
  if firstPerson==true then render.PopCustomClipPlane() render.EnableClipping(clipState) end
@@ -233,7 +237,8 @@ hook.Remove('Think','MMDHL.NativeVisuals')
 function mmdhl.UpdateNativeVisuals(create)
  mmdhl.renderError=nil local count=0
  for _,ent in ipairs(mmdhl.Entities()) do
-  if not mmdhl.IsMMD(ent) or mmdhl.GetInstance(ent)<1 or mmdhl.PresentationSuppressed(ent) then continue end count=count+1
+  -- Another addon's copy has no proxy, bounds or shadow of ours: that addon draws it.
+  if not mmdhl.IsMMD(ent) or mmdhl.GetInstance(ent)<1 or mmdhl.PresentationSuppressed(ent) or ent.MMDHLCopyOf then continue end count=count+1
   if not IsValid(ent.MMDHLVisual) then
    if not create then continue end -- Entity creation is illegal during rendering.
    local proxy=ents.CreateClientside('mmdhl_native_visual') proxy.MMDOwner=ent proxy:SetPos(ent:GetPos()) proxy:Spawn() ent.MMDHLVisual=proxy ent.MMDHLBoundsSequence=nil
@@ -272,7 +277,7 @@ local function pendingVisuals(translucent,depth,sky)
  if sky then return end
  local flags=depth and (STUDIO_SHADOWDEPTHTEXTURE or 1073741824) or 0
  for _,ent in ipairs(mmdhl.Entities()) do
-  if not IsValid(ent.MMDHLVisual) then
+  if not IsValid(ent.MMDHLVisual) and not ent.MMDHLCopyOf then
    local previous=pendingOpaque[ent]
    -- Some render integrations bypass the main opaque hook. In that case
    -- submit the missing opaque surface before its translucent overrides.
@@ -309,6 +314,30 @@ mmdhl.PoseInterval=poseInterval
 -- The main view's origin and FOV as rendered (after CalcView overrides such as
 -- third-person cameras); EyePos() in PreRender still reports the player's eye.
 hook.Add('RenderScene','MMDHL.UpdateLodView',function(origin,angles,fov) mmdhl.viewOrigin=origin mmdhl.viewFov=fov end)
+-- Other addons pose their copies of a player model freely: First-Person Body
+-- scales the head to nothing in vehicles and never restores it. The module
+-- rejects a matrix without scale or position, and one rejected entry stops the
+-- whole frame's batch, so such a bone keeps only its position (else the copy's).
+local function finite(v) return v.x==v.x and v.y==v.y and v.z==v.z and math.abs(v.x)<1e9 and math.abs(v.y)<1e9 and math.abs(v.z)<1e9 end
+local function saneMatrix(matrix,ent)
+ local scale,position=matrix:GetScale(),matrix:GetTranslation()
+ if scale.x>1e-4 and scale.y>1e-4 and scale.z>1e-4 and finite(scale) and finite(position) then return matrix end
+ local fixed=Matrix() fixed:SetTranslation(finite(position) and position or ent:GetPos()) return fixed
+end
+mmdhl.SaneBoneMatrix=saneMatrix
+-- In vehicles it also moves that head 10000 units away. Every vertex the head
+-- shares with the neck or collar would stretch across the view, so a bone far
+-- from the skeleton's root stays where its parent is (parents come first).
+local function gatherBones(ent,palette)
+ local root=palette[1] and palette[1]:GetTranslation() if not root then return end
+ for i=2,#palette do
+  if palette[i]:GetTranslation():DistToSqr(root)>512*512 then
+   local parent=ent:GetBoneParent(i-1) local base=parent and parent>=0 and palette[parent+1] or palette[1]
+   local fixed=Matrix() fixed:Set(base) palette[i]=fixed
+  end
+ end
+end
+mmdhl.GatherCopyBones=gatherBones
 -- Source's client bone palette is the single pose used by tools and visible skin.
 function mmdhl.PrepareNativePresentation()
  if mmdhl.UpdateRemoteScene then mmdhl.UpdateRemoteScene() end
@@ -345,7 +374,9 @@ function mmdhl.PrepareNativePresentation()
   ent:InvalidateBoneCache() ent:SetupBones()
   -- The bone-to-world matrices go to the module as they are (palette[bone+1]).
   ent.MMDRenderPose=ent.MMDRenderPose or {} local palette=ent.MMDRenderPose local valid=true
-  for i=0,#rig.bones-1 do local matrix=ent:GetBoneMatrix(i) if not matrix then valid=false break end palette[i+1]=matrix end
+  local copy=ent.MMDHLCopyOf~=nil
+  for i=0,#rig.bones-1 do local matrix=ent:GetBoneMatrix(i) if not matrix then valid=false break end palette[i+1]=copy and saneMatrix(matrix,ent) or matrix end
+  if copy and valid then gatherBones(ent,palette) end
   if valid then
    if mmdhl.UpdatePhysicsLOD then mmdhl.UpdatePhysicsLOD(ent,palette) end
    local entry=ent.MMDHLBatchEntry or {} ent.MMDHLBatchEntry=entry entry[1]=mmdhl.GetInstance(ent)

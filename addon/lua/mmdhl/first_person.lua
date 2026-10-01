@@ -18,6 +18,22 @@ end
 -- Shadow/depth cameras are at the light, so classify them using the player's
 -- main camera. A hidden first-person body must not cast a detached shadow.
 function mmdhl.FirstPersonView(ent,depth)
+ -- Another addon's first-person body (player_copies.lua). Those addons move the
+ -- head and arms of a standard model out of view; in the player's own view the
+ -- native first-person mask leaves out the character's head, hair and arms.
+ local owner=ent.MMDHLCopyOf
+ if owner then
+  if depth or owner~=LocalPlayer() then return nil end
+  local view=render.GetViewSetup and render.GetViewSetup() or {}
+  local origin=view.origin or EyePos()
+  if not mmdhl.IsLocalFirstPerson(owner,origin) then return nil end
+  -- With no offset (First-Person Body in vehicles, or a forward distance near 0)
+  -- the camera is inside the chest: also clip right below it, as the player's
+  -- own first-person body did, or collars and capes fill the view.
+  local chest=mmdhl.CopyChest and mmdhl.CopyChest(ent)
+  if chest and (chest.x-origin.x)^2+(chest.y-origin.y)^2<10^2 then return true end
+  return 'mask'
+ end
  if depth then
   if mmdhl.IsLocalFirstPerson(ent) then return false end
   return nil

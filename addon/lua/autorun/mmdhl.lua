@@ -21,6 +21,7 @@ if SERVER then
     AddCSLuaFile('mmdhl/physics_lod.lua')
     AddCSLuaFile('mmdhl/instances.lua')
     AddCSLuaFile('mmdhl/client_ragdolls.lua')
+    AddCSLuaFile('mmdhl/player_copies.lua')
     AddCSLuaFile('mmdhl/persistence.lua')
     AddCSLuaFile('mmdhl/secondary_backend.lua')
     AddCSLuaFile('mmdhl/secondary_collision.lua')
@@ -87,6 +88,7 @@ include('mmdhl/secondary_collision.lua')
 include('mmdhl/settings.lua')
 if CLIENT then include('mmdhl/instances.lua') end
 if CLIENT then include('mmdhl/client_ragdolls.lua') end
+if CLIENT then include('mmdhl/player_copies.lua') end
 if CLIENT then include('mmdhl/performance.lua') end
 include('mmdhl/physics_reset.lua')
 if CLIENT then include('mmdhl/physics_settings.lua') end

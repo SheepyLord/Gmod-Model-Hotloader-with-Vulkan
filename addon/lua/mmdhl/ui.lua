@@ -544,7 +544,8 @@ function PANEL:Refresh()
  local selected,entity=self.selected,self.entity local rows={}
  local query=string.Trim(self.Search:GetText()):lower()
  if self.mode=='scene' then
-  for _,ent in ipairs(mmdhl.Entities()) do local id=mmdhl.GetAsset(ent) local entry=library.entries[id]
+  -- Other addons' copies of player models (a first-person body) are not characters of their own.
+  for _,ent in ipairs(mmdhl.Entities()) do if ent.MMDHLCopyOf then continue end local id=mmdhl.GetAsset(ent) local entry=library.entries[id]
    local tag=ent.MMDHLClientRagdollId and ('  · '..L('ui.scene.local_ragdoll',{number=ent.MMDHLClientRagdollId})) or ('  #'..ent:EntIndex())
    local shown,original=shownName('library',entry)
    rows[#rows+1]={id=id,entry=entry,name=(shown or id:sub(1,12))..tag,original=original,entity=ent}
@@ -785,7 +786,7 @@ function PANEL:Think()
  if self.mode~='physics' and (self.revision~=self:Lib().revision or self.namesRevision~=(mmdhl.names and mmdhl.names.revision)) then self:Refresh() end
  if self.mode=='scene' and (self.nextScene or 0)<RealTime() then
   self.nextScene=RealTime()+1 local ids={}
-  for _,ent in ipairs(mmdhl.Entities()) do ids[#ids+1]=(ent.MMDHLClientRagdollId and ('local'..ent.MMDHLClientRagdollId) or ent:EntIndex())..':'..mmdhl.GetAsset(ent) end
+  for _,ent in ipairs(mmdhl.Entities()) do if not ent.MMDHLCopyOf then ids[#ids+1]=(ent.MMDHLClientRagdollId and ('local'..ent.MMDHLClientRagdollId) or ent:EntIndex())..':'..mmdhl.GetAsset(ent) end end
   table.sort(ids) local signature=table.concat(ids,'|')
   if self.sceneSignature~=signature then self.sceneSignature=signature self:Refresh() end
  end

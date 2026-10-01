@@ -124,7 +124,10 @@ function library.Delete(ids,done)
  if IsValid(owner) and wanted[owner.selected] then native.ClearPreview() owner.previewHandle=nil owner.previewAsset=nil owner.selected=nil mmdhl.previewOwner=nil end
  for _,ent in pairs(mmdhl.editorPreviews or {}) do if IsValid(ent) and wanted[mmdhl.GetAsset(ent)] then ent:Remove() end end
  -- Client-only corpses have no server entity to remove; release them here.
- for _,ent in ipairs(mmdhl.Entities()) do if wanted[mmdhl.GetAsset(ent)] and not mmdhl.RemoveClientRagdoll(ent) then mmdhl.Action('remove',nil,ent) end end
+ -- Another addon's copy of a player model only lets go of the model.
+ for _,ent in ipairs(mmdhl.Entities()) do if wanted[mmdhl.GetAsset(ent)] then
+  if ent.MMDHLCopyOf then mmdhl.ForgetPlayerCopy(ent) elseif not mmdhl.RemoveClientRagdoll(ent) then mmdhl.Action('remove',nil,ent) end
+ end end
  local started=RealTime()
  timer.Create('MMDHL.DeleteModels',.1,0,function()
   for _,ent in ipairs(mmdhl.Entities()) do if wanted[mmdhl.GetAsset(ent)] then

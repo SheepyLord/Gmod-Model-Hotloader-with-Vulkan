@@ -33,6 +33,9 @@ function mmdhl.GetInstance(ent) return ent.MMDHLClientInstance or (ent:GetClass(
 -- not permission to create a second visible character or secondary world.
 function mmdhl.PresentationSuppressed(ent)
  if not IsValid(ent) then return true end
+ -- Another addon's copy of a player model (player_copies.lua) is shown while that
+ -- addon draws it, whatever its no-draw flag (it is drawn by hand).
+ if ent.MMDHLCopyOf then return RealTime()-(ent.MMDHLDrawnAt or -math.huge)>1 end
  if ent:GetNoDraw() or ent:IsEffectActive(EF_NODRAW) or ent:GetNW2Bool('MMDHLNoDraw',false) then return true end
  return CLIENT and ent:EntIndex()>0 and (ent.MMDHLNotTransmitting==true or ent:IsDormant()) or false
 end
@@ -44,6 +47,7 @@ end
 local LocalHideRelease=5
 function mmdhl.PresentationReleased(ent)
  if not IsValid(ent) then return true end
+ if ent.MMDHLCopyOf then return RealTime()-(ent.MMDHLDrawnAt or -math.huge)>=LocalHideRelease end
  if ent:GetNW2Bool('MMDHLNoDraw',false) then return true end
  if CLIENT and ent:EntIndex()>0 and (ent.MMDHLNotTransmitting==true or ent:IsDormant()) then return true end
  if ent:GetNoDraw() or ent:IsEffectActive(EF_NODRAW) then
@@ -96,7 +100,11 @@ function mmdhl.Entities()
  -- Client ragdolls have no network entity index and are not guaranteed to be
  -- included in ents.GetAll(). Keep the engine-created bodies in a weak registry.
  if CLIENT then for e in pairs(mmdhl.clientRagdolls or {}) do
-  if mmdhl.IsMMD(e) then if not seen[e] then list[#list+1]=e end else mmdhl.clientRagdolls[e]=nil end
+  if mmdhl.IsMMD(e) then if not seen[e] then list[#list+1]=e seen[e]=true end else mmdhl.clientRagdolls[e]=nil end
+ end end
+ -- So are other addons' copies of player models (player_copies.lua).
+ if CLIENT then for e in pairs(mmdhl.playerCopies or {}) do
+  if IsValid(e) and mmdhl.IsMMD(e) then if not seen[e] then list[#list+1]=e seen[e]=true end else mmdhl.playerCopies[e]=nil end
  end end
  if CLIENT then entityList=list entityListFrame=frame end
  return list

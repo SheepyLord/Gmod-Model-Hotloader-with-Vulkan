@@ -1,6 +1,7 @@
 """Deleting a library model removes every character that shows it first: server
 entities through the server, client-only corpses (entity index -1, which the
-server cannot address) locally. Runs library.lua's deletion and client_ragdolls.lua
+server cannot address) locally, and another addon's copy of a player model lets
+go of it without being removed. Runs library.lua's deletion and client_ragdolls.lua
 against a simulated client."""
 from pathlib import Path
 from lupa import LuaRuntime
@@ -44,6 +45,9 @@ local function entity(index,corpse)
  entities[#entities+1]=e return e
 end
 server=entity(42,false) corpse=entity(-1,true)
+-- First-Person Body's body: another addon's entity showing the player's model.
+copy=entity(-1,false) copy.MMDHLCopyOf={}
+mmdhl.ForgetPlayerCopy=function(e) e.forgotten=true e.asset=nil end
 ''')
 attach(lua)
 lua.execute((root / 'addon/lua/mmdhl/client_ragdolls.lua').read_text(encoding='utf-8'))
@@ -55,7 +59,8 @@ local result
 mmdhl.library.Delete({ASSET},function(ok,message) result={ok=ok,message=message} end)
 assert(#SENT==1 and SENT[1].index==42,'only the server ragdoll is sent to the server')
 assert(corpse.removed and corpse.released,'the client-only corpse is released and removed locally')
+assert(copy.forgotten and not copy.removed,'a copy of another addon was removed, or kept the model')
 TIMERS['MMDHL.DeleteModels']()
 assert(result and result.ok and DELETED[1]==ASSET,'the model is deleted without waiting for a corpse the server cannot remove')
 ''')
-print('PASS: library deletion removes client-only corpses locally and server ragdolls through the server')
+print('PASS: library deletion removes client-only corpses locally and server ragdolls through the server; copies made by other addons let go of the model')
