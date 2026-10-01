@@ -40,6 +40,16 @@ function mmdhl.NPCWeapon(p,role,requested)
  for _,entry in ipairs(defaults) do if entry==weapon then return weapon end end
  return 'none'
 end
+-- A new NPC's health and maximum health: the spawn's own value, else the
+-- player's NPC health setting. nil (a setting of 0) keeps the health the game
+-- gives its class: Citizens 40, Combine Soldiers 50 (skill.cfg).
+mmdhl.MaxNPCHealth=10000
+function mmdhl.NPCHealth(p,requested)
+ local health=tonumber(requested)
+ if health==nil then health=IsValid(p) and p:GetInfoNum('mmdhl_npc_health',0) or 0 end
+ if health~=health or health<1 then return nil end
+ return math.min(math.floor(health),mmdhl.MaxNPCHealth)
+end
 -- The Combine Soldier animation pack animates only rifle-type weapons and the
 -- unarmed stance; it holds pistols, RPGs and melee weapons in the unarmed pose.
 -- A hostile NPC with such a weapon uses the Citizen pack as a hostile citizen.
@@ -278,6 +288,9 @@ if SERVER then
   options=table.Copy(options or {}) options.role='player' options.backend='source'
   return mmdhl.Spawn(p,id,options,done,progress)
  end
+ -- The class sets its own health in Spawn; a chosen health replaces both values
+ -- after it, as a spawn-menu entry's Health does.
+ local function setHealth(ent,health) if health then ent:SetMaxHealth(health) ent:SetHealth(health) end end
  function mmdhl.SpawnActorNative(p,id,options,rig,done)
   local role=options.role local arms
   if role=='player' then
@@ -304,6 +317,7 @@ if SERVER then
    local weapon=mmdhl.NPCWeapon(p,hostile and 'combine' or role,options.weapon)
    if weapon~='none' then ent:SetKeyValue('additionalequipment',weapon) ent.Equipment=weapon end
    ent:Spawn() ent:Activate()
+   setHealth(ent,mmdhl.NPCHealth(p,options.npcHealth))
    if hostile then mmdhl.MakeHostileCitizen(ent)
    elseif role=='citizen' then
     ent:AddRelationship('player D_LI 99')
@@ -348,6 +362,8 @@ if SERVER then
    return
   end
   mmdhl.AttachNative(ent,r.asset,{role=r.role,rigManifest=r,scale=r.scale*.0254,gender=gender})
+  -- Sandbox's NPC duplicator restores a pasted NPC's own health after this hook.
+  setHealth(ent,mmdhl.NPCHealth(p))
   if r.role=='citizen' then friendlyCitizen(ent) end
  end)
  hook.Add('PlayerSetHandsModel','MMDHL.PlayerHands',function(p,hands)

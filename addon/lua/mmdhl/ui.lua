@@ -298,6 +298,11 @@ function PANEL:BuildCharacterActions()
  self.BodygroupPreset.OnSelect=function(_,_,_,data) self.bodygroupPreset=data end
  self.BodygroupPreset:SetTooltip(L'ui.tooltip.bodygroup_preset')
  self.Frozen=checkbox(actions,L'ui.character.freeze','mmdhl_spawn_frozen',f.Body,s(28)) self.Frozen:Dock(TOP) self.Frozen:DockMargin(0,0,0,s(4))
+ -- Health of new NPCs, from these buttons or the spawn menu; at 0 the label says the game's health is kept.
+ self.NPCHealth=actions:Add('DNumSlider') self.NPCHealth:Dock(TOP) self.NPCHealth:SetTall(s(32)) self.NPCHealth:SetMinMax(0,mmdhl.MaxNPCHealth) self.NPCHealth:SetDecimals(0) self.NPCHealth:SetDark(true) self.NPCHealth.Label:SetFont(f.Body) self.NPCHealth:DockMargin(0,0,0,s(4))
+ self.NPCHealth:SetConVar('mmdhl_npc_health') self.NPCHealth:SetTooltip(L'ui.tooltip.npc_health')
+ local function healthLabel(value) self.NPCHealth:SetText((tonumber(value) or 0)<1 and L'ui.character.npc_health_default' or L'ui.character.npc_health') end
+ self.NPCHealth.OnValueChanged=function(_,value) healthLabel(value) end healthLabel(GetConVar('mmdhl_npc_health'):GetFloat())
  self.SpawnButtons={}
  for _,pairItems in ipairs({{{'ragdoll',L'ui.spawn.ragdoll'},{'citizen',L'ui.spawn.friendly_npc'}},{{'combine',L'ui.spawn.hostile_npc'},{'player',L'ui.spawn.player_model'}}}) do
   local made={}
@@ -977,6 +982,8 @@ hook.Add('PopulateToolMenu','MMDHL.Menu',function()
   panel:ControlHelp(L'terms.setting_help')
   panel:Help(L'ui.toolmenu.settings_help')
   panel:CheckBox(L'ui.toolmenu.spawn_frozen','mmdhl_spawn_frozen')
+  panel:NumSlider(L'ui.character.npc_health','mmdhl_npc_health',0,mmdhl.MaxNPCHealth,0)
+  panel:ControlHelp(L'ui.toolmenu.npc_health_help')
   panel:Help(L'ui.toolmenu.secondary_collision')
   for _,target in ipairs(mmdhl.CollisionTargets) do local box=panel:CheckBox(target.name) box:SetTooltip(target.tooltip) mmdhl.BindCollisionCheckbox(box,target.flag) end
   local backend=panel:ComboBox(L'ui.toolmenu.backend','mmdhl_secondary_backend')

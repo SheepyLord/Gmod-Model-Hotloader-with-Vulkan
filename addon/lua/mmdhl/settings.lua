@@ -4,6 +4,8 @@ if CLIENT then
  CreateClientConVar(names.frozen,'0',true,true,'Freeze newly placed character model ragdolls',0,1)
  CreateClientConVar(names.collisionFlags,tostring(mmdhl.CollideDefault),true,true,'What hair and clothing collide with, a sum of: 1 world, 2 character, 4 objects, 8 living players, 16 living NPCs',0,31)
  CreateClientConVar(names.secondaryBackend,'cpu_mt_v2',true,true,'Global character model secondary physics backend')
+ -- The server reads it when it spawns an NPC (mmdhl.NPCHealth), like gmod_npcweapon.
+ CreateClientConVar('mmdhl_npc_health','0',true,true,'Health of new character model NPCs; 0 keeps the game\'s health for their class',0,mmdhl.MaxNPCHealth)
  -- Earlier releases chose a level (0 the character, 1 and the map, 2 and
  -- objects). Carry a changed level over once; the old default (2) takes the new
  -- default, which leaves the map out.

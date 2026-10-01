@@ -1,8 +1,9 @@
 """Native carrier spawns on the server: Sandbox's completion hooks count every
 ragdoll and NPC exactly once (so its limits hold and recover on removal, spawn-menu
-conversions included), and an entity that changes model drops the previous model's
-networked overflow parts, submaterials and expressions. Runs the addon's
-carrier.lua, actors.lua and materials.lua code against a simulated Sandbox server."""
+conversions included), new NPCs take the player's NPC health setting, and an entity
+that changes model drops the previous model's networked overflow parts, submaterials
+and expressions. Runs the addon's carrier.lua, actors.lua and materials.lua code
+against a simulated Sandbox server."""
 from pathlib import Path
 from lupa import LuaRuntime
 from lua_i18n import attach
@@ -39,7 +40,11 @@ function entity(class)
  local e={class=class,nw={},removers={},model='',keys={}}
  function e:GetClass() return self.class end
  function e:SetModel(m) self.model=m end function e:GetModel() return self.model end
- function e:SetPos() end function e:SetAngles() end function e:Spawn() end function e:Activate() end
+ function e:SetPos() end function e:SetAngles() end function e:Activate() end
+ -- Spawn sets the class's health from skill.cfg, as the engine does.
+ function e:Spawn() self.health=({npc_citizen=40,npc_combine_s=50})[self.class] or 0 self.maxHealth=self.health end
+ function e:SetHealth(h) self.health=h end function e:Health() return self.health end
+ function e:SetMaxHealth(h) self.maxHealth=h end function e:GetMaxHealth() return self.maxHealth end
  local zero={Unpack=function() return 0,0,0 end} function e:GetPos() return zero end function e:GetAngles() return zero end
  function e:SetKeyValue(k,v) self.keys[k]=v end function e:GetSpawnFlags() return 0 end
  function e:SetCreator(p) self.creator=p end
@@ -57,9 +62,12 @@ function entity(class)
 end
 CREATED={} ents={Create=function(class) local e=entity(class) CREATED[#CREATED+1]=e return e end}
 player={GetAll=function() return {} end}
+-- A player and the client settings the server reads as userinfo.
+INFO={}
+function PLAYER() return {AddCleanup=function() end,GetInfoNum=function(_,name,default) local v=INFO[name] if v==nil then return default end return v end} end
 -- Carriers: one rig per asset and role.
 local function rig(key,asset,role,materials,model)
- local r={key=key,asset=asset,role=role,model=model,gma='data/mmd_hotloader/rigs/'..key..'/carrier.gma',materials={},morphs={{native=-1,mmd=0},{native=0,mmd=1},{native=-1,mmd=2}}}
+ local r={key=key,asset=asset,role=role,model=model,scale=40,gma='data/mmd_hotloader/rigs/'..key..'/carrier.gma',materials={},morphs={{native=-1,mmd=0},{native=0,mmd=1},{native=-1,mmd=2}}}
  for i=1,materials do r.materials[i]={name='part '..i} end
  return r
 end
@@ -92,11 +100,14 @@ actors = (root / 'addon/lua/mmdhl/actors.lua').read_text(encoding='utf-8')
 materials = (root / 'addon/lua/mmdhl/materials.lua').read_text(encoding='utf-8')
 lua.execute(definition(lua, materials, 'local function changed(') + definition(lua, materials, 'function mmdhl.ClearAssetState('))
 for header in [' function mmdhl.AttachNative(', ' function mmdhl.SpawnNative(']: lua.execute(definition(lua, carrier, header))
+lua.execute(definition(lua, actors, 'mmdhl.MaxNPCHealth=') + definition(lua, actors, 'function mmdhl.NPCHealth('))
+# A local of the server block, like friendlyCitizen: run it as a global.
+lua.execute(definition(lua, actors, ' local function setHealth(').replace('local function', 'function', 1))
 for header in [' function mmdhl.ClearActorIdentity(', ' function mmdhl.SpawnActorNative(', " hook.Add('PlayerSpawnedNPC','MMDHL.AttachMenuNPC',"]:
     lua.execute(definition(lua, actors, header))
 
 lua.execute(r'''
-local p={AddCleanup=function() end}
+local p=PLAYER()
 -- The ragdoll spawn action checks the limit first (server.lua), then spawns.
 local function ragdoll() if gamemode.Call('PlayerSpawnRagdoll',p,A)==false then return nil end return mmdhl.SpawnNative(p,A,{role='ragdoll'}) end
 local first=ragdoll()
@@ -108,7 +119,7 @@ assert(COUNT.ragdolls==0 and ragdoll() and COUNT.ragdolls==1,'removing the ragdo
 print('PASS: native ragdolls count toward the Sandbox limit once and free it on removal')
 
 lua.execute(r'''
-local p={AddCleanup=function() end}
+local p=PLAYER()
 local function npc(weapon) if gamemode.Call('PlayerSpawnNPC',p,'npc_citizen',weapon)==false then return nil end
  return mmdhl.Spawn(p,A,{role='citizen',weapon=weapon}) end
 local first=npc('weapon_smg1')
@@ -127,6 +138,45 @@ assert(menu.removed and replacement.class=='npc_citizen' and COUNT.npcs==1,'a co
 assert(replacement.hostile and not replacement.friendly and replacement:GetNW2Int('MMDHLGeneration',0)==1,'the hostile replacement is attached once and stays hostile')
 ''')
 print('PASS: native NPCs count once, spawn-menu conversions included, and free their place on removal')
+
+lua.execute(r'''
+LIMIT=100 local p=PLAYER()
+local function npc(options) options.role=options.role or 'citizen' return mmdhl.Spawn(p,A,options) end
+local function health(e) return e:Health()..'/'..e:GetMaxHealth() end
+-- The setting's default (0) keeps the class's own health.
+local citizen,combine=npc({}),npc({role='combine',weapon='weapon_ar2'})
+assert(health(citizen)=='40/40' and combine.class=='npc_combine_s' and health(combine)=='50/50','with NPC health at 0 the class keeps its health')
+-- The player's setting is the new NPCs' health and maximum health, friendly or hostile.
+INFO.mmdhl_npc_health=250
+assert(health(npc({}))=='250/250','a friendly NPC takes the NPC health setting')
+local hostile=npc({role='combine',weapon='weapon_pistol'})
+assert(hostile.class=='npc_citizen' and hostile.hostile and health(hostile)=='250/250','a hostile citizen takes it')
+assert(health(npc({role='combine',weapon='weapon_ar2'}))=='250/250','a Combine Soldier takes it')
+-- A spawn's own value wins, 0 included; it is whole and at most mmdhl.MaxNPCHealth.
+assert(health(npc({npcHealth=0}))=='40/40' and health(npc({npcHealth=75}))=='75/75','an explicit npcHealth overrides the setting')
+assert(health(npc({npcHealth=99999}))=='10000/10000' and health(npc({npcHealth=120.8}))=='120/120' and health(npc({npcHealth=0/0}))=='40/40','npcHealth is clamped')
+INFO.mmdhl_npc_health=1e9 assert(health(npc({}))=='10000/10000','the setting is clamped too')
+INFO.mmdhl_npc_health=-5 assert(health(npc({}))=='40/40','a negative setting keeps the class health')
+-- Spawn-menu entries (Sandbox spawned the NPC, then calls PlayerSpawnedNPC) take it,
+-- the hostile citizen that replaces a Combine entry holding a pistol included.
+INFO.mmdhl_npc_health=300
+local menu=entity('npc_citizen') menu:SetModel(RIGS[A..':citizen'].model) menu:Spawn()
+gamemode.Call('PlayerSpawnedNPC',p,menu)
+assert(health(menu)=='300/300' and menu.friendly,'a spawn-menu NPC takes the setting')
+local entry=entity('npc_combine_s') entry:SetModel(RIGS[A..':combine'].model) entry.Equipment='weapon_pistol' entry:Spawn()
+gamemode.Call('PlayerSpawnedNPC',p,entry) endFrame()
+local replacement=CREATED[#CREATED]
+assert(entry.removed and replacement.hostile and health(replacement)=='300/300','the hostile replacement of a menu entry takes it')
+-- Sandbox's NPC duplicator calls PlayerSpawnedNPC, then restores the dupe's
+-- CurHealth/MaxHealth: a pasted NPC keeps the health it was saved with.
+local pasted=entity('npc_citizen') pasted:SetModel(RIGS[A..':citizen'].model) pasted:Spawn()
+gamemode.Call('PlayerSpawnedNPC',p,pasted) pasted:SetHealth(17) pasted:SetMaxHealth(90)
+assert(health(pasted)=='17/90','a pasted NPC keeps its saved health')
+-- Ragdolls are left alone.
+assert(mmdhl.SpawnNative(p,A,{role='ragdoll'}):Health()==0,'a ragdoll was given the NPC health')
+INFO.mmdhl_npc_health=nil
+''')
+print('PASS: new NPCs, from the library or the spawn menu, take the NPC health setting or their own npcHealth; 0 keeps the class health; dupes keep theirs')
 
 lua.execute(r'''
 -- Model A's overflow state: part 34 (bodygroup 35) hidden, a submaterial on slot 35,

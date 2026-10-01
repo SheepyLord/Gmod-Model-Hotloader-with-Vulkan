@@ -74,6 +74,8 @@ Cached variants cover ragdoll, Citizen, Combine, player and arms. They contain f
 
 **Hostile NPC weapons.** Friendly NPCs use the Citizen packs, which animate pistols, SMG/AR2, shotguns, RPGs and melee weapons separately, exactly like vanilla citizens. The Combine Soldier pack has only a rifle stance (SMG, AR2, shotgun, crossbow) and holds any other weapon in its unarmed pose. A hostile NPC therefore picks its carrier from the weapon (`mmdhl.HostileActorRole`): rifle-type weapons, Lua SWEPs with hold type smg/ar2/shotgun/crossbow, and unarmed stay Combine soldiers with Combine AI; pistols, the .357, RPGs, melee and other weapons spawn a *hostile citizen* (`npc_citizen`, not commandable, squad `mmdhl_hostile`) that hates players and player-allied classes and is friends with Combine classes and other hostile imported NPCs, for NPCs created later and after save/dupe restoration too. A Combine entry from the Sandbox NPC tab spawned with such a weapon is replaced by the hostile citizen.
 
+**NPC health.** The library's **NPC health** slider, also on Utilities → Character Models (client convar `mmdhl_npc_health`, 0–10000, sent as userinfo like `gmod_npcweapon`), sets the health and maximum health of new friendly and hostile NPCs: those from the library buttons and from the External Models entries in the Sandbox NPC tab (`mmdhl.NPCHealth`). 0, the default, keeps the health the class sets in `Spawn` from `skill.cfg`: 40 for Citizens and hostile citizens, 50 for Combine Soldiers. Server code passes `options.npcHealth` instead. Pasted dupes and loaded saves keep the health they were saved with: Sandbox's NPC duplicator restores it after `PlayerSpawnedNPC`.
+
 Reference/Referencef contain actual encoded poses. An autoplay proportion delta compensates the donor skeleton. Included IK chains preserve donor ordering and remap links by name; donor autoplay foot-lock positions are neutralized while sequence IK remains active. Source animation and addon bone manipulation remain authoritative and feed the existing MMD retargeting/deformation.
 
 Accepted ground recovery and carry alignment remain enabled. Parameter conditioning has been removed. Optional positional stretch correction respects external contacts. Claude CPU v2 remains the default. Native handles are client-local; entity identity uses asset/rig/generation. Client and server runtimes are separate even in a listen-server process.
@@ -101,6 +103,8 @@ The download test transferred 15 files totaling 141,192,134 bytes and verified e
 mmdhl.Spawn(player, assetId, options, done, progress)
 mmdhl.SpawnNPC(player, assetId, 'citizen', options, done, progress)
 mmdhl.SpawnNPC(player, assetId, 'combine', options, done, progress)
+-- options.npcHealth: the new NPC's health and maximum health (0 keeps its class's);
+-- without it, the player's NPC health setting.
 mmdhl.SetPlayerModel(player, assetId, options, done, progress)
 
 -- Entity metadata/appearance and client quality diagnostics.
