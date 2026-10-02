@@ -5,8 +5,12 @@ local native=mmdhl.native
 local library=mmdhl.library
 local L=mmdhl.L
 local function store(id) local entry=library.entries[id] return entry and entry.settings.bodygroups or {} end
-function mmdhl.BodygroupPresets(id) return store(id).presets or {} end
-function mmdhl.BodygroupDefault(id) return store(id).default end
+-- Preset names are table keys, and util.JSONToTable turns numeric ones ("1",
+-- "2024") into numbers when the library entry is read back. Names are strings.
+function mmdhl.BodygroupPresets(id)
+ local out={} for name,preset in pairs(store(id).presets or {}) do out[tostring(name)]=preset end return out
+end
+function mmdhl.BodygroupDefault(id) local name=store(id).default return name~=nil and tostring(name) or nil end
 -- The visibility array sent with a spawn request, or nil for the authored look.
 function mmdhl.BodygroupSpawnState(id,name)
  if not name or name=='' then return nil end

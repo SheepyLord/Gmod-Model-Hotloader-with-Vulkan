@@ -765,7 +765,7 @@ function PANEL:RefreshBodygroupChoices(entry)
  local combo=self.BodygroupPreset if not IsValid(combo) then return end
  combo:Clear()
  local presets=mmdhl.BodygroupPresets and mmdhl.BodygroupPresets(entry.id) or {}
- local default=entry.settings.bodygroups and entry.settings.bodygroups.default
+ local default=mmdhl.BodygroupDefault and mmdhl.BodygroupDefault(entry.id)
  combo:AddChoice(L'ui.bodygroups.all','',default==nil)
  local names=table.GetKeys(presets) table.sort(names)
  for _,name in ipairs(names) do combo:AddChoice(name==default and L('ui.bodygroups.preset_default',{name=name}) or L('ui.bodygroups.preset',{name=name}),name,name==default) end
