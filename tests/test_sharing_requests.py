@@ -39,10 +39,11 @@ function world(options)
   e.RealTime=function() return NOW end e.SysTime=function() return NOW end
   e.IsValid=function(v) return v~=nil and not v.gone end
   e.istable=function(v) return type(v)=='table' end e.isnumber=function(v) return type(v)=='number' end e.isstring=function(v) return type(v)=='string' end
-  e.game={SinglePlayer=function() return false end}
+  -- A dedicated server, or with options.listen the listen server its host's client shares a cache with.
+  e.game={SinglePlayer=function() return false end,IsDedicated=function() return options.listen~=true end}
   e.LocalPlayer=function() return w.admin end
   e.GetConVar=function() return {GetInt=function() return 256 end} end
-  e.file={Read=function(path) return (options.files or {})[path] end,Exists=function() return false end,CreateDir=function() end,
+  e.file={Read=function(path) return (options.files or {})[path] end,Exists=function(path) return (options.exists or {})[path]==true end,CreateDir=function() end,
    Write=function(path,value) e._written[#e._written+1]={path=path,value=value} end,
    Size=function(path) local bytes=e._files[(path:gsub('^mmd_hotloader/',''))] return bytes and #bytes or -1 end}
   e.util={AddNetworkString=function() end,Compress=function(s) return s end,Decompress=function(s,limit) return s end,TableToJSON=encode,JSONToTable=decode}
@@ -277,6 +278,21 @@ w.server.mmdhl.SendCatalogWithdrawal(true,ids) w.run(1)
 assert(w.client.withdrawCalls==3 and #w.client.withdrawnProps==300 and w.client.withdrawnProps[300]==ids[300])
 ''')
 print('PASS: withdrawn model and prop approvals reach clients')
+
+lua.execute(r'''
+-- A listen server shares its host's cache: approvals of models deleted from that
+-- library (no manifest any more) are dropped at start, as in single player, so
+-- their player models do not come back empty.
+local approved=encode({version=1,assets={[A]={name='A'},[B]={name='B'}},rigs={[RIG]={asset=A,role='player'}}})
+local w=world({listen=true,files={['mmd_hotloader/approved.json']=approved},exists={['mmd_hotloader/assets/'..B..'/manifest.json']=true}})
+local a=w.server.mmdhl.approved
+assert(a.assets[A]==nil and a.rigs[RIG]==nil and a.assets[B],'a listen server kept the approval of a deleted model')
+assert(w.server.unregistered[1]==A and #w.server.unregistered==1,'the deleted model stays registered')
+-- A dedicated server's published library is its own.
+local d=world({files={['mmd_hotloader/approved.json']=approved}})
+assert(d.server.mmdhl.approved.assets[A] and d.server.mmdhl.approved.rigs[RIG] and #d.server.unregistered==0,'a dedicated server dropped approvals')
+''')
+print('PASS: a listen server drops approvals of models deleted from the library of its host at start; a dedicated server keeps its own')
 
 # The props side of those fixes.
 props_server = (root / 'addon/lua/mmdhl/props/server.lua').read_text(encoding='utf-8')

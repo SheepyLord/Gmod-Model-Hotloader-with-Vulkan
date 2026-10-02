@@ -137,10 +137,14 @@ function library.Delete(ids,done)
   timer.Remove('MMDHL.DeleteModels')
   local result,err=mmdhl.Decode(native.DeleteAssets(util.TableToJSON(ids))) library.deleting=nil
   if not result then library.Refresh() done(false,err) return end
+  -- The game's own server (single player, or the listen server this player
+  -- hosts) serves this same cache: it forgets the models too (mmdhl_forget_assets),
+  -- or their player models stay in the selector, empty.
+  local hostsServer=game.SinglePlayer() or (IsValid(LocalPlayer()) and LocalPlayer():IsListenServerHost())
   for _,id in ipairs(ids) do
    mmdhl.assets[id]=nil
    if mmdhl.sharedAssets then mmdhl.sharedAssets[id]=nil end
-   if game.SinglePlayer() and mmdhl.UnregisterAsset then mmdhl.UnregisterAsset(id) end
+   if hostsServer and mmdhl.UnregisterAsset then mmdhl.UnregisterAsset(id) end
    for _,cache in ipairs({'sourceMaterials','depthMaterials','sourceBlendMaterials','shadowMaterials','materials'}) do if mmdhl[cache] then mmdhl[cache][id]=nil end end
   end
   for key,rig in pairs(mmdhl.rigs) do if wanted[rig.asset] then mmdhl.rigs[key]=nil end end

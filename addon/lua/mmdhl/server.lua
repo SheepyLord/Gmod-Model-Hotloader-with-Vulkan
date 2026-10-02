@@ -178,7 +178,9 @@ end,'Data')
 
 util.AddNetworkString('mmdhl_forget_assets')
 net.Receive('mmdhl_forget_assets',function(_,ply)
- if not game.SinglePlayer() then return end
+ -- Only the game's own server shares the client's cache: single player, or the
+ -- listen server's host. Other players' deletions are their local copies.
+ if not game.SinglePlayer() and not (IsValid(ply) and ply:IsListenServerHost()) then return end
  local ids=util.JSONToTable(net.ReadString()) if not istable(ids) then return end
  native.ForgetAssets(util.TableToJSON(ids))
  if mmdhl.ForgetPublishedAssets then mmdhl.ForgetPublishedAssets(ids) end

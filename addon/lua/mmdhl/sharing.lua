@@ -187,9 +187,10 @@ if SERVER then
   end
   save() mmdhl.InvalidateSharedManifests() mmdhl.SendCatalogWithdrawal(false,ids)
  end
- -- Clean entries left by earlier single-player deletions. Multiplayer servers
- -- own their published library independently of a client's local cache.
- if game.SinglePlayer() then
+ -- Clean entries left by earlier deletions in single player or by a listen
+ -- server's host, whose library is this cache. Dedicated servers own their
+ -- published library independently of a client's local cache.
+ if game.SinglePlayer() or not game.IsDedicated() then
   local missing={}
   for id in pairs(approved.assets) do if not file.Exists('mmd_hotloader/assets/'..id..'/manifest.json','DATA') then missing[#missing+1]=id end end
   mmdhl.ForgetPublishedAssets(missing)

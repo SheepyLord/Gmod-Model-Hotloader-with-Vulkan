@@ -29,7 +29,7 @@ local function scenario(upload,cancelFirst,corrupt,deriveFails)
   e.IsValid=function(p)return p~=nil end
   e.istable=function(t)return type(t)=='table'end e.isnumber=function(t)return type(t)=='number'end e.isstring=function(t)return type(t)=='string'end
   e.LocalPlayer=function()return peer end
-  e.game={SinglePlayer=function()return false end}
+  e.game={SinglePlayer=function()return false end,IsDedicated=function()return true end}
   e.gamemode={Call=function()return true end}
   e.file={Read=function()end,Exists=function()return false end,CreateDir=function()end,Write=function()end,
    Size=function(path)local bytes=e._files[(path:gsub('^mmd_hotloader/',''))] return bytes and #bytes or -1 end}

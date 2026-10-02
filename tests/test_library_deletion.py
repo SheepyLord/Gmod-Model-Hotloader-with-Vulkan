@@ -17,6 +17,9 @@ IsValid=function(e) return type(e)=='table' and not e.removed end
 isstring=function(v) return type(v)=='string' end
 concommand={Add=function() end} hook={Add=function() end}
 game={SinglePlayer=function() return true end}
+-- Whether this player hosts a listen server; the model's player model registration.
+HOST=false LocalPlayer=function() return {IsListenServerHost=function() return HOST end} end
+UNREGISTERED={} mmdhl.UnregisterAsset=function(id) UNREGISTERED[#UNREGISTERED+1]=id end
 NOW=0 RealTime=function() return NOW end
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end}
 net={Start=function() end,WriteString=function() end,SendToServer=function() end}
@@ -64,3 +67,15 @@ TIMERS['MMDHL.DeleteModels']()
 assert(result and result.ok and DELETED[1]==ASSET,'the model is deleted without waiting for a corpse the server cannot remove')
 ''')
 print('PASS: library deletion removes client-only corpses locally and server ragdolls through the server; copies made by other addons let go of the model')
+
+lua.execute(r'''
+assert(#UNREGISTERED==1 and UNREGISTERED[1]==ASSET,'single player: the player model stays registered')
+local function delete() local done mmdhl.library.Delete({ASSET},function(ok) done=ok end) TIMERS['MMDHL.DeleteModels']() return done end
+-- The host of a listen server: its server serves this same cache and forgets the model too.
+game.SinglePlayer=function() return false end HOST=true UNREGISTERED={}
+assert(delete() and #UNREGISTERED==1 and UNREGISTERED[1]==ASSET,'a listen server host keeps an empty player model')
+-- Another player on a server deletes only a local copy; the server still offers the model.
+HOST=false UNREGISTERED={}
+assert(delete() and #UNREGISTERED==0,'a client unregistered a model its server still offers')
+''')
+print('PASS: deleting a model unregisters its player model in single player and on a listen server host; other players keep the server model')
