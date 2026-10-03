@@ -23,7 +23,7 @@ function mmdhl.LoadAsset(id,callback)
  end)
 end
 function mmdhl.Spawn(p,id,options,done,progress)
- local available,why=mmdhl.FeatureAvailable('physics') if not available then if done then done(nil,why) end return end
+ local available,why=mmdhl.FeatureAvailable('physics') if not available then if done then done(nil,mmdhl.ServerIssue('physics',why)) end return end
  options=mmdhl.WithSpawnDefaults(p,options)
  if not options.angles and options.position and IsValid(p) and options.role~='player' then
   options.angles={mmdhl.FacingPlayerAngles(p,Vector(unpack(options.position)),options.role or 'ragdoll'):Unpack()}

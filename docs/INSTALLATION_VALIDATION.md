@@ -12,8 +12,11 @@ Before `require`, Lua reads physical `MOD` / `BASE_PATH` files and compares thei
 sizes and SHA-256 hashes with `native_policy.lua`. An installation must match
 one approved release, including its realm module and executable-side runtime.
 Clients additionally check the worker, worker-side runtime and CoACD. Dedicated
-servers use the runtime beside `srcds_win64.exe` and do not require client-side
-import components. The previous unversioned installation is recorded as obsolete.
+servers use the runtime beside `srcds_win64.exe`, or in `bin\win64` when there is
+none beside it: the native package puts it there, and `srcds_win64.exe` searches
+`bin\win64` after its own folder, as the main branch's `gmod_win64.exe` does.
+They do not require client-side import components. The previous unversioned
+installation is recorded as obsolete.
 
 After loading, the native module reports its compiled identity, loaded paths,
 expected paths and hashes. Both 64-bit branches load the client runtime from
@@ -31,6 +34,12 @@ notice appears once per Lua session; the persistent banner provides Download,
 Copy diagnostics and Recheck. Server failures are explicitly attributed to the
 server administrator. The minimal status protocol is registered before native
 loading, including safe handling of client initialization requests.
+
+Clients never refuse a request because of the status a server reported: the
+server checks its own installation when it acts. A spawn the server cannot make
+fails with the server's problem ("Server: Native runtime: …"), also from a
+server whose native module did not load, instead of waiting for the client's
+timeout.
 
 `mmdhl_check_installation` reads the files again but never reloads DLLs. Repairs
 that change an unavailable component require a full game restart. Native and
@@ -169,8 +178,9 @@ implementation and a new binary release. New policy takes effect after restart.
 - Client `StartInstallationProbe(coacd)` / `PollInstallationProbe()` provide the
   asynchronous worker result. Native results use the existing JSON-string or
   `nil, error` convention.
-- Lua `GetInstallationStatus()`, `FeatureAvailable(feature)` and
-  `ServerFeatureAvailable(feature)` expose diagnostics and availability.
+- Lua `GetInstallationStatus()` and `FeatureAvailable(feature)` expose
+  diagnostics and availability; `ServerIssue(feature,message)` words a server
+  problem in a reply to a player.
 
 Tests: CTest `installation_and_abi_evidence`, `tests/test_installation.py`,
 `tests/test_native_installer.py`, and the owned-game scripts

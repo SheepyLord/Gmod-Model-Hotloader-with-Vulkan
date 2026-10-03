@@ -169,8 +169,8 @@ hook.Add('PostDrawTranslucentRenderables','MMDHL.Models',function(depth,sky)
   if info then mmdhl.DrawInstance(ent:GetInstance(),ent:GetAsset(),info,'edge') mmdhl.DrawInstance(ent:GetInstance(),ent:GetAsset(),info,'surface') end
  end
 end)
+-- The server checks its own installation: a spawn it cannot make fails with the server's problem.
 function mmdhl.Action(action,id,ent,value)
- local ok,err=mmdhl.ServerFeatureAvailable('physics') if not ok then err=mmdhl.Localize(err) notification.AddLegacy(err,NOTIFY_ERROR,8) return false,err end
  net.Start('mmdhl_action') net.WriteString(action) net.WriteString(id or '') net.WriteUInt(IsValid(ent) and ent:EntIndex() or 0,16) net.WriteString(istable(value) and util.TableToJSON(value) or value or '') net.SendToServer()
 end
 net.Receive('mmdhl_notice',function() local message=mmdhl.Localize(net.ReadString()) notification.AddLegacy(message,NOTIFY_ERROR,8) hook.Run('MMDHL.Notice',message) end)

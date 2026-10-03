@@ -494,7 +494,6 @@ end)
 -- Placement has a request/acknowledgement lifecycle. Keep errors actionable.
 mmdhl.spawnRequests=mmdhl.spawnRequests or {}
 function mmdhl.RequestSpawn(id,options,callback)
- if mmdhl.ServerFeatureAvailable then local ok,err=mmdhl.ServerFeatureAvailable('physics') if not ok then err=mmdhl.Localize(err) notification.AddLegacy(err,NOTIFY_ERROR,8) return false,err end end
  if library.deleting then return false,L'library.spawn.deleting' end
  if not validId(id) then return false,L'library.spawn.no_model' end
  if mmdhl.pendingSpawn then return false,L'library.spawn.busy' end

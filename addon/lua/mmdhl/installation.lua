@@ -23,6 +23,11 @@ local function featureName(key)
  local names={core=L'install.feature.core',imports=L'install.feature.imports',detailedCollision=L'install.feature.detailed_collision',rendering=L'install.feature.rendering',physics=L'install.feature.physics'}
  return names[key] or tostring(key)
 end
+-- A problem of this server's installation in a reply to a player, worded like
+-- the banner's server lines.
+function M.ServerIssue(feature,message)
+ return L('install.server_issue',{issue=L('install.issue',{feature=featureName(feature),message=message})})
+end
 local function olderRelease(a,b)
  local left,right={},{}
  for n in tostring(a):gmatch('%d+') do left[#left+1]=tonumber(n) end
@@ -56,7 +61,14 @@ function M.EvaluateInstallation(policy,reader,env)
  local known=selected
  selected=selected or recommended
  s.expected=selected
- local runtimePath=(env.dedicated and '' or 'bin/win64/')..selected.files.runtime.name
+ -- The runtime the game loads. Clients load it from bin/win64. srcds_win64.exe
+ -- looks beside itself first, then in bin/win64, where the native package puts it.
+ local runtime=selected.files.runtime
+ local runtimePath='bin/win64/'..runtime.name
+ if env.dedicated then
+  local function present(path) local found,err=reader(path,'BASE_PATH',runtime.size) return found~=nil or err~='missing' end
+  if present(runtime.name) or not present(runtimePath) then runtimePath=runtime.name end
+ end
  local checks={{role,'lua/bin/'..selected.files[role].name,'MOD','core'}, {'runtime',runtimePath,'BASE_PATH','core'}}
  if not env.server then
   checks[#checks+1]={'worker','lua/bin/'..selected.files.worker.name,'MOD','imports'}
@@ -115,7 +127,7 @@ local function readerForSession()
  local cache={}
  return function(path,search)
   local key=search..'/'..path
-  if cache[key] then return unpack(cache[key]) end
+  if cache[key] then return cache[key][1],cache[key][2] end
   local value,err
   if not file.Exists(path,search) then err='missing'
   else
@@ -141,14 +153,6 @@ function M.SetUnverifiedAccepted(realm,fingerprint)
  local all=acceptedFingerprints() all[realm]=fingerprint
  file.CreateDir('mmd_hotloader') file.Write(acceptancePath,util.TableToJSON(all))
 end
-function M.ServerFeatureAvailable(feature)
- if SERVER then return M.FeatureAvailable(feature) end
- local remote=M.serverInstallation
- if remote and (not remote.features.core or remote.features[feature]==false) then
-  return false,L'install.server_unavailable'
- end
- return true
-end
 function M.FeatureAvailable(feature)
  if not status or not status.features.core then return false,(M.loadError or L'install.unavailable_repair') end
  if status.features[feature]==false then
@@ -163,7 +167,10 @@ local function publicStatus()
   fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,unverifiedAccepted=status.unverifiedAccepted}
 end
 local function notifyChanged()
- M.loadError=not status.features.core and (status.issues[1] and status.issues[1].message or L'install.unavailable') or nil
+ -- The problem that stops the addon: accepted files and warnings never do.
+ local blocking
+ for _,v in ipairs(status.issues) do if not v.accepted and not v.warning then blocking=v.message break end end
+ M.loadError=not status.features.core and (blocking or L'install.unavailable') or nil
  local encoded=util.TableToJSON(publicStatus())
  if encoded~=lastFingerprint then
   lastFingerprint=encoded
@@ -176,10 +183,20 @@ if SERVER then
  util.AddNetworkString('mmdhl_install_status')
  -- Pool operational channels before native loading: healthy clients still run
  -- their initialization hooks when this server's native installation fails.
+ -- Clients do not check the server's status first, so a spawn request gets this
+ -- server's problem as its answer instead of waiting for the client's timeout.
+ local spawnReplies={mmdhl_action='mmdhl_spawn_status',mmdhl_prop_action='mmdhl_prop_status'}
  for _,name in ipairs({'mmdhl_action','mmdhl_actor_registration','mmdhl_arms_preview','mmdhl_catalog','mmdhl_collision_mesh','mmdhl_forget_assets','mmdhl_material_visibility','mmdhl_native_morph','mmdhl_native_morphs','mmdhl_notice','mmdhl_physics_reset','mmdhl_player_clear','mmdhl_player_selection','mmdhl_prop_action','mmdhl_prop_attach','mmdhl_prop_attach_open','mmdhl_prop_catalog','mmdhl_prop_collision','mmdhl_prop_forget','mmdhl_prop_status','mmdhl_scene','mmdhl_scene_active','mmdhl_share','mmdhl_spawn_status'}) do
   util.AddNetworkString(name)
   net.Receive(name,function(_,p)
-   if not status or status.features.core or (p.MMDHLNextFailure or 0)>CurTime() then return end p.MMDHLNextFailure=CurTime()+5
+   if not status or status.features.core then return end
+   if spawnReplies[name] and net.ReadString()=='spawn' then
+    net.ReadString() net.ReadUInt(16)
+    local settings=util.JSONToTable(net.ReadString()) or {}
+    net.Start(spawnReplies[name]) net.WriteUInt(math.Clamp(math.floor(tonumber(settings.request) or 0),0,4294967295),32) net.WriteString('error')
+    net.WriteString(M.ServerIssue('core',M.loadError or L'install.unavailable')) net.WriteUInt(0,16) net.Send(p)
+   end
+   if (p.MMDHLNextFailure or 0)>CurTime() then return end p.MMDHLNextFailure=CurTime()+5
    net.Start('mmdhl_install_status') net.WriteString(util.TableToJSON(publicStatus())) net.Send(p)
   end)
  end

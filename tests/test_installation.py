@@ -64,6 +64,22 @@ for windows,arch in ((False,'x64'),(True,'x86'),(True,'arm64')):
 for dedicated in (False,True):
     s,reads=evaluate(server=True,dedicated=dedicated);assert s.features.core and not s.features.imports
     assert not any('worker' in x or 'coacd' in x or 'gmcl' in x for x in reads)
+# A dedicated server loads the runtime beside srcds_win64.exe, else from bin/win64,
+# where the native package puts it; the check verifies the copy it will load.
+name=release['files']['runtime']['name'];beside='BASE_PATH/'+name;packaged='BASE_PATH/bin/win64/'+name
+package=installed(True,True);package[packaged]=package.pop(beside)
+s,_=evaluate(package,server=True,dedicated=True);assert s.features.core and s.files.runtime.relative=='bin/win64/'+name
+both=deepcopy(package);both[beside]=dict(package[packaged],sha256='7'*64)
+s,_=evaluate(both,server=True,dedicated=True)
+assert not s.features.core and s.files.runtime.relative==name and s.issues[1].code=='damaged_or_unrecognized'
+both[beside]='unreadable'
+s,_=evaluate(both,server=True,dedicated=True);assert not s.features.core and s.files.runtime.relative==name and s.issues[1].code=='unreadable'
+neither=installed(True,True);del neither[beside]
+s,_=evaluate(neither,server=True,dedicated=True);assert not s.features.core and s.files.runtime.relative==name and s.issues[1].code=='missing'
+# Clients and listen servers never take the runtime from beside the executable.
+for server in (False,True):
+    beside_only=installed(server,True)
+    s,_=evaluate(beside_only,server=server);assert not s.features.core and s.files.runtime.relative=='bin/win64/'+name
 old=deepcopy(release);old['release']='1.0.0';old['build']='old'
 for f in old['files'].values():f['sha256']='1'*64
 p=deepcopy(policy);p['releases']['1.0.0']=old
@@ -161,6 +177,17 @@ layouts['module'].update(path=game.lower()+'garrysmod\\lua\\bin\\'+release['file
 for expected in ('bin\\win64\\','',):  # x86-64 branch (bin\win64\gmod.exe), main branch (gmod_win64.exe)
     layouts['runtime'].update(path=game+'bin\\win64\\'+release['files']['runtime']['name'],expectedPath=game+expected+release['files']['runtime']['name'])
     assert validator(convert(layouts)) is True,expected
+# A dedicated server (srcds_win64.exe in its folder) loading the packaged runtime
+# from bin/win64. Loaded from there while the check verified a copy beside
+# srcds_win64.exe, it is a file the administrator may load anyway.
+srcds='D:\\GMod Server\\'
+dedicated=deepcopy(info)
+dedicated['module'].update(sha256=release['files']['server']['sha256'],path=srcds+'garrysmod\\lua\\bin\\'+release['files']['server']['name'],expectedPath=srcds+'garrysmod\\lua\\bin\\'+release['files']['server']['name'])
+dedicated['runtime'].update(path=srcds+'bin\\win64\\'+name,expectedPath=srcds+name)
+for files,verified in ((package,True),(installed(True,True),False)):
+    lua.globals().TEST_STATUS,_=evaluate(files,server=True,dedicated=True)
+    result=lua.execute('local status=TEST_STATUS\n'+part+'\nreturn identitiesMatch')(convert(dedicated))
+    assert result is True if verified else (result[0] is False and result[2] is True),files.keys()
 # Elsewhere, or other bytes, the player may load anyway; another interface never loads.
 for key,field,value,overridable in [('runtime','path',game+'shadow\\'+release['files']['runtime']['name'],True),('runtime','sha256','6'*64,True),
                                      ('module','build','other',True),('module','api',99,False),('runtime','installApi',0,False)]:
@@ -172,4 +199,4 @@ files=installed();files[client]['sha256']='2'*64
 s,_=evaluate(files);s,_=evaluate(files,accepted=s.fingerprint+';loaded:module=1:x,runtime=2:y')
 assert s.features.core and s.unverifiedAccepted and all(v.accepted for v in s.issues.values())
 s,_=evaluate(files,accepted=s.fingerprint+';other');assert not s.features.core and not s.unverifiedAccepted
-print(f'PASS: {count} installation policy scenarios (including accepted unverified files), sixteen loaded-identity checks (both 64-bit layouts) and all addon Lua syntax')
+print(f'PASS: {count} installation policy scenarios (including accepted unverified files and where a dedicated server finds its runtime), eighteen loaded-identity checks (both 64-bit layouts and a dedicated server) and all addon Lua syntax')
