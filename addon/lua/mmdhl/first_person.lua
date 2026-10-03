@@ -14,9 +14,20 @@ function mmdhl.IsLocalFirstPerson(ent,origin)
  if origin then return origin:DistToSqr(ent:EyePos())<=32^2 end
  return not ent:ShouldDrawLocalPlayer()
 end
+-- The player's own character, hidden in first person, needs no physics unless
+-- another view drew it in the last few frames: a mirror, water or a camera.
+function mmdhl.HiddenFirstPerson(ent)
+ if not mmdhl.IsLocalFirstPerson(ent) then return false end
+ local instance=mmdhl.GetInstance(ent)
+ return not (instance>0 and mmdhl.native.GetDrawAge and mmdhl.native.GetDrawAge(instance)<=3)
+end
 -- Nil means this is another view (third person, a camera or a reflection).
 -- Shadow/depth cameras are at the light, so classify them using the player's
 -- main camera. A hidden first-person body must not cast a detached shadow.
+-- Other views go by the camera of the pass being drawn: EyePos(). During the
+-- engine's mirror and water reflections (func_reflective_glass) EyePos() is the
+-- mirrored camera while render.GetViewSetup() still reports the main view, which
+-- hid the player from mirrors.
 function mmdhl.FirstPersonView(ent,depth)
  -- Another addon's first-person body (player_copies.lua). Those addons move the
  -- head and arms of a standard model out of view; in the player's own view the
@@ -24,8 +35,7 @@ function mmdhl.FirstPersonView(ent,depth)
  local owner=ent.MMDHLCopyOf
  if owner then
   if depth or owner~=LocalPlayer() then return nil end
-  local view=render.GetViewSetup and render.GetViewSetup() or {}
-  local origin=view.origin or EyePos()
+  local origin=EyePos()
   if not mmdhl.IsLocalFirstPerson(owner,origin) then return nil end
   -- With no offset (First-Person Body in vehicles, or a forward distance near 0)
   -- the camera is inside the chest: also clip right below it, as the player's
@@ -38,8 +48,7 @@ function mmdhl.FirstPersonView(ent,depth)
   if mmdhl.IsLocalFirstPerson(ent) then return false end
   return nil
  end
- local view=render.GetViewSetup and render.GetViewSetup() or {}
- if mmdhl.IsLocalFirstPerson(ent,view.origin or EyePos()) then return false end
+ if mmdhl.IsLocalFirstPerson(ent,EyePos()) then return false end
  return nil
 end
 function mmdhl.GetArmsParts(id)

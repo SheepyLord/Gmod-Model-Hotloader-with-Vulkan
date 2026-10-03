@@ -135,7 +135,7 @@ if CLIENT then
   local quality=GetConVar('mmdhl_secondary_iterations') local active=false
   if quality and quality:GetInt()>0 then for _,ent in ipairs(mmdhl.Entities()) do
    local lod=ent.MMDPhysicsLOD
-   if mmdhl.GetInstance(ent)>0 and bit.band(mmdhl.GetCollisionFlags(ent),mmdhl.CollideScene)~=0 and not (lod and lod.suspended) and not (mmdhl.IsLocalFirstPerson and mmdhl.IsLocalFirstPerson(ent)) then active=true break end
+   if mmdhl.GetInstance(ent)>0 and bit.band(mmdhl.GetCollisionFlags(ent),mmdhl.CollideScene)~=0 and not (lod and lod.suspended) and not (mmdhl.HiddenFirstPerson and mmdhl.HiddenFirstPerson(ent)) then active=true break end
   end end
   if active~=wasActive then wasActive=active net.Start('mmdhl_scene_active') net.WriteBool(active) net.SendToServer() end
  end)

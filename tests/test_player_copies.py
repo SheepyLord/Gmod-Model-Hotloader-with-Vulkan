@@ -134,7 +134,8 @@ local me=entity(1,model,{nw={MMDHLAsset=string.rep('a',64),MMDHLRig='ka',MMDHLMo
 local body=entity(-1,model) ENTITY.DrawModel(body) assert(body.MMDHLCopyOf==me)
 -- The player's own first-person view: the mask, without our clip plane; shadows and other views keep the body.
 function Vector(x,y,z) local v={x=x or 0,y=y or 0,z=z or 0} function v:DistToSqr(o) return (self.x-o.x)^2+(self.y-o.y)^2+(self.z-o.z)^2 end return v end
-GetViewEntity=function() return me end EyePos=function() return Vector(0,0,64) end
+-- VIEW is the camera of the pass being drawn (EyePos).
+GetViewEntity=function() return me end EyePos=function() return VIEW.origin end
 VIEW={origin=Vector(1,0,64)} render={GetViewSetup=function() return VIEW end}
 -- First-Person Body sets the body 14 units back: its chest is behind the camera.
 body.bones={['ValveBiped.Bip01_Spine4']=3} body.MMDRenderPose={[4]=Matrix(Vector(1,1,1),Vector(0,-14,50))}

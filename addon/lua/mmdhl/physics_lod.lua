@@ -61,7 +61,8 @@ end
 function mmdhl.UpdatePhysicsLOD(ent,palette)
  local now=RealTime() local state=ent.MMDPhysicsLOD or {lastVisible=now,divisor=1}
  local config=settings() local delta=now-(state.sampleAt or now)
- local firstPerson=mmdhl.IsLocalFirstPerson and mmdhl.IsLocalFirstPerson(ent)
+ -- A mirror showing the player in first person needs the hair and clothing moving.
+ local firstPerson=mmdhl.HiddenFirstPerson and mmdhl.HiddenFirstPerson(ent)
  local corpseSleeping=mmdhl.ClientRagdollAsleep and mmdhl.ClientRagdollAsleep(ent)
  iterationsVar=iterationsVar or GetConVar('mmdhl_secondary_iterations') local full=iterationsVar:GetInt()
  local forcePause=firstPerson==true or full<0 or corpseSleeping==true
