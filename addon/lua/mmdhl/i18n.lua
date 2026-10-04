@@ -198,8 +198,8 @@ local function addGamePhrases()
  language.Add('Cleanup_mmdhl',mmdhl.L'game.cleanup')
  language.Add('Cleaned_mmdhl',mmdhl.L'game.cleaned')
  for _,part in ipairs({'name','desc','left','right','reload'}) do language.Add('tool.mmdhl_prop.'..part,mmdhl.L('tool.prop.'..part)) end -- i18n-keys: tool.prop.name tool.prop.desc tool.prop.left tool.prop.right tool.prop.reload
- -- i18n-keys: undo.ragdoll undo.citizen undo.combine undo.hostile undo.static_prop undo.attached_prop props.menu.collides_with props.menu.gravity physics_reset.menu
- for _,key in ipairs({'undo.ragdoll','undo.citizen','undo.combine','undo.hostile','undo.static_prop','undo.attached_prop','props.menu.collides_with','props.menu.gravity','physics_reset.menu'}) do language.Add('mmdhl.'..key,mmdhl.L(key)) end
+ -- i18n-keys: undo.ragdoll undo.citizen undo.combine undo.static_prop undo.attached_prop props.menu.collides_with props.menu.gravity physics_reset.menu
+ for _,key in ipairs({'undo.ragdoll','undo.citizen','undo.combine','undo.static_prop','undo.attached_prop','props.menu.collides_with','props.menu.gravity','physics_reset.menu'}) do language.Add('mmdhl.'..key,mmdhl.L(key)) end
  local weapon=weapons and weapons.GetStored('weapon_mmdhl')
  if weapon then weapon.PrintName=mmdhl.L'weapon.name' weapon.Instructions=mmdhl.L'weapon.instructions' end
  -- The Weapons tab reads the copy weapons.Register made in list 'Weapon'.

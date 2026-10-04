@@ -1,9 +1,10 @@
 """Native carrier spawns on the server: Sandbox's completion hooks count every
 ragdoll and NPC exactly once (so its limits hold and recover on removal, spawn-menu
-conversions included), new NPCs take the player's NPC health setting, and an entity
-that changes model drops the previous model's networked overflow parts, submaterials
-and expressions. Runs the addon's carrier.lua, actors.lua and materials.lua code
-against a simulated Sandbox server."""
+entries included), hostile NPCs are Combine Soldiers whatever weapon they carry,
+new NPCs take the player's NPC health setting, and an entity that changes model
+drops the previous model's networked overflow parts, submaterials and expressions.
+Runs the addon's carrier.lua, actors.lua and materials.lua code against a
+simulated Sandbox server."""
 from pathlib import Path
 from lupa import LuaRuntime
 from lua_i18n import attach
@@ -82,14 +83,15 @@ native={PrepareCarrier=function(id,options) return table.Copy(RIGS[id..':'..(opt
 mmdhl.WithSpawnDefaults=function(p,o) return o end
 mmdhl.MountPackage=function() return true end
 mmdhl.InvalidateEntityList=function() end mmdhl.PublishRig=function() end mmdhl.PublishActor=function() end
-mmdhl.ApplyBodygroupState=function() end mmdhl.MakeHostileCitizen=function(e) e.hostile=true end
+mmdhl.ApplyBodygroupState=function() end
+-- Hostile citizens only come back from saves and dupes of earlier versions.
+mmdhl.MakeHostileCitizen=function() error('a spawn made a hostile citizen') end
 mmdhl.GetRig=function(ent) return mmdhl.rigs[ent:GetNW2String('MMDHLRig','')] end
 mmdhl.NPCWeapon=function(p,role,weapon) return weapon or 'weapon_smg1' end
-mmdhl.HostileActorRole=function(weapon) return weapon=='weapon_pistol' and 'citizen' or 'combine' end
 friendlyCitizen=function(e) e.friendly=true end save=function() end mmdhl.ChatPrint=function(_,m) error(m) end
--- The server's spawn entry for actors: hostile options, then the native carrier.
+-- The server's spawn entry for actors (server.lua): hostile options, then the native carrier.
 mmdhl.Spawn=function(p,id,options,done)
- if options.role=='combine' then options.role=mmdhl.HostileActorRole(options.weapon) options.hostile=true end
+ if options.role=='combine' or options.hostile then options=mmdhl.HostileActorOptions(p,options) end
  return mmdhl.SpawnActorNative(p,id,options,native.PrepareCarrier(id,options),done)
 end
 ''')
@@ -100,10 +102,10 @@ actors = (root / 'addon/lua/mmdhl/actors.lua').read_text(encoding='utf-8')
 materials = (root / 'addon/lua/mmdhl/materials.lua').read_text(encoding='utf-8')
 lua.execute(definition(lua, materials, 'local function changed(') + definition(lua, materials, 'function mmdhl.ClearAssetState('))
 for header in [' function mmdhl.AttachNative(', ' function mmdhl.SpawnNative(']: lua.execute(definition(lua, carrier, header))
-lua.execute(definition(lua, actors, 'mmdhl.MaxNPCHealth=') + definition(lua, actors, 'function mmdhl.NPCHealth('))
+lua.execute(definition(lua, actors, 'mmdhl.MaxNPCHealth=') + definition(lua, actors, 'function mmdhl.NPCHealth(') + definition(lua, actors, 'function mmdhl.ActorClass('))
 # A local of the server block, like friendlyCitizen: run it as a global.
 lua.execute(definition(lua, actors, ' local function setHealth(').replace('local function', 'function', 1))
-for header in [' function mmdhl.ClearActorIdentity(', ' function mmdhl.SpawnActorNative(', " hook.Add('PlayerSpawnedNPC','MMDHL.AttachMenuNPC',"]:
+for header in [' function mmdhl.HostileActorOptions(', ' function mmdhl.ClearActorIdentity(', ' function mmdhl.SpawnActorNative(', " hook.Add('PlayerSpawnedNPC','MMDHL.AttachMenuNPC',"]:
     lua.execute(definition(lua, actors, header))
 
 lua.execute(r'''
@@ -129,15 +131,30 @@ assert(npc('weapon_smg1')==nil and COUNT.npcs==1,'a second NPC is refused at a l
 first:Remove() endFrame()
 assert(COUNT.npcs==0,'removing the NPC frees its place')
 -- A spawn-menu Combine entry with a pistol: Sandbox created and counts the menu
--- NPC; the addon replaces it with a hostile citizen, which counts in its place.
+-- NPC, which stays a Combine Soldier and is attached once.
 for _,r in pairs(RIGS) do mmdhl.actorRegistrations[r.model]={rig=r} end
+local created=#CREATED
 local menu=entity('npc_combine_s') menu:SetModel(RIGS[A..':combine'].model) menu.Equipment='weapon_pistol'
 gamemode.Call('PlayerSpawnedNPC',p,menu) endFrame()
-local replacement=CREATED[#CREATED]
-assert(menu.removed and replacement.class=='npc_citizen' and COUNT.npcs==1,'a converted spawn-menu NPC is counted once, as its replacement')
-assert(replacement.hostile and not replacement.friendly and replacement:GetNW2Int('MMDHLGeneration',0)==1,'the hostile replacement is attached once and stays hostile')
+assert(not menu.removed and #CREATED==created and COUNT.npcs==1,'a spawn-menu Combine entry with a pistol was replaced')
+assert(menu:GetNW2Int('MMDHLGeneration',0)==1 and not menu.friendly,'the spawn-menu Combine is attached once')
 ''')
-print('PASS: native NPCs count once, spawn-menu conversions included, and free their place on removal')
+print('PASS: native NPCs count once, spawn-menu entries included, and free their place on removal')
+
+lua.execute(r'''
+LIMIT=100 local p=PLAYER()
+-- The library's Hostile NPC button (role combine) with any weapon is a Combine Soldier
+-- holding it, and so is a respawn of an earlier version's hostile citizen.
+for _,options in ipairs({{weapon='weapon_pistol'},{weapon='weapon_crowbar'},{weapon='weapon_rpg'},{weapon='none'},{weapon='weapon_ar2'},{role='citizen',hostile=true,weapon='weapon_pistol'}}) do
+ options.role=options.role or 'combine'
+ local hostile=mmdhl.Spawn(p,A,options)
+ local weapon=options.weapon~='none' and options.weapon or nil
+ assert(hostile.class=='npc_combine_s' and hostile.keys.additionalequipment==weapon and hostile.Equipment==weapon,'a hostile NPC with '..options.weapon..' is a '..hostile.class)
+ assert(hostile:GetNW2String('MMDHLRole','')=='combine' and hostile:GetNW2String('MMDHLRig','')=='combineA' and not hostile.friendly,'it does not use the Combine carrier')
+end
+assert(mmdhl.ActorClass('combine')=='npc_combine_s' and mmdhl.ActorClass('citizen')=='npc_citizen','the class the spawn permission check names')
+''')
+print('PASS: hostile NPCs are Combine Soldiers whatever weapon they carry')
 
 lua.execute(r'''
 LIMIT=100 local p=PLAYER()
@@ -150,7 +167,7 @@ assert(health(citizen)=='40/40' and combine.class=='npc_combine_s' and health(co
 INFO.mmdhl_npc_health=250
 assert(health(npc({}))=='250/250','a friendly NPC takes the NPC health setting')
 local hostile=npc({role='combine',weapon='weapon_pistol'})
-assert(hostile.class=='npc_citizen' and hostile.hostile and health(hostile)=='250/250','a hostile citizen takes it')
+assert(hostile.class=='npc_combine_s' and health(hostile)=='250/250','a hostile NPC with a pistol takes it')
 assert(health(npc({role='combine',weapon='weapon_ar2'}))=='250/250','a Combine Soldier takes it')
 -- A spawn's own value wins, 0 included; it is whole and at most mmdhl.MaxNPCHealth.
 assert(health(npc({npcHealth=0}))=='40/40' and health(npc({npcHealth=75}))=='75/75','an explicit npcHealth overrides the setting')
@@ -158,15 +175,14 @@ assert(health(npc({npcHealth=99999}))=='10000/10000' and health(npc({npcHealth=1
 INFO.mmdhl_npc_health=1e9 assert(health(npc({}))=='10000/10000','the setting is clamped too')
 INFO.mmdhl_npc_health=-5 assert(health(npc({}))=='40/40','a negative setting keeps the class health')
 -- Spawn-menu entries (Sandbox spawned the NPC, then calls PlayerSpawnedNPC) take it,
--- the hostile citizen that replaces a Combine entry holding a pistol included.
+-- a Combine entry holding a pistol included.
 INFO.mmdhl_npc_health=300
 local menu=entity('npc_citizen') menu:SetModel(RIGS[A..':citizen'].model) menu:Spawn()
 gamemode.Call('PlayerSpawnedNPC',p,menu)
 assert(health(menu)=='300/300' and menu.friendly,'a spawn-menu NPC takes the setting')
 local entry=entity('npc_combine_s') entry:SetModel(RIGS[A..':combine'].model) entry.Equipment='weapon_pistol' entry:Spawn()
 gamemode.Call('PlayerSpawnedNPC',p,entry) endFrame()
-local replacement=CREATED[#CREATED]
-assert(entry.removed and replacement.hostile and health(replacement)=='300/300','the hostile replacement of a menu entry takes it')
+assert(not entry.removed and health(entry)=='300/300','a spawn-menu Combine entry holding a pistol takes it')
 -- Sandbox's NPC duplicator calls PlayerSpawnedNPC, then restores the dupe's
 -- CurHealth/MaxHealth: a pasted NPC keeps the health it was saved with.
 local pasted=entity('npc_citizen') pasted:SetModel(RIGS[A..':citizen'].model) pasted:Spawn()

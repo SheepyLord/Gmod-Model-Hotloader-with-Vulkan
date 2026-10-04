@@ -50,21 +50,11 @@ function mmdhl.NPCHealth(p,requested)
  if health~=health or health<1 then return nil end
  return math.min(math.floor(health),mmdhl.MaxNPCHealth)
 end
--- The Combine Soldier animation pack animates only rifle-type weapons and the
--- unarmed stance; it holds pistols, RPGs and melee weapons in the unarmed pose.
--- A hostile NPC with such a weapon uses the Citizen pack as a hostile citizen.
-local combineWeapons={none=true,weapon_smg1=true,weapon_ar2=true,weapon_shotgun=true,weapon_crossbow=true,weapon_annabelle=true}
--- Lua SWEP hold types that weapon_base translates to rifle/shotgun NPC activities.
-local combineHoldTypes={smg=true,ar2=true,shotgun=true,crossbow=true}
-function mmdhl.HostileActorRole(weapon)
- if combineWeapons[weapon] then return 'combine' end
- local stored=isstring(weapon) and weapons.Get(weapon)
- if stored and combineHoldTypes[string.lower(tostring(stored.HoldType or 'pistol'))] then return 'combine' end
- return 'citizen'
-end
-function mmdhl.ActorClass(role,weapon)
- if role=='combine' and mmdhl.HostileActorRole(weapon)=='combine' then return 'npc_combine_s' end
- return 'npc_citizen'
+-- A hostile NPC is a Combine Soldier whatever it carries. Like the game's own,
+-- it holds pistols, RPGs and melee weapons in the unarmed pose: the Combine
+-- Soldier animation pack animates only rifle-type weapons and the unarmed stance.
+function mmdhl.ActorClass(role)
+ return role=='combine' and 'npc_combine_s' or 'npc_citizen'
 end
 function mmdhl.RegisterActor(rig,arms)
  if not mmdhl.IsCurrentRig(rig) or not rig.model then return end
@@ -88,9 +78,10 @@ if SERVER then
    for _,p in ipairs(player.GetAll()) do ent:AddEntityRelationship(p,D_LI,99) end
   end)
  end
- -- A hostile citizen keeps Citizen AI and weapon animations but takes the
- -- Combine soldier's side: players and their allies are enemies, Combine
- -- forces and other hostile imported NPCs are friends. Others keep their class.
+ -- Hostile citizens come from saves and dupes of earlier versions, which made one
+ -- for a hostile NPC holding a pistol, RPG or melee weapon. They keep Citizen AI but
+ -- take the Combine soldier's side: players and their allies are enemies,
+ -- Combine forces and other hostile citizens are friends. Others keep their class.
  local combineSide={[CLASS_COMBINE]=true,[CLASS_COMBINE_GUNSHIP]=true,[CLASS_COMBINE_HUNTER]=true,[CLASS_METROPOLICE]=true,[CLASS_MANHACK]=true,[CLASS_SCANNER]=true,[CLASS_STALKER]=true,[CLASS_PROTOSNIPER]=true,[CLASS_MILITARY]=true}
  local playerSide={[CLASS_PLAYER_ALLY]=true,[CLASS_PLAYER_ALLY_VITAL]=true,[CLASS_CITIZEN_PASSIVE]=true,[CLASS_CITIZEN_REBEL]=true,[CLASS_VORTIGAUNT]=true,[CLASS_HACKED_ROLLERMINE]=true}
  local function relate(hostile,other)
@@ -126,10 +117,11 @@ if SERVER then
    if ent:GetClass()=='npc_citizen' then ent:AddEntityRelationship(p,ent.MMDHLHostile and D_HT or D_LI,99) end
   end end)
  end)
- -- Hostile NPCs choose their carrier's animation pack from the weapon they carry.
+ -- Hostile NPCs are Combine Soldiers with the Combine weapon choice. A respawn of
+ -- an earlier version's hostile citizen (options.hostile) becomes one too.
  function mmdhl.HostileActorOptions(p,options)
   options.weapon=mmdhl.NPCWeapon(p,'combine',options.weapon)
-  options.role=mmdhl.HostileActorRole(options.weapon) options.hostile=true
+  options.role='combine' options.hostile=nil
   return options
  end
  function mmdhl.ClearActorIdentity(ent)
@@ -309,17 +301,14 @@ if SERVER then
    if not mmdhl.IsMMD(ent) then ent.MMDHLPreviousModel=ent:GetModel() end
    FindMetaTable('Entity').SetModel(ent,rig.model)
   else ent:SetModel(rig.model) end
-  local hostile=role=='citizen' and options.hostile==true
   if role~='player' then
    ent:SetPos(Vector(unpack(options.position or {0,0,0}))) ent:SetAngles(Angle(unpack(options.angles or {0,0,0})))
    if role=='citizen' then ent:SetKeyValue('citizentype','4') end
-   if hostile then ent:SetKeyValue('spawnflags',tostring(bit.bor(ent:GetSpawnFlags(),SF_CITIZEN_NOT_COMMANDABLE))) ent:SetKeyValue('squadname','mmdhl_hostile') end
-   local weapon=mmdhl.NPCWeapon(p,hostile and 'combine' or role,options.weapon)
+   local weapon=mmdhl.NPCWeapon(p,role,options.weapon)
    if weapon~='none' then ent:SetKeyValue('additionalequipment',weapon) ent.Equipment=weapon end
    ent:Spawn() ent:Activate()
    setHealth(ent,mmdhl.NPCHealth(p,options.npcHealth))
-   if hostile then mmdhl.MakeHostileCitizen(ent)
-   elseif role=='citizen' then
+   if role=='citizen' then
     ent:AddRelationship('player D_LI 99')
     for _,friendly in ipairs(player.GetAll()) do ent:AddEntityRelationship(friendly,D_LI,99) end
    end
@@ -328,7 +317,7 @@ if SERVER then
   if not attached then if role~='player' then ent:Remove() end if done then done(nil,err) end return end
   ent:SetNW2String('MMDHLRole',role)
   if options.bodygroups then mmdhl.ApplyBodygroupState(ent,options.bodygroups) end
-  if role=='citizen' and not hostile then friendlyCitizen(ent) end
+  if role=='citizen' then friendlyCitizen(ent) end
   if role=='player' then
    p.MMDHLPlayerSelection={asset=id,options=table.Copy(options),rig=rig,arms=arms}
    p:SetNW2String('MMDHLArms',arms.key)
@@ -338,7 +327,7 @@ if SERVER then
    -- Sandbox's completion hook counts the NPC toward the player's limit. Our own
    -- PlayerSpawnedNPC handler is for spawn-menu entries and skips this entity.
    ent:SetCreator(p) ent.MMDHLNativeSpawn=true gamemode.Call('PlayerSpawnedNPC',p,ent) ent.MMDHLNativeSpawn=nil
-   undo.Create(hostile and 'mmdhl.undo.hostile' or role=='citizen' and 'mmdhl.undo.citizen' or 'mmdhl.undo.combine') undo.AddEntity(ent) undo.SetPlayer(p) undo.Finish() p:AddCleanup('mmdhl',ent)
+   undo.Create(role=='citizen' and 'mmdhl.undo.citizen' or 'mmdhl.undo.combine') undo.AddEntity(ent) undo.SetPlayer(p) undo.Finish() p:AddCleanup('mmdhl',ent)
   end
   mmdhl.PublishActor(rig,arms)
   if role=='player' then net.Start('mmdhl_player_selection') net.WriteString(rig.key) net.Send(p) end
@@ -350,17 +339,6 @@ if SERVER then
   local registration=mmdhl.actorRegistrations[ent:GetModel()] if not registration then return end
   local r=registration.rig
   local gender=r.animation and r.animation.profile:find('_male$') and 'male' or 'female'
-  local weapon=ent.Equipment or 'none'
-  if r.role=='combine' and mmdhl.HostileActorRole(weapon)=='citizen' then
-   -- The spawn menu entry is a Combine soldier, whose pack would hold this
-   -- weapon in the unarmed pose. Replace it with a hostile citizen carrier.
-   local position,angles={ent:GetPos():Unpack()},{ent:GetAngles():Unpack()}
-   ent:Remove()
-   mmdhl.Spawn(p,r.asset,{role='combine',weapon=weapon,gender=gender,position=position,angles=angles,backend='source'},function(created,err)
-    if not IsValid(created) and err then mmdhl.ChatPrint(p,err) end
-   end)
-   return
-  end
   mmdhl.AttachNative(ent,r.asset,{role=r.role,rigManifest=r,scale=r.scale*.0254,gender=gender})
   -- Sandbox's NPC duplicator restores a pasted NPC's own health after this hook.
   setHealth(ent,mmdhl.NPCHealth(p))

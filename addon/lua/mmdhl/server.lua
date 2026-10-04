@@ -92,7 +92,7 @@ net.Receive('mmdhl_action',function(_,p)
   if role~='player' and (not tr.Hit or tr.HitSky or tr.StartSolid or tr.HitPos:DistToSqr(p:EyePos())>4096^2) then reply('error',L'server.error.spawn_aim') return end
   local pos=role=='player' and p:GetPos() or tr.HitPos+tr.HitNormal*3
   local weapon=mmdhl.NPCWeapon(p,role)
-  if role~='player' and gamemode.Call(role=='ragdoll' and 'PlayerSpawnRagdoll' or 'PlayerSpawnNPC',p,role=='ragdoll' and id or mmdhl.ActorClass(role,weapon),weapon)==false then reply('error',L'server.error.spawn_forbidden') return end
+  if role~='player' and gamemode.Call(role=='ragdoll' and 'PlayerSpawnRagdoll' or 'PlayerSpawnNPC',p,role=='ragdoll' and id or mmdhl.ActorClass(role),weapon)==false then reply('error',L'server.error.spawn_forbidden') return end
   p.MMDHLSpawnPending=true reply('loading',L'server.progress.loading')
   mmdhl.Spawn(p,id,{role=role,weapon=weapon,gender=settings.gender,armsParts=settings.armsParts,bodygroups=mmdhl.CleanBodygroups(settings.bodygroups),position={pos.x,pos.y,pos.z},angles={mmdhl.FacingPlayerAngles(p,pos,role):Unpack()},backend='source',secondaryBackend=mmdhl.ValidSecondaryBackend(settings.secondaryBackend),frozen=settings.frozen==true,collisionFlags=mmdhl.ValidCollisionFlags(settings.collisionFlags) or mmdhl.CollideDefault,mass=math.Clamp(tonumber(settings.mass) or 70,1,500),scaleMultiplier=math.Clamp(tonumber(settings.scaleMultiplier) or 1,.1,4)},function(created,err)
    if IsValid(p) then p.MMDHLSpawnPending=nil end
