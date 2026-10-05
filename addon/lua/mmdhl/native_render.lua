@@ -36,33 +36,73 @@ if native.SetGpuSkinning then
  cvars.AddChangeCallback('mmdhl_gpu_skinning',function(_,_,value) native.SetGpuSkinning(tonumber(value)~=0) native.PruneRenderCache(true) end,'MMDHL.GpuSkinning')
 end
 local directions={Vector(1,0,0),Vector(-1,0,0),Vector(0,1,0),Vector(0,-1,0),Vector(0,0,1),Vector(0,0,-1)}
-if mmdhl.sourceTextureVersion~=7 then
- mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.sourceTextureVersion=7
+if mmdhl.sourceTextureVersion~=8 then
+ mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.sourceTextureVersion=8
 end
 mmdhl.sourceMaterials=mmdhl.sourceMaterials or {}
 mmdhl.sourceBlendMaterials=mmdhl.sourceBlendMaterials or {}
 mmdhl.depthMaterials=mmdhl.depthMaterials or {}
 mmdhl.shadowMaterials=mmdhl.shadowMaterials or {}
+-- A mounted VMT can precede its texture upload, especially for large uncompressed
+-- VTFs. Missing resources are retryable, never a completed material cache. Share
+-- the retry deadline across entities and views so shadows/flashlights cannot turn
+-- one upload into hundreds of material lookups per frame.
+local materialRetries={color={},blend={},depth={},shadow={}}
+local function pendingMaterial(kind,id)
+ local pending=materialRetries[kind][id]
+ return pending and SysTime()<pending.at and pending.err or nil
+end
+local function deferMaterial(kind,id,err)
+ materialRetries[kind][id]={at=SysTime()+.25,err=err}
+ return nil,err
+end
+local function baseTexture(mat)
+ local texture=mat:GetTexture('$basetexture')
+ return texture and (not texture.IsError or not texture:IsError()) and texture or nil
+end
 local function materials(id,info,depth,blended)
  local cache=depth and mmdhl.depthMaterials or blended and mmdhl.sourceBlendMaterials or mmdhl.sourceMaterials
- if cache[id] then return cache[id] end local result={}
- local archive='mmd_hotloader/assets/'..id..'/materials-v5.gma'
- if file.Exists(archive,'DATA') then mmdhl.MountPackage('data/'..archive) end
+ if cache[id] then return cache[id] end
+ local kind=depth and 'depth' or blended and 'blend' or 'color'
+ local pending=pendingMaterial(kind,id) if pending then return nil,pending end
+ local result,textures={},{}
+ local source
+ if depth then
+  local err
+  source,err=materials(id,info,false)
+  if not source then return deferMaterial(kind,id,err) end
+ else
+  local archive='mmd_hotloader/assets/'..id..'/materials-v5.gma'
+  if file.Exists(archive,'DATA') then
+   local ok,err=mmdhl.MountPackage('data/'..archive)
+   if not ok then return deferMaterial(kind,id,err or L('render.error.missing_material',{path=archive})) end
+  end
+ end
  for i,p in ipairs(info.materials) do
   -- Render the exact public VMT that tools/editors inspect. A separately
   -- created shader clone can diverge in parameter types and texture bindings,
   -- and ignores edits made through Material(entity:GetMaterials()[slot]).
-  local mat=Material(p.path)
-  if mat:IsError() then error(L('render.error.missing_material',{path=tostring(p.path)})) end
+  local mat=source and source[i] or Material(p.path)
+  if not mat or mat:IsError() then return deferMaterial(kind,id,L('render.error.missing_material',{path=tostring(p.path)})) end
   if depth then
-   local source=mat
-   mat=CreateMaterial('mmdhl_depth_v10_'..id..'_'..i,'DepthWrite',{
-    ['$basetexture']=source:GetTexture('$basetexture'):GetName(),['$model']='1',
-    ['$nocull']=p.twoSided and '1' or '0',['$alphatest']='1',
-    ['$alphatestreference']='.5',['$allowalphatocoverage']='1'})
+   textures[i]=baseTexture(mat)
+   if not textures[i] then return deferMaterial(kind,id,L('render.error.pending_texture',{path=p.path})) end
   end
   result[i]=mat
- end cache[id]=result return result
+ end
+ -- Preflight every slot before CreateMaterial: it caches the first parameters
+ -- for a name even if our Lua table is discarded. Never create a depth clone
+ -- with a fallback texture that a later successful build cannot replace.
+ if depth then for i,p in ipairs(info.materials) do
+  local texture=textures[i]
+  local mat=CreateMaterial('mmdhl_depth_v11_'..id..'_'..i,'DepthWrite',{
+   ['$basetexture']=texture:GetName(),['$model']='1',
+   ['$nocull']=p.twoSided and '1' or '0',['$alphatest']='1',
+   ['$alphatestreference']='.5',['$allowalphatocoverage']='1'})
+  mat:SetTexture('$basetexture',texture)
+  result[i]=mat
+ end end
+ materialRetries[kind][id]=nil cache[id]=result return result
 end
 local function ready(ent)
  local id=mmdhl.GetAsset(ent)
@@ -99,11 +139,11 @@ function mmdhl.UsesRemixPreview()
 end
 local previewMaterials={}
 local function drawRemixPreview(handle,id,info,visible)
- local source=materials(id,info,false)
+ local source,err=materials(id,info,false) if not source then return false,err end
  local cached=previewMaterials[id] or {} previewMaterials[id]=cached
  for i,p in ipairs(info.materials) do
   if visible and visible[i]==false then continue end
-  local texture=source[i]:GetTexture('$basetexture')
+  local texture=baseTexture(source[i])
   if not texture then return false,L('render.error.preview_texture',{path=p.path}) end
   local mat=cached[i]
   if not mat then
@@ -128,8 +168,7 @@ end
 -- visible (optional): one boolean per material slot from a bodygroup preset.
 function mmdhl.DrawLibraryPreview(handle,id,info,visible)
  if mmdhl.UsesRemixPreview() then return drawRemixPreview(handle,id,info,visible) end
- local mats=materials(id,info,false)
- local blends=materials(id,info,false,true)
+ local mats,err=materials(id,info,false) if not mats then return false,err end
  local ok,err=native.SetupSourceLighting(IsValid(LocalPlayer()) and LocalPlayer():EyePos() or Vector())
  if not ok then return false,err end
  render.ResetModelLighting(.3,.3,.3) render.SetLocalModelLights()
@@ -149,11 +188,21 @@ function mmdhl.DrawLibraryPreview(handle,id,info,visible)
 end
 local function shadowNames(id,info)
  if mmdhl.shadowMaterials[id] then return mmdhl.shadowMaterials[id] end
- local source=materials(id,info,false,true) local names={}
+ local pending=pendingMaterial('shadow',id) if pending then return nil,pending end
+ local source,err=materials(id,info,false,true) if not source then return deferMaterial('shadow',id,err) end
+ for i,p in ipairs(info.materials) do
+  if p.alphaTexture and not baseTexture(source[i]) then return deferMaterial('shadow',id,L('render.error.pending_texture',{path=p.path})) end
+ end
+ local names={}
  for i,p in ipairs(info.materials) do
   local mat
   if p.alphaTexture then
-   mat=CreateMaterial('mmdhl_shadow_v2_'..id..'_'..i,'ShadowBuild',{['$model']='1',['$nocull']=p.twoSided and '1' or '0',['$translucent_material']=p.path})
+   -- CreateMaterial snapshots the shader before RegisterSourceShadow converts
+   -- this string into the typed IMaterial reference ShadowBuild requires. Add
+   -- it afterwards with SetString (no Recompute), then let that existing native
+   -- bridge set its type before the first shadow draw. Lua has no SetMaterial.
+   mat=CreateMaterial('mmdhl_shadow_v4_'..id..'_'..i,'ShadowBuild',{['$model']='1',['$nocull']=p.twoSided and '1' or '0'})
+   mat:SetString('$translucent_material',p.path)
   else
    -- Opaque parts share one shadow material per cull mode, so the native
    -- shadow pass binds once and merges their index ranges into a few draws.
@@ -161,7 +210,7 @@ local function shadowNames(id,info)
   end
   names[i]='!'..mat:GetName()
  end
- mmdhl.shadowMaterials[id]=names return names
+ materialRetries.shadow[id]=nil mmdhl.shadowMaterials[id]=names return names
 end
 local function draw(ent,translucent,depth)
  if mmdhl.PresentationSuppressed(ent) then return end
@@ -172,12 +221,22 @@ local function draw(ent,translucent,depth)
  local started=SysTime() local id,info=ready(ent) if not info then return end
  local instance=mmdhl.GetInstance(ent) local center=mmdhl.LightingOrigin(ent)
  -- The native module keeps the per-part material names; register them once per asset.
- if ent.MMDNamesSent~=id then
-  local color,depthMats=materials(id,info,false),materials(id,info,true)
-  local names={color={},depth={}}
-  for i,mat in ipairs(color) do names.color[i]=info.materials[i].path names.depth[i]='!'..depthMats[i]:GetName() end
-  local ok,err=native.SetInstanceMaterials(instance,util.TableToJSON(names)) if not ok then mmdhl.renderError=err return end
-  ent.MMDNamesSent=id
+ if ent.MMDNamesSent~=id or ent.MMDNamesVersion~=mmdhl.sourceTextureVersion then
+  if SysTime()<(ent.MMDNamesRetry or 0) then return end
+  local color,err=materials(id,info,false) if not color then mmdhl.renderError=err return end
+  local depthMats,depthError=materials(id,info,true)
+  if not depthMats then mmdhl.renderError=depthError if depth then return end end
+  -- Colour can draw while depth textures upload. The native API requires an
+  -- entry for every slot; empty depth names stay private to this pending map
+  -- and are never drawn. Only a complete registration earns MMDNamesSent.
+  if depthMats or ent.MMDColorNamesSent~=id or ent.MMDNamesVersion~=mmdhl.sourceTextureVersion then
+   local names={color={},depth={}}
+   for i in ipairs(color) do names.color[i]=info.materials[i].path names.depth[i]=depthMats and '!'..depthMats[i]:GetName() or '' end
+   local ok,err=native.SetInstanceMaterials(instance,util.TableToJSON(names))
+   if not ok then ent.MMDNamesRetry=SysTime()+.25 mmdhl.renderError=err return end
+   ent.MMDNamesRetry=nil ent.MMDColorNamesSent=id ent.MMDNamesVersion=mmdhl.sourceTextureVersion
+   ent.MMDNamesSent=depthMats and id or nil
+  end
  end
  if not depth then
   render.SuppressEngineLighting(false) render.SetLightingOrigin(center)
@@ -256,12 +315,16 @@ function mmdhl.UpdateNativeVisuals(create)
   local id,info=ready(ent)
   local firstPerson=mmdhl.IsLocalFirstPerson and mmdhl.IsLocalFirstPerson(ent)
   local alpha=(ent:GetNoDraw() or not ent.MMDPresentationFrame or firstPerson) and 0 or ent:GetColor().a/255
-  if info and ent.MMDShadowAlpha~=alpha then
+  if info and (ent.MMDShadowAlpha~=alpha or ent.MMDShadowVersion~=mmdhl.sourceTextureVersion) and SysTime()>=(ent.MMDShadowRetry or 0) then
    local instance=mmdhl.GetInstance(ent) local index=mmdhl.ShadowKey(ent,instance)
-     local ok,err=native.RegisterSourceShadow(ent:EntIndex()>=0 and ent:EntIndex() or ent:GetPhysicsObject(),instance,util.TableToJSON(shadowNames(id,info)),alpha)
-   if ok then
-    if ent.MMDShadowAlpha==nil then ent:CreateShadow() ent:CallOnRemove('MMDHL.NativeShadowRemove',function() native.RemoveSourceShadow(index) end) end
-    ent.MMDShadowAlpha=alpha
+   local names,err=shadowNames(id,info)
+   if names then
+    local ok
+    ok,err=native.RegisterSourceShadow(ent:EntIndex()>=0 and ent:EntIndex() or ent:GetPhysicsObject(),instance,util.TableToJSON(names),alpha)
+    if ok then
+     if ent.MMDShadowAlpha==nil then ent:CreateShadow() ent:CallOnRemove('MMDHL.NativeShadowRemove',function() native.RemoveSourceShadow(index) end) end
+     ent.MMDShadowAlpha=alpha ent.MMDShadowVersion=mmdhl.sourceTextureVersion ent.MMDShadowRetry=nil
+    else ent.MMDShadowRetry=SysTime()+.25 mmdhl.renderError=err end
    else mmdhl.renderError=err end
   end
   -- Idle characters keep their snapshot; the engine shadow is re-rendered only when the geometry sequence changed.

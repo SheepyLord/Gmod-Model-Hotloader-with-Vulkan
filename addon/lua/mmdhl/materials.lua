@@ -266,3 +266,19 @@ function mmdhl.GetMaterialAsset(path)
  local entry=util.JSONToTable(file.Read('mmd_hotloader/names/assets/'..short..'.json','DATA') or '')
  if entry and isstring(entry.id) and #entry.id==64 and not entry.id:find('[^a-f0-9]') then return entry.id end
 end
+
+local materialAssetMounts={}
+-- Saved material-editor rules load before the model's first presentation. Mount
+-- the verified asset package before Material/CreateMaterial can cache a lookup
+-- of a VMT or VTF that is not on Source's search path yet. Only successful mounts
+-- are remembered: a model arriving from a server can finish downloading later.
+function mmdhl.MountMaterialAsset(path)
+ if not CLIENT or not isstring(path) or not mmdhl.MountPackage then return false end
+ local short=path:match('^mmd/([a-f0-9]+)/[^/]+$')
+ if not short or #short~=16 then return false end
+ if materialAssetMounts[short] then return true end
+ local asset=mmdhl.GetMaterialAsset(path) if not asset then return false end
+ local ok,err=mmdhl.MountPackage('data/mmd_hotloader/assets/'..asset..'/materials-v5.gma')
+ if ok then materialAssetMounts[short]=true end
+ return ok==true,err
+end

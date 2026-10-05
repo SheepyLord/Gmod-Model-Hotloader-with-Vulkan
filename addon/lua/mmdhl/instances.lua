@@ -22,6 +22,7 @@ local function release(ent)
  ent.MMDHLClientInstance=nil ent.MMDHLAttachmentKey=nil ent.MMDShadowAlpha=nil ent.MMDVisibilitySent=nil ent.MMDHLManualApplied=nil
  ent.MMDRenderPose=nil ent.MMDPresentationFrame=nil ent.MMDPresentationStopped=nil ent.MMDPhysicsLOD=nil ent.MMDHLClientCollisionFlags=nil
  ent.MMDNamesSent=nil ent.MMDOverrideFrame=nil ent.MMDOverrideNext=nil ent.MMDOverrideJson=nil ent.MMDShadowSequence=nil ent.MMDHLClientMorphs=nil ent.MMDHLMorphBuffer=nil
+ ent.MMDColorNamesSent=nil ent.MMDNamesVersion=nil ent.MMDNamesRetry=nil ent.MMDShadowVersion=nil ent.MMDShadowRetry=nil
  ent.MMDVisibilityNext=nil ent.MMDHLBoundsSequence=nil ent.MMDHLBatchEntry=nil
  ent.MMDHLLightFrame=nil ent.MMDHLLightOrigin=nil ent.MMDHLLightBone=nil
  if IsValid(ent.MMDHLVisual) then

@@ -1,3 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 patches/**/*.patch -text
+# Unified diff context prefixes intentionally contain leading/trailing space.
+integrations/*.patch -text -whitespace

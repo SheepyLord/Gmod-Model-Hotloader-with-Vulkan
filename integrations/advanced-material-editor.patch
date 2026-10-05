@@ -1,8 +1,104 @@
+diff --git a/dev/test_rtx_preview.py b/dev/test_rtx_preview.py
+index a827dab..cb621c1 100644
+--- a/dev/test_rtx_preview.py
++++ b/dev/test_rtx_preview.py
+@@ -181,6 +181,8 @@ function render.ModelMaterialOverride( material, slot )
+ end
+ """
+ )
++with open("lua/advmat/sh_15_mmd.lua", encoding="utf-8") as handle:
++    lua.execute(handle.read())
+ lua.execute(model_source)
+ lua.execute(
+     r"""
+diff --git a/dev/test_shared_boot.py b/dev/test_shared_boot.py
+index b9ca13c..3e6d72d 100644
+--- a/dev/test_shared_boot.py
++++ b/dev/test_shared_boot.py
+@@ -1,5 +1,7 @@
+ """Stubbed Garry's Mod standard library, shared by the test scripts."""
+ 
++from pathlib import Path
++
+ BOOT = r"""
+ -- ===== minimal Garry's Mod standard library ==============================
+ SERVER, CLIENT = true, false
+@@ -194,3 +196,7 @@ surface = {
+ 
+ hook = { Add = function() end, Run = function() end, Remove = function() end }
+ """
++
++# The production loader globs all sh_ modules. Focused harnesses list only the
++# layers they exercise, so include the real optional provider for those too.
++BOOT += (Path(__file__).resolve().parents[1] / "lua/advmat/sh_15_mmd.lua").read_text(encoding="utf-8")
 diff --git a/lua/advmat/cl_50_apply.lua b/lua/advmat/cl_50_apply.lua
-index 4ada48f..541538f 100644
+index 4ada48f..bd3f7b4 100644
 --- a/lua/advmat/cl_50_apply.lua
 +++ b/lua/advmat/cl_50_apply.lua
-@@ -665,7 +665,7 @@ function A.Refresh( ent )
+@@ -30,6 +30,7 @@ A.Built     = A.Built     or {}  -- [materialName] = { mat = IMaterial, kv = {ap
+ A.BaseKV    = A.BaseKV    or {}  -- [materialPath] = { kv, shader, live } or false
+ A.ClientSet = A.ClientSet or {}  -- [entIndex] = { [subIndex] = materialName } set by us clientside
+ A.DecalOverrides = A.DecalOverrides or {} -- [entIndex] = saved RenderOverride state
++A.WaitingForMMD = A.WaitingForMMD or false
+ 
+ A.WorldBackup  = A.WorldBackup  or {}  -- [path] = { [key] = original value }
+ A.WorldApplied = A.WorldApplied or {}  -- [path] = { [key] = true }
+@@ -49,6 +50,25 @@ function A.ReadBase( path )
+ 	path = AdvMat.NormalizeMaterial( path )
+ 	if path == "" then return nil end
+ 
++	-- Rules can arrive before the Hotloader, its package, or a large VTF upload.
++	-- Do not ask Source to resolve an unmounted texture, or cache that first
++	-- incomplete answer as the base of every future edit with this material name.
++	local prepared, mmd = AdvMat.PrepareMMDMaterial( path )
++	if not prepared then
++		A.WaitingForMMD = true
++		return nil, nil, nil, true
++	end
++	local mat
++	if mmd then
++		mat = Material( path )
++		local texture = mat and not mat:IsError() and mat:GetTexture( "$basetexture" )
++		if not texture or ( texture.IsError and texture:IsError() ) then
++			A.WaitingForMMD = true
++			return nil, nil, nil, true
++		end
++		if A.BaseKV[ path ] == false then A.BaseKV[ path ] = nil end
++	end
++
+ 	local cached = A.BaseKV[ path ]
+ 	if cached ~= nil then
+ 		if cached == false then return nil end
+@@ -57,7 +77,7 @@ function A.ReadBase( path )
+ 
+ 	local kv, shader = AdvMat.ParseVMT( path )
+ 
+-	local mat  = Material( path )
++	mat = mat or Material( path )
+ 	local live = ( mat and not mat:IsError() ) and mat or nil
+ 
+ 	if not kv then
+@@ -110,7 +130,8 @@ end
+ --- The full key value set a rule asks for: the base material's own values
+ --- with the rule's parameters merged over them.
+ function A.DesiredKV( basePath, params )
+-	local kv, baseShader = A.ReadBase( basePath )
++	local kv, baseShader, _, pending = A.ReadBase( basePath )
++	if pending then return nil, nil, true end
+ 
+ 	local out = {}
+ 	for k, v in pairs( kv or {} ) do out[ k ] = v end
+@@ -312,7 +333,8 @@ function A.BuildForRule( rule )
+ 		base = AdvMat.NormalizeMaterial( rule.key or "" )
+ 	end
+ 
+-	local desired, baseShader = A.DesiredKV( base, rule.params )
++	local desired, baseShader, pending = A.DesiredKV( base, rule.params )
++	if pending then return nil end
+ 	local shader = rule.shader
+ 	if not shader or shader == "" then shader = baseShader or "VertexLitGeneric" end
+ 
+@@ -665,7 +687,7 @@ function A.Refresh( ent )
  	end
  
  	local applied = A.ClientSet[ ei ] or {}
@@ -11,7 +107,19 @@ index 4ada48f..541538f 100644
  	local any     = false
  
  	-- This must run even in server-authoritative mode: the server can select a
-@@ -805,7 +805,7 @@ function A.SweepForMissing()
+@@ -743,6 +765,11 @@ end )
+ -- write it again periodically. This only runs while something is actually
+ -- being drawn clientside.
+ timer.Create( "AdvMat.Reapply", 0.25, 0, function()
++	if A.WaitingForMMD then
++		A.WaitingForMMD = false
++		A.EnsureRuleMaterials()
++		A.RefreshAll()
++	end
+ 	if table.IsEmpty( A.ClientSet ) then return end
+ 
+ 	for ei, slots in pairs( A.ClientSet ) do
+@@ -805,7 +832,7 @@ function A.SweepForMissing()
  
  	for _, ent in ipairs( ents.GetAll() ) do
  		if IsValid( ent ) and ent:GetModel() then
@@ -232,8 +340,9 @@ diff --git a/lua/advmat/sh_15_mmd.lua b/lua/advmat/sh_15_mmd.lua
 new file mode 100644
 --- /dev/null
 +++ b/lua/advmat/sh_15_mmd.lua
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,32 @@
 +-- Optional provider: native limits remain unchanged for ordinary Source models.
++AdvMat=AdvMat or {}
 +function AdvMat.GetMaterialLimit(target)
 + if not mmdhl or not mmdhl.GetRigForModel then return AdvMat.MAX_SUBMATERIALS end
 + if isnumber(target) then target=Entity(target) end
@@ -253,4 +362,14 @@ new file mode 100644
 +end
 +function AdvMat.AttachMMDPreview(ent)
 + return CLIENT and mmdhl and mmdhl.AttachEditorPreview and mmdhl.AttachEditorPreview(ent)
++end
++-- The Hotloader mounts a model's materials when it first draws the model; rule
++-- materials are built on join, often earlier. A texture Source looks up before
++-- its package is mounted stays missing for the session, for the model's own
++-- materials too (wrong look, "native_render.lua:60" errors). Mount it first.
++function AdvMat.PrepareMMDMaterial(path)
++ local short=isstring(path) and path:match('^mmd/([a-f0-9]+)/[^/]+$')
++ if not short or #short~=16 then return true,false end
++ local ready=CLIENT and mmdhl and mmdhl.MountMaterialAsset and mmdhl.MountMaterialAsset(path)
++ return ready==true,true
 +end
