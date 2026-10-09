@@ -89,14 +89,20 @@ function mmdhl.Spawn(p,id,options,done,progress,flags)
     fitSequence=fitSequence+1 local started=SysTime() local timerName='mmdhl_fit_'..fitSequence
     -- A saved profile that no longer builds (an older module, a rejected shape) must not
     -- block the spawn: it is retried once without what the saved file added, and the player is told.
-    local function failed(reason)
+    -- fit: the native fitter's (English) reason. Only its verdicts on the skeleton (no bone
+    -- for a body part, no height) reach players inside a token that says what it means; a
+    -- rejected shape, mass or setting is said as it is. The physics editor (any flags,
+    -- every operation) reads the raw reason itself.
+    local function failed(reason,fit)
      if not retried and (savedPhysics or savedStyles) then
       local retry=table.Copy(opts)
       if savedPhysics then retry.physicsOverrides={} retry.physicsEditor=nil end
       if savedStyles then for _,o in pairs(retry.collisionOverrides or {}) do if istable(o) then o.style=nil end end end
       notice(p,L('physics_editor.notice.saved_failed',{reason=reason})) attempt(retry,true) return
      end
-     finish(nil,reason)
+     local verdict=fit and not flags and tostring(reason):lower()
+     verdict=verdict and (verdict:find('no bone',1,true) or verdict:find('landmark',1,true) or verdict:find('no height',1,true))
+     finish(nil,verdict and L('server.error.fit_failed',{reason=reason}) or reason)
     end
     timer.Create(timerName,.05,0,function()
      if not IsValid(p) then timer.Remove(timerName) finish(nil,L'server.error.player_disconnected') return end
@@ -104,7 +110,7 @@ function mmdhl.Spawn(p,id,options,done,progress,flags)
      local ready,err=native.RequestCarrierFit(id,util.TableToJSON(opts))
      if ready==false and SysTime()-started<30 then return end
      timer.Remove(timerName)
-     if not ready then failed(err or L'server.error.fit_timeout') return end
+     if not ready then if err then failed(err,true) else failed(L'server.error.fit_timeout') end return end
      local ok,e=xpcall(function() mmdhl.SpawnNative(p,id,opts,function(ent,reason)
       if IsValid(ent) then finish(ent) else failed(reason or L'server.error.native_ragdoll_failed') end
      end,flags) end,debug.traceback)

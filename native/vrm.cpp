@@ -7,6 +7,7 @@
 #include "vrm.hpp"
 #include "humanoid_slots.hpp"
 #include "pmx_writer.hpp"
+#include "import_error.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -41,6 +42,11 @@ Vec3 vec3(const Json& j,Vec3 fallback){if(j.is_array()&&j.size()>=3&&j[0].is_num
  if(j.is_object()&&j.contains("x"))return {number(j,"x",0),number(j,"y",0),number(j,"z",0)};return fallback;}
 Vec4 vec4(const Json& j,Vec4 fallback){if(j.is_array()&&j.size()>=4){Vec4 v;for(int k=0;k<4;k++){if(!j[k].is_number())return fallback;v[k]=j[k].get<float>();}return v;}return fallback;}
 bool finite(Vec3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
+// Every failure names the glTF element at fault (code vrm.truncated, vrm.data, vrm.container,
+// vrm.external, vrm.image, vrm.humanoid, vrm.no_skeleton or vrm.no_geometry); the mesh and
+// primitive scopes around it join its "where", and JSON errors inside become vrm.json.
+[[noreturn]] void vrmFail(const char* code,const std::string& message,Json at=Json(),Json details=Json::object()){if(!at.is_null())details["where"]=Json::array({at});importFail(code,message,std::move(details));}
+std::string number(size_t v){return thousands(v);}
 
 Bytes base64(std::string_view s){
  auto value=[](char c)->int{if(c>='A'&&c<='Z')return c-'A';if(c>='a'&&c<='z')return c-'a'+26;if(c>='0'&&c<='9')return c-'0'+52;if(c=='+'||c=='-')return 62;if(c=='/'||c=='_')return 63;return -1;};
@@ -53,36 +59,38 @@ Bytes base64(std::string_view s){
 struct Document {
  Json j;std::vector<Bytes> owned;std::vector<std::span<const unsigned char>> buffers;
  std::span<const unsigned char> view(int index)const{
-  auto& views=j.at("bufferViews");if(index<0||size_t(index)>=views.size())throw std::runtime_error("Invalid VRM buffer view reference");
+  auto& views=j.at("bufferViews");if(index<0||size_t(index)>=views.size())vrmFail("vrm.data","Invalid VRM file: buffer view "+std::to_string(index)+" does not exist (the file has "+number(views.size())+")",place("buffer_view",index));
+  ImportScope scope("buffer_view",index,{});
   auto& v=views[index];int buffer=v.at("buffer");size_t offset=v.value("byteOffset",size_t(0)),length=v.at("byteLength");
-  if(buffer<0||size_t(buffer)>=buffers.size())throw std::runtime_error("Invalid VRM buffer reference");
-  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)throw std::runtime_error("Truncated VRM file: a buffer view points past its buffer");
+  if(buffer<0||size_t(buffer)>=buffers.size())vrmFail("vrm.data","Invalid VRM file: buffer view "+std::to_string(index)+" uses buffer "+std::to_string(buffer)+", which does not exist (the file has "+number(buffers.size())+")",Json(),{{"buffer",buffer}});
+  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)vrmFail("vrm.truncated","Truncated VRM file: buffer view "+std::to_string(index)+" reads bytes "+number(offset)+" to "+number(offset+length)+" of buffer "+std::to_string(buffer)+", which has only "+number(data.size()),Json(),{{"buffer",buffer},{"byteOffset",offset},{"byteLength",length},{"bufferSize",data.size()}});
   return data.subspan(offset,length);
  }
 };
 Document open(std::span<const unsigned char> b){
- if(b.size()<20||std::memcmp(b.data(),"glTF",4))throw std::runtime_error("Not a VRM file: the glTF binary (GLB) header is missing");
- if(le32(b.data()+4)!=2)throw std::runtime_error("Unsupported glTF container version "+std::to_string(le32(b.data()+4))+"; VRM uses glTF 2.0");
+ if(b.size()<4||std::memcmp(b.data(),"glTF",4))vrmFail("vrm.container","Not a VRM file: the glTF binary (GLB) header is missing",place("header"));
+ if(b.size()<20)vrmFail("vrm.truncated","Truncated VRM file: it ends after "+number(b.size())+" bytes, inside its GLB header; the file is incomplete",place("header"),{{"offset",b.size()},{"size",b.size()}});
+ if(le32(b.data()+4)!=2)vrmFail("vrm.container","Unsupported glTF container version "+std::to_string(le32(b.data()+4))+"; VRM uses glTF 2.0",place("header"));
  size_t length=std::min<size_t>(le32(b.data()+8),b.size());Document d;bool json=false;std::span<const unsigned char> bin;
  for(size_t at=12;at+8<=length;){
   uint32_t size=le32(b.data()+at),type=le32(b.data()+at+4);at+=8;
-  if(size>length-at)throw std::runtime_error("Truncated VRM file: a GLB chunk ends past the end of the file");
-  if(type==0x4E4F534Au&&!json){d.j=Json::parse(b.begin()+at,b.begin()+at+size);json=true;}
+  if(size>length-at)vrmFail("vrm.truncated","Truncated VRM file: a GLB chunk of "+number(size)+" bytes starts at byte "+number(at)+" of "+number(length)+"; the file is incomplete",place("header"),{{"offset",at},{"length",size},{"size",length}});
+  if(type==0x4E4F534Au&&!json){ImportScope scope("header",-1,{});d.j=Json::parse(b.begin()+at,b.begin()+at+size);json=true;}
   else if(type==0x004E4942u&&bin.empty())bin=b.subspan(at,size);
   at+=size;
  }
- if(!json)throw std::runtime_error("Truncated VRM file: the glTF JSON chunk is missing");
+ if(!json)vrmFail("vrm.truncated","Truncated VRM file: the glTF JSON chunk is missing",place("header"));
  auto& buffers=arr(d.j,"buffers");d.owned.resize(buffers.size());
  for(size_t i=0;i<buffers.size();i++){
   auto uri=string(buffers[i],"uri");
-  if(uri.empty()){if(i!=0)throw std::runtime_error("VRM buffer "+std::to_string(i)+" has no data");d.buffers.push_back(bin);continue;}
-  auto comma=uri.find(',');if(!uri.starts_with("data:")||comma==std::string::npos||uri.substr(0,comma).find(";base64")==std::string::npos)throw std::runtime_error("The VRM file refers to an external buffer ("+uri.substr(0,64)+"); only self-contained .vrm files are supported");
+  if(uri.empty()){if(i!=0)vrmFail("vrm.data","Invalid VRM file: buffer "+std::to_string(i)+" has no data",place("buffer",int64_t(i)));d.buffers.push_back(bin);continue;}
+  auto comma=uri.find(',');if(!uri.starts_with("data:")||comma==std::string::npos||uri.substr(0,comma).find(";base64")==std::string::npos)vrmFail("vrm.external","The VRM file refers to an external buffer ("+uri.substr(0,64)+"); only self-contained .vrm files are supported",place("buffer",int64_t(i)));
   d.owned[i]=base64(std::string_view(uri).substr(comma+1));d.buffers.push_back(d.owned[i]);
  }
  return d;
 }
-int componentSize(int type){switch(type){case 5120:case 5121:return 1;case 5122:case 5123:return 2;case 5125:case 5126:return 4;}throw std::runtime_error("Invalid VRM accessor component type "+std::to_string(type));}
-int componentCount(const std::string& type){if(type=="SCALAR")return 1;if(type=="VEC2")return 2;if(type=="VEC3")return 3;if(type=="VEC4"||type=="MAT2")return 4;if(type=="MAT3")return 9;if(type=="MAT4")return 16;throw std::runtime_error("Invalid VRM accessor type "+type);}
+int componentSize(int type){switch(type){case 5120:case 5121:return 1;case 5122:case 5123:return 2;case 5125:case 5126:return 4;}vrmFail("vrm.data","Invalid VRM file: unknown accessor component type "+std::to_string(type));}
+int componentCount(const std::string& type){if(type=="SCALAR")return 1;if(type=="VEC2")return 2;if(type=="VEC3")return 3;if(type=="VEC4"||type=="MAT2")return 4;if(type=="MAT3")return 9;if(type=="MAT4")return 16;vrmFail("vrm.data","Invalid VRM file: unknown accessor type \""+type+"\"");}
 float component(const unsigned char* p,int type,bool normalized){
  switch(type){
   case 5120:{int8_t v;std::memcpy(&v,p,1);return normalized?std::max(v/127.f,-1.f):float(v);}
@@ -93,7 +101,7 @@ float component(const unsigned char* p,int type,bool normalized){
   default:{float v;std::memcpy(&v,p,4);return v;}
  }
 }
-uint32_t unsignedComponent(const unsigned char* p,int type){switch(type){case 5121:return p[0];case 5123:{uint16_t v;std::memcpy(&v,p,2);return v;}case 5125:{uint32_t v;std::memcpy(&v,p,4);return v;}}throw std::runtime_error("Invalid VRM index component type");}
+uint32_t unsignedComponent(const unsigned char* p,int type){switch(type){case 5121:return p[0];case 5123:{uint16_t v;std::memcpy(&v,p,2);return v;}case 5125:{uint32_t v;std::memcpy(&v,p,4);return v;}}vrmFail("vrm.data","Invalid VRM file: index component type "+std::to_string(type)+" is not an unsigned integer");}
 struct Accessor {size_t count=0;int components=0;std::vector<float> values;float at(size_t i,int c)const{return values[i*components+c];}};
 // Offsets, strides and counts come from the file: compare by division so no product can wrap.
 bool fits(std::span<const unsigned char> data,size_t offset,size_t stride,size_t element,size_t count){
@@ -101,32 +109,33 @@ bool fits(std::span<const unsigned char> data,size_t offset,size_t stride,size_t
 }
 size_t stride(const Document& d,const Json& a,size_t element){size_t s=d.j["bufferViews"][int(a["bufferView"])].value("byteStride",size_t(0));return s?s:element;}
 Accessor accessor(const Document& d,int index){
- auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())throw std::runtime_error("Invalid VRM accessor reference");
- auto& a=list[index];Accessor out;out.count=a.at("count");out.components=componentCount(a.at("type"));int type=a.at("componentType");bool normalized=a.value("normalized",false);int size=componentSize(type);
- if(out.components>4&&size!=4)throw std::runtime_error("Unsupported packed matrix accessor in the VRM file");
- if(out.count>(1ull<<28)/out.components)throw std::runtime_error("VRM accessor is too large");
+ auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" does not exist (the file has "+number(list.size())+")",place("accessor",index));
+ ImportScope scope("accessor",index,{});auto& a=list[index];Accessor out;out.count=a.at("count");out.components=componentCount(a.at("type"));int type=a.at("componentType");bool normalized=a.value("normalized",false);int size=componentSize(type);
+ if(out.components>4&&size!=4)vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" is a packed matrix, which the importer cannot read");
+ if(out.count>(1ull<<28)/out.components)vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(out.count)+" elements, more than the importer reads",Json(),{{"count",out.count}});
  size_t element=size_t(size)*out.components;std::span<const unsigned char> data;size_t offset=0,step=element;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,element);
-  if(!fits(data,offset,step,element,out.count))throw std::runtime_error("Truncated VRM file: an accessor reads past its buffer view");}
+  if(!fits(data,offset,step,element,out.count))vrmFail("vrm.truncated","Truncated VRM file: accessor "+std::to_string(index)+" reads "+number(out.count)+" elements past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",out.count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  out.values.assign(out.count*out.components,0.f);
  if(viewed)for(size_t i=0;i<out.count;i++)for(int c=0;c<out.components;c++)out.values[i*out.components+c]=component(data.data()+offset+i*step+size_t(c)*size,type,normalized);
  if(a.contains("sparse")){
   auto& s=a["sparse"];size_t count=s.at("count");auto& ix=s.at("indices");auto& vx=s.at("values");int indexType=ix.at("componentType");int indexSize=componentSize(indexType);
-  if(count>out.count)throw std::runtime_error("Invalid sparse accessor in the VRM file");
+  if(count>out.count)vrmFail("vrm.data","Invalid VRM file: sparse accessor "+std::to_string(index)+" replaces "+number(count)+" of only "+number(out.count)+" elements");
   auto indices=d.view(ix.at("bufferView")),values=d.view(vx.at("bufferView"));size_t io=ix.value("byteOffset",size_t(0)),vo=vx.value("byteOffset",size_t(0));
-  if(count&&(io>indices.size()||indexSize*count>indices.size()-io||vo>values.size()||element*count>values.size()-vo))throw std::runtime_error("Truncated VRM file: a sparse accessor reads past its data");
-  for(size_t k=0;k<count;k++){size_t target=unsignedComponent(indices.data()+io+k*indexSize,indexType);if(target>=out.count)throw std::runtime_error("Invalid sparse accessor index in the VRM file");
+  if(count&&(io>indices.size()||indexSize*count>indices.size()-io||vo>values.size()||element*count>values.size()-vo))vrmFail("vrm.truncated","Truncated VRM file: sparse accessor "+std::to_string(index)+" reads past its data");
+  for(size_t k=0;k<count;k++){size_t target=unsignedComponent(indices.data()+io+k*indexSize,indexType);if(target>=out.count)vrmFail("vrm.data","Invalid VRM file: sparse accessor "+std::to_string(index)+" replaces element "+number(target)+" of only "+number(out.count));
    for(int c=0;c<out.components;c++)out.values[target*out.components+c]=component(values.data()+vo+k*element+size_t(c)*size,type,normalized);}
  }
- for(float v:out.values)if(!std::isfinite(v))throw std::runtime_error("The VRM file contains non-finite vertex or transform data");
+ for(size_t k=0;k<out.values.size();k++)if(!std::isfinite(out.values[k]))vrmFail("vrm.data","The VRM file contains non-finite vertex or transform data: element "+number(k/out.components)+" of accessor "+std::to_string(index)+" is not a number",Json(),{{"element",k/out.components}});
  return out;
 }
 std::vector<uint32_t> indexAccessor(const Document& d,int index){
- auto& a=d.j.at("accessors").at(index);int type=a.at("componentType");if(a.at("type")!="SCALAR"||type==5126)throw std::runtime_error("Invalid VRM triangle index accessor");
- size_t count=a.at("count");int size=componentSize(type);if(count>(1ull<<28))throw std::runtime_error("VRM accessor is too large");
+ auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" does not exist (the file has "+number(list.size())+")",place("accessor",index));
+ ImportScope scope("accessor",index,{});auto& a=list[index];int type=a.at("componentType");if(a.at("type")!="SCALAR"||type==5126)vrmFail("vrm.data","Invalid VRM file: triangle index accessor "+std::to_string(index)+" does not hold whole numbers");
+ size_t count=a.at("count");int size=componentSize(type);if(count>(1ull<<28))vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(count)+" elements, more than the importer reads",Json(),{{"count",count}});
  std::span<const unsigned char> data;size_t offset=0,step=size;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,size);
-  if(!fits(data,offset,step,size,count))throw std::runtime_error("Truncated VRM file: triangle indices read past their buffer view");}
+  if(!fits(data,offset,step,size,count))vrmFail("vrm.truncated","Truncated VRM file: triangle index accessor "+std::to_string(index)+" reads past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  std::vector<uint32_t> out(count,0);
  if(viewed)for(size_t i=0;i<count;i++)out[i]=unsignedComponent(data.data()+offset+i*step,type);
  if(a.contains("sparse")){auto acc=accessor(d,index);for(size_t i=0;i<count;i++)out[i]=uint32_t(acc.values[i]);}
@@ -176,28 +185,29 @@ struct Converter {
  std::vector<Target> targets;std::map<std::pair<int,int>,std::vector<int>> targetsOfMeshIndex; // (mesh, target) -> targets
  std::map<std::string,Bytes> textures;std::map<std::tuple<int,int,int>,int> textureIndex;std::vector<std::string> texturePaths;
  std::vector<std::string> meshNames;
+ std::string meshText(int mesh,size_t primitive)const{return "primitive "+std::to_string(primitive)+" of "+placeText(place("mesh",mesh,string(arr(d.j,"meshes")[mesh],"name")));}
 
  void warn(std::string s){if(std::find(warnings.begin(),warnings.end(),s)==warnings.end())warnings.push_back(std::move(s));}
  void note(std::string s){if(std::find(notes.begin(),notes.end(),s)==notes.end())notes.push_back(std::move(s));}
 
  void readNodes(){
   auto& list=arr(d.j,"nodes");nodes.resize(list.size());
-  for(size_t i=0;i<list.size();i++){auto& n=list[i];auto& out=nodes[i];out.name=string(n,"name");out.mesh=integer(n,"mesh",-1);out.skin=integer(n,"skin",-1);
+  for(size_t i=0;i<list.size();i++){auto& n=list[i];auto& out=nodes[i];out.name=string(n,"name");out.mesh=integer(n,"mesh",-1);out.skin=integer(n,"skin",-1);ImportScope scope("node",int64_t(i),out.name);
    if(n.contains("matrix")&&n["matrix"].is_array()&&n["matrix"].size()==16){float m[16];for(int k=0;k<16;k++)m[k]=n["matrix"][k].get<float>();out.local=glm::make_mat4(m);}
    else{Vec3 t=vec3(n.value("translation",Json()),Vec3(0)),s=vec3(n.value("scale",Json()),Vec3(1));Vec4 r=vec4(n.value("rotation",Json()),Vec4(0,0,0,1));
     glm::quat q(r.w,r.x,r.y,r.z);if(glm::length(q)<1e-8f)q=glm::quat(1,0,0,0);out.local=glm::translate(Mat4(1.f),t)*glm::mat4_cast(glm::normalize(q))*glm::scale(Mat4(1.f),s);}
-   for(auto& c:arr(n,"children")){int child=c.get<int>();if(child<0||size_t(child)>=list.size())throw std::runtime_error("Invalid VRM node hierarchy");out.children.push_back(child);}
+   for(auto& c:arr(n,"children")){int child=c.get<int>();if(child<0||size_t(child)>=list.size())vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",int64_t(i),out.name))+" lists child "+std::to_string(child)+", which does not exist (the file has "+number(list.size())+" nodes)",Json(),{{"child",child}});out.children.push_back(child);}
   }
-  for(size_t i=0;i<nodes.size();i++)for(int c:nodes[i].children){if(nodes[c].parent>=0)throw std::runtime_error("Invalid VRM node hierarchy: node "+std::to_string(c)+" has two parents");nodes[c].parent=int(i);}
+  for(size_t i=0;i<nodes.size();i++)for(int c:nodes[i].children){if(nodes[c].parent>=0)vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",c,nodes[c].name))+" has two parents, "+placeText(place("node",nodes[c].parent,nodes[nodes[c].parent].name))+" and "+placeText(place("node",int64_t(i),nodes[i].name)),place("node",c,nodes[c].name));nodes[c].parent=int(i);}
   // Scene roots first, in scene order; then any other roots.
   std::vector<bool> isRoot(nodes.size(),false);auto& scenes=arr(d.j,"scenes");int scene=integer(d.j,"scene",0);
   if(scene>=0&&size_t(scene)<scenes.size())for(auto& r:arr(scenes[scene],"nodes")){int n=r.get<int>();if(n>=0&&size_t(n)<nodes.size()&&nodes[n].parent<0&&!isRoot[n]){isRoot[n]=true;roots.push_back(n);}}
   for(size_t i=0;i<nodes.size();i++)if(nodes[i].parent<0&&!isRoot[i]){isRoot[i]=true;roots.push_back(int(i));}
   // Later walks (bones, meshes, springs) recurse over the same tree, so its depth is bounded here.
-  std::vector<int> state(nodes.size(),0);std::function<void(int,const Mat4&,int)> visit=[&](int i,const Mat4& parent,int depth){if(state[i])throw std::runtime_error("Invalid VRM node hierarchy: cycle at node "+std::to_string(i));
-   if(depth>MaxNodeDepth)throw std::runtime_error("Invalid VRM node hierarchy: nodes are nested more than "+std::to_string(MaxNodeDepth)+" levels deep");state[i]=1;nodes[i].world=parent*nodes[i].local;for(int c:nodes[i].children)visit(c,nodes[i].world,depth+1);};
+  std::vector<int> state(nodes.size(),0);std::function<void(int,const Mat4&,int)> visit=[&](int i,const Mat4& parent,int depth){if(state[i])vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",i,nodes[i].name))+" is its own ancestor",place("node",i,nodes[i].name));
+   if(depth>MaxNodeDepth)vrmFail("vrm.data","Invalid VRM node hierarchy: nodes are nested more than "+std::to_string(MaxNodeDepth)+" levels deep, at "+placeText(place("node",i,nodes[i].name)),place("node",i,nodes[i].name));state[i]=1;nodes[i].world=parent*nodes[i].local;for(int c:nodes[i].children)visit(c,nodes[i].world,depth+1);};
   for(int r:roots)visit(r,Mat4(1.f),0);
-  for(size_t i=0;i<nodes.size();i++)if(!state[i])throw std::runtime_error("Invalid VRM node hierarchy: node "+std::to_string(i)+" is not reachable");
+  for(size_t i=0;i<nodes.size();i++)if(!state[i])vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",int64_t(i),nodes[i].name))+" is not reachable from a scene root",place("node",int64_t(i),nodes[i].name));
  }
  Vec3 worldPosition(int n)const{return Vec3(nodes[n].world[3]);}
 
@@ -207,7 +217,7 @@ struct Converter {
   boneOf.assign(nodes.size(),-1);std::vector<int> order;std::function<void(int)> dfs=[&](int i){if(keep[i]){boneOf[i]=int(order.size());order.push_back(i);}for(int c:nodes[i].children)dfs(c);};for(int r:roots)dfs(r);
   std::map<int,std::string> humanOf;for(auto& [name,node]:human)humanOf[node]=name;
   std::set<std::string> used;
-  for(int n:order){PBone b;b.position=axes.point(worldPosition(n));if(!finite(b.position))throw std::runtime_error("The VRM skeleton has non-finite bone positions");
+  for(int n:order){PBone b;b.position=axes.point(worldPosition(n));if(!finite(b.position))vrmFail("vrm.data","The VRM skeleton has non-finite bone positions: "+placeText(place("node",n,nodes[n].name))+" is not at a number position",place("node",n,nodes[n].name));
    for(int p=nodes[n].parent;p>=0;p=nodes[p].parent)if(boneOf[p]>=0){b.parent=boneOf[p];break;}
    auto h=humanOf.find(n);if(h!=humanOf.end())for(auto& e:humanNames)if(h->second==e.vrm){b.name=e.jp;b.english=e.en;break;}
    bones.push_back(b);
@@ -216,7 +226,7 @@ struct Converter {
   for(size_t i=0;i<order.size();i++){auto& b=bones[i];if(!b.name.empty())continue;int n=order[i];std::string name=nodes[n].name.empty()?"node_"+std::to_string(n):nodes[n].name;
    if(used.contains(name))name+="_"+std::to_string(n);used.insert(name);b.name=name;b.english=name;}
   for(size_t i=0;i<order.size();i++){auto& children=nodes[order[i]].children;for(int c:children)if(boneOf[c]>=0){bones[i].tail=boneOf[c];break;}}
-  if(bones.empty())throw std::runtime_error("The VRM file has no skeleton");
+  if(bones.empty())vrmFail("vrm.no_skeleton","The VRM file has no skeleton");
  }
  int boneFor(int node)const{for(int n=node;n>=0;n=nodes[n].parent)if(boneOf[n]>=0)return boneOf[n];return human.contains("hips")?boneOf[human.at("hips")]:0;}
 
@@ -243,7 +253,7 @@ struct Converter {
    bool changed=false;size_t n=size_t(x)*y;
    for(size_t i=0;i<n;i++){auto& a=pixels.get()[i*4+3];uint8_t v=use==AlphaUse::Opaque?255:(a>=cut?255:0);changed|=v!=a;a=v;}
    if(changed){Bytes png;auto sink=[](void* context,void* p,int size){auto& b=*static_cast<Bytes*>(context);auto s=static_cast<unsigned char*>(p);b.insert(b.end(),s,s+size);};
-    if(!stbi_write_png_to_func(sink,&png,x,y,4,pixels.get(),x*4))throw std::runtime_error("Texture encoding failed");out=std::move(png);extension=".png";}
+    if(!stbi_write_png_to_func(sink,&png,x,y,4,pixels.get(),x*4))vrmFail("vrm.image","Texture encoding failed: image "+std::to_string(source)+" ("+std::to_string(x)+" x "+std::to_string(y)+") cannot be saved again as PNG",place("image",source));out=std::move(png);extension=".png";}
   }
   std::string path="vrm/image"+std::to_string(source)+(use==AlphaUse::Opaque?"_opaque":use==AlphaUse::Cutout?"_cutout"+std::to_string(cut):"")+extension;
   textures[path]=std::move(out);int index=int(texturePaths.size());texturePaths.push_back(path);return textureIndex[key]=index;
@@ -302,30 +312,32 @@ struct Converter {
   auto& meshes=arr(d.j,"meshes");auto& skins=arr(d.j,"skins");
   meshNames.resize(meshes.size());for(size_t i=0;i<meshes.size();i++)meshNames[i]=string(meshes[i],"name","mesh"+std::to_string(i));
   std::vector<int> order;std::function<void(int)> dfs=[&](int i){order.push_back(i);for(int c:nodes[i].children)dfs(c);};for(int r:roots)dfs(r);
-  for(int n:order){auto& node=nodes[n];if(node.mesh<0)continue;if(size_t(node.mesh)>=meshes.size())throw std::runtime_error("Invalid VRM mesh reference");
-   auto& mesh=meshes[node.mesh];const Json* names=&arr(obj(mesh,"extras"),"targetNames");
+  for(int n:order){auto& node=nodes[n];if(node.mesh<0)continue;if(size_t(node.mesh)>=meshes.size())vrmFail("vrm.data","Invalid VRM file: "+placeText(place("node",n,node.name))+" uses mesh "+std::to_string(node.mesh)+", which does not exist (the file has "+number(meshes.size())+")",place("node",n,node.name));
+   ImportScope meshScope("mesh",node.mesh,string(meshes[node.mesh],"name"));auto& mesh=meshes[node.mesh];const Json* names=&arr(obj(mesh,"extras"),"targetNames");
    std::vector<Mat4> skinMatrices;std::vector<int> skinBones;
-   if(node.skin>=0){if(size_t(node.skin)>=skins.size())throw std::runtime_error("Invalid VRM skin reference");auto& skin=skins[node.skin];auto& joints=arr(skin,"joints");
-    Accessor inverse;if(skin.contains("inverseBindMatrices")){inverse=accessor(d,skin["inverseBindMatrices"]);if(inverse.components!=16)throw std::runtime_error("Invalid VRM inverse bind matrices");}
-    for(size_t k=0;k<joints.size();k++){int jn=joints[k].get<int>();if(jn<0||size_t(jn)>=nodes.size())throw std::runtime_error("Invalid VRM skin joint");Mat4 ibm(1.f);if(inverse.count>k)ibm=glm::make_mat4(&inverse.values[k*16]);skinMatrices.push_back(nodes[jn].world*ibm);skinBones.push_back(boneFor(jn));}}
+   if(node.skin>=0){if(size_t(node.skin)>=skins.size())vrmFail("vrm.data","Invalid VRM file: "+placeText(place("node",n,node.name))+" uses skin "+std::to_string(node.skin)+", which does not exist (the file has "+number(skins.size())+")",place("node",n,node.name));
+    ImportScope skinScope("skin",node.skin,string(skins[node.skin],"name"));auto& skin=skins[node.skin];auto& joints=arr(skin,"joints");
+    Accessor inverse;if(skin.contains("inverseBindMatrices")){inverse=accessor(d,skin["inverseBindMatrices"]);if(inverse.components!=16)vrmFail("vrm.data","Invalid VRM file: the inverse bind matrices of skin "+std::to_string(node.skin)+" are not 4 x 4 matrices");}
+    for(size_t k=0;k<joints.size();k++){int jn=joints[k].get<int>();if(jn<0||size_t(jn)>=nodes.size())vrmFail("vrm.data","Invalid VRM file: joint "+std::to_string(k)+" of skin "+std::to_string(node.skin)+" is node "+std::to_string(jn)+", which does not exist (the file has "+number(nodes.size())+" nodes)",Json(),{{"joint",k},{"node",jn}});Mat4 ibm(1.f);if(inverse.count>k)ibm=glm::make_mat4(&inverse.values[k*16]);skinMatrices.push_back(nodes[jn].world*ibm);skinBones.push_back(boneFor(jn));}}
    int fallback=boneFor(n);
    auto& primitives=arr(mesh,"primitives");
-   for(size_t pi=0;pi<primitives.size();pi++){auto& p=primitives[pi];int mode=integer(p,"mode",4);
+   for(size_t pi=0;pi<primitives.size();pi++){auto& p=primitives[pi];int mode=integer(p,"mode",4);ImportScope primitiveScope("primitive",int64_t(pi),{});
     if(mode!=4&&mode!=5&&mode!=6){warn("Mesh \""+meshNames[node.mesh]+"\" has a primitive drawn as points or lines; it was skipped.");continue;}
     auto& attributes=p.at("attributes");if(!attributes.contains("POSITION"))continue;
     if(names->empty())names=&arr(obj(p,"extras"),"targetNames");
-    auto positions=accessor(d,attributes["POSITION"]);size_t count=positions.count;if(positions.components!=3)throw std::runtime_error("Invalid VRM vertex positions");
+    auto positions=accessor(d,attributes["POSITION"]);size_t count=positions.count;if(positions.components!=3)vrmFail("vrm.data","Invalid VRM vertex positions: "+meshText(node.mesh,pi)+" has positions with "+std::to_string(positions.components)+" components instead of 3",Json(),{{"field","POSITION"}});
     Accessor normals,uvs;if(attributes.contains("NORMAL"))normals=accessor(d,attributes["NORMAL"]);
     int matIndex=integer(p,"material",-1);auto& mat=material(matIndex);int set=uvSet.count(matIndex)?uvSet[matIndex]:0;
     auto uvName="TEXCOORD_"+std::to_string(set);if(attributes.contains(uvName))uvs=accessor(d,attributes[uvName]);else if(attributes.contains("TEXCOORD_0"))uvs=accessor(d,attributes["TEXCOORD_0"]);
     std::vector<Accessor> joints,weights;for(int s=0;s<4;s++){auto j="JOINTS_"+std::to_string(s),w="WEIGHTS_"+std::to_string(s);if(!attributes.contains(j)||!attributes.contains(w))break;joints.push_back(accessor(d,attributes[j]));weights.push_back(accessor(d,attributes[w]));}
     // Attributes are read at every POSITION index with fixed component counts.
-    if(normals.count&&normals.components!=3)throw std::runtime_error("Invalid VRM vertex normals");
-    if(uvs.count&&uvs.components!=2)throw std::runtime_error("Invalid VRM texture coordinates");
-    for(size_t s=0;s<joints.size();s++)if(joints[s].components!=4||weights[s].components!=4||joints[s].count<count||weights[s].count<count)throw std::runtime_error("Invalid VRM skin weights");
+    if(normals.count&&normals.components!=3)vrmFail("vrm.data","Invalid VRM vertex normals: "+meshText(node.mesh,pi)+" has normals with "+std::to_string(normals.components)+" components instead of 3",Json(),{{"field","NORMAL"}});
+    if(uvs.count&&uvs.components!=2)vrmFail("vrm.data","Invalid VRM texture coordinates: "+meshText(node.mesh,pi)+" has texture coordinates with "+std::to_string(uvs.components)+" components instead of 2",Json(),{{"field",uvName}});
+    for(size_t s=0;s<joints.size();s++)if(joints[s].components!=4||weights[s].components!=4||joints[s].count<count||weights[s].count<count)
+     vrmFail("vrm.data","Invalid VRM skin weights: "+meshText(node.mesh,pi)+" has JOINTS_"+std::to_string(s)+"/WEIGHTS_"+std::to_string(s)+" with "+number(std::min(joints[s].count,weights[s].count))+" entries for "+number(count)+" vertices",Json(),{{"field","WEIGHTS_"+std::to_string(s)}});
     const UvTransform* transform=uvTransform.count(matIndex)?&uvTransform[matIndex]:nullptr;
     std::vector<uint32_t> index;if(p.contains("indices"))index=indexAccessor(d,p["indices"]);else{index.resize(count);for(size_t i=0;i<count;i++)index[i]=uint32_t(i);}
-    for(auto i:index)if(i>=count)throw std::runtime_error("Invalid VRM triangle index");
+    for(size_t t=0;t<index.size();t++)if(index[t]>=count)vrmFail("vrm.data","Invalid VRM triangle index: "+meshText(node.mesh,pi)+" uses vertex "+number(index[t])+", but the primitive has "+number(count)+" vertices",Json(),{{"field","indices"},{"value",index[t]},{"count",count}});
     // Primitives of one mesh often share a vertex buffer (VRoid: every submesh);
     // keep only the vertices this primitive draws.
     std::vector<int64_t> remap(count,-1);for(auto i:index)remap[i]=0;
@@ -346,7 +358,7 @@ struct Converter {
       if(sorted.size()>4)sorted.resize(4);float kept=0;for(auto& s:sorted)kept+=s.first;
       for(size_t k=0;k<sorted.size();k++){v.bone[k]=sorted[k].second;v.weight[k]=sorted[k].first/kept;}
      }else{v.bone[0]=fallback;v.weight[0]=1;}
-     if(!finite(v.p))throw std::runtime_error("The VRM mesh has non-finite vertex positions");
+     if(!finite(v.p))vrmFail("vrm.data","The VRM mesh has non-finite vertex positions: vertex "+number(i)+" of "+meshText(node.mesh,pi)+" is skinned to no number position",Json(),{{"field","POSITION"},{"vertex",i}});
      vertices.push_back(v);vertexMaterial.push_back(matIndex);
     }
     std::vector<std::array<uint32_t,3>> triangles;
@@ -361,7 +373,7 @@ struct Converter {
      for(size_t u=0;u<used.size();u++)vertices[base+u].n=glm::length(sum[u])>1e-12f?glm::normalize(sum[u]):Vec3(0,1,0);}
     for(size_t u=0;u<used.size();u++)if(glm::length(vertices[base+u].n)<.5f)vertices[base+u].n=Vec3(0,1,0);
     auto& morphs=arr(p,"targets");
-    for(size_t t=0;t<morphs.size();t++){if(!morphs[t].contains("POSITION"))continue;auto delta=accessor(d,morphs[t]["POSITION"]);if(delta.count!=count||delta.components!=3)throw std::runtime_error("Invalid VRM morph target");
+    for(size_t t=0;t<morphs.size();t++){if(!morphs[t].contains("POSITION"))continue;auto delta=accessor(d,morphs[t]["POSITION"]);if(delta.count!=count||delta.components!=3)vrmFail("vrm.data","Invalid VRM morph target: target "+std::to_string(t)+" of "+meshText(node.mesh,pi)+" has "+number(delta.count)+" positions for "+number(count)+" vertices",Json(),{{"field","targets"},{"target",t}});
      Target* target=nullptr;
      for(int ti:targetsOfMeshIndex[std::make_pair(node.mesh,int(t))])if(targets[ti].node==n)target=&targets[ti];
      if(!target){Target fresh;fresh.node=n;fresh.mesh=node.mesh;fresh.index=int(t);fresh.name=t<names->size()&&(*names)[t].is_string()?(*names)[t].get<std::string>():meshNames[node.mesh]+"_"+std::to_string(t);
@@ -371,7 +383,7 @@ struct Converter {
     }
    }
   }
-  if(vertices.empty())throw std::runtime_error("The VRM file contains no triangle geometry");
+  if(vertices.empty())vrmFail("vrm.no_geometry","The VRM file contains no triangle geometry");
  }
 };
 
@@ -415,9 +427,10 @@ Json vrmMetadata(const Json& j,const std::string& fallbackName){
  return info;
 }
 VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& fallbackName){
+ ImportScope scope("Converting VRM avatar","vrm");
  Converter c;c.d=open(file);c.fallbackName=fallbackName;auto& j=c.d.j;auto& extensions=obj(j,"extensions");
  const Json* vrm1=extensions.contains("VRMC_vrm")?&extensions.at("VRMC_vrm"):nullptr;const Json* vrm0=!vrm1&&extensions.contains("VRM")?&extensions.at("VRM"):nullptr;
- if(!vrm1&&!vrm0)throw std::runtime_error("This glTF file has no VRM extension, so it has no humanoid map. Static 3D models belong in Static Props.");
+ if(!vrm1&&!vrm0)vrmFail("vrm.container","This glTF file has no VRM extension, so it has no humanoid map. Static 3D models belong in Static Props.");
  c.v0=vrm0!=nullptr;c.vrm=vrm1?vrm1:vrm0;c.axes.v0=c.v0;
  c.readNodes();
  auto nodeRef=[&](const Json& value)->int{int n=value.is_number_integer()?value.get<int>():-1;return n>=0&&size_t(n)<c.nodes.size()?n:-1;};
@@ -426,7 +439,7 @@ VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& 
  if(c.v0){for(auto& b:arr(humanoid,"humanBones")){int n=nodeRef(b.value("node",Json()));auto name=string(b,"bone");if(n>=0&&!name.empty())c.human[humanName1(name)]=n;}}
  else{for(auto& [name,b]:obj(humanoid,"humanBones").items()){int n=nodeRef(b.value("node",Json()));if(n>=0)c.human[name]=n;}}
  for(auto required:{"hips","spine","head","leftUpperArm","leftLowerArm","leftHand","rightUpperArm","rightLowerArm","rightHand","leftUpperLeg","leftLowerLeg","leftFoot","rightUpperLeg","rightLowerLeg","rightFoot"})
-  if(!c.human.contains(required))throw std::runtime_error(std::string("The VRM humanoid map has no ")+required+" bone; the avatar cannot become a ragdoll");
+  if(!c.human.contains(required))vrmFail("vrm.humanoid",std::string("The VRM humanoid map has no ")+required+" bone; the avatar cannot become a ragdoll",place("humanoid_bone",-1,required),{{"bone",required}});
  // Nodes that must stay bones: skins, humanoid, springs and colliders.
  std::set<int> referenced;for(auto& [name,n]:c.human)referenced.insert(n);
  for(auto& skin:arr(j,"skins"))for(auto& jn:arr(skin,"joints")){int n=nodeRef(jn);if(n>=0)referenced.insert(n);}

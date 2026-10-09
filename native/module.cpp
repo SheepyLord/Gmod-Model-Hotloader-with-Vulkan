@@ -26,9 +26,10 @@
 #include "jobs.hpp"
 #include "prop_bindings.hpp"
 #include "physics_profile.hpp"
+#include "import_error.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
-struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;};
+struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;};
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
@@ -65,8 +66,8 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
 #else
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
     pruneJobs();
-    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
-    writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"progress",0}});
+    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
+    writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"stageCode",picker?"pick":"start"},{"progress",0}});
     if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"cache",utf8(context->cache.wstring())},{"options",options}});
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
@@ -144,10 +145,23 @@ FUNCTION(PropReload) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtim
     LUA->PushNumber(double(launch(false,registry[id].at("source"),options)));return 1;} END_FUNCTION
 FUNCTION(BeginImport) {LUA->PushNumber(double(launch(false,stringArg(LUA,1),json(LUA,2))));return 1;} END_FUNCTION
 FUNCTION(Reload) {auto id=stringArg(LUA,1);auto registry=readJson(context->cache/L"sources.local.json");if(!registry.contains(id))throw std::runtime_error("Source path unavailable; select the model again");auto entry=registry[id];LUA->PushNumber(double(launch(false,entry.at("source"),entry.value("options",Json::object()))));return 1;} END_FUNCTION
+// The end of the worker's crash log (worker.cpp), read before the job folder goes.
+std::string workerLog(const fs::path& dir){
+ std::ifstream f(ioPath(dir/L"worker.log"),std::ios::binary|std::ios::ate);if(!f)return {};auto size=std::streamoff(f.tellg());auto start=std::max<std::streamoff>(0,size-4096);
+ std::string text(size_t(size-start),'\0');f.seekg(start);f.read(text.data(),std::streamsize(text.size()));text.resize(size_t(f.gcount()));return text;
+}
+// A worker that ended without a final status crashed or was killed: keep the step it
+// had reached and say why from its exit code (import_error.hpp).
+Json finishedJob(Job& j,Json last,const std::string& readError){
+ DWORD code=0;GetExitCodeProcess(j.process,&code);
+ auto result=finishedWorkerStatus(std::move(last),code,workerLog(j.dir),j.source,j.kind,readError);
+ if(result.value("state","")=="failed"&&!result.contains("elapsed_ms"))result["elapsed_ms"]=GetTickCount64()-j.started;
+ return result;
+}
 FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->jobs.end())throw std::runtime_error("Unknown job");auto& j=it->second;if(!j.result.is_null()){push(LUA,j.result);return 1;}
-    bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)result={{"state","failed"},{"error",e.what()}};else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
+    bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;std::string readError;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)readError=e.what();else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
     if(!finished&&GetTickCount64()-j.started>300000)result["warning"]="Import is taking longer than five minutes. You can keep waiting or cancel.";
-    if(finished){if(result.value("state","")=="running")result={{"state","failed"},{"error","Import worker exited before completion"}};j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);}
+    if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);}
     else if(result.value("state","")!="running")result={{"state","running"},{"stage","Committing asset"},{"progress",.99}};
     push(LUA,result);return 1;} END_FUNCTION
 FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);j.group=nullptr;}if(j.process){CloseHandle(j.process);j.process=nullptr;}j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION

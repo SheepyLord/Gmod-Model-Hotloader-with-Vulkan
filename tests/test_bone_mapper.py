@@ -493,7 +493,7 @@ local queued={} timer.Create=function(name,_,_,fn) queued[#queued+1]=fn end
 assert(BM.Available('fit'))
 DISK['mmd_hotloader/fit_overrides/'..id..'.json']='{"version":3,"generator":18,"boneMap":{"ValveBiped.Bip01_L_Thigh":12.0}}'
 MISSING={VB..'L_Calf'} FIT={}
-BM.AfterImport({asset=id,info={name='Hero',found=8,bones=40},fit={ok=false,errorCode='fit.landmarks',missing={VB..'L_Thigh'}}})
+BM.AfterImport({asset=id,info={name='Hero',found=8,bones=40},fit={ok=false,errorCode='fit.landmarks',missing={VB..'L_Thigh'}}},function() error('the check worked') end)
 for _,fn in ipairs(queued) do fn() end queued={}
 assert(proposals[1].boneMap[VB..'L_Thigh']==12 and FIT[1][2].missing[1]==VB..'L_Calf' and prompts[1][1]==id and prompts[1][3][1]==VB..'L_Calf')
 assert(RAW[1]=='{"boneMap":{"ValveBiped.Bip01_L_Thigh":12}}','pins reach the native as whole numbers')
@@ -512,6 +512,11 @@ game={SinglePlayer=function() return true end}
 MISSING={} FIT={} prompts={}
 BM.CheckRescue(id) for _,fn in ipairs(queued) do fn() end queued={}
 assert(FIT[1][2].ok==true and #prompts==0)
+-- The check itself fails (the model does not load): the import's caller learns it, to explain the fit itself.
+local failures=0 mmdhl.native.RequestAsset=function() return false,'gone' end FIT={} prompts={}
+BM.AfterImport({asset=id,info={name='Hero',found=8,bones=40},fit={ok=false,errorCode='fit.landmarks',missing={VB..'L_Thigh'}}},function() failures=failures+1 end)
+assert(failures==1 and #FIT==0 and #prompts==0)
+mmdhl.native.RequestAsset=function() return true end
 -- A fit that worked clears the badge.
 FIT={} BM.AfterImport({asset=id,info={name='Hero',found=8,bones=40},fit={ok=true}}) assert(FIT[1][2].ok==true)
 mmdhl.native.GetBoneMapProposal=nil mmdhl.native.InspectBoneMap=nil
