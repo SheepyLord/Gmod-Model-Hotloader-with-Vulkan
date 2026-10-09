@@ -406,7 +406,31 @@ const std::vector<float>& Instance::expandedMorphs() const {
     for(size_t i=0;i<weights.size();i++)if(instance.morphWeights[i])expand(int(i),instance.morphWeights[i],0);
     cachedMorphInputs=morphWeights;cachedMorphWeights=std::move(weights);return cachedMorphWeights;
 }
-void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut){
+std::vector<int> ikAnchors(const Model& m,const std::vector<int>& sourceControl){
+    std::vector<int> anchor;const size_t n=m.bones.size();if(!n||sourceControl.size()<n)return anchor;
+    auto controlled=[&](int i){return sourceControl[size_t(i)]>=0;};
+    auto set=[&](int goal,int on){if(anchor.empty())anchor.assign(n,-1);anchor[size_t(goal)]=on;};
+    // Walks the parent chain from `from`; the depth bound only guards a damaged hierarchy.
+    auto ancestor=[&](int from,auto&& match){for(int p=from,depth=0;p>=0&&depth<=int(n);p=m.bones[size_t(p)].parent,depth++)if(match(p))return p;return -1;};
+    // nanoem lists PMD IK on the model and keeps PMX IK on its bones.
+    std::vector<std::pair<int,int>> chains;nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    auto add=[&](const nanoem_model_constraint_t* c){int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(c)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(c));
+        // A goal at or above its own effector would drag the control roots along with the foot.
+        if(goal>=0&&end>=0&&size_t(goal)<n&&size_t(end)<n&&!controlled(goal)&&ancestor(end,[&](int p){return p==goal;})<0)chains.emplace_back(goal,end);};
+    for(size_t k=0;k<count;k++)add(constraints[k]);
+    for(auto& b:m.bones)if(auto c=b.source?nanoemModelBoneGetConstraintObject(b.source):nullptr)add(c);
+    // A goal whose effector Source drives (leg, toe IK) sits on that effector.
+    for(auto [goal,end]:chains)if(controlled(end))set(goal,end);
+    // Any other goal with nothing driven or anchored above it (a high-heel or hair IK hung from
+    // 全ての親) keeps its rest offset from the effector's nearest driven ancestor (the ankle, the
+    // head), not from the pelvis. Parents first: a goal hung below an anchored goal rides on it.
+    std::vector<int> effector(n,-1);for(auto [goal,end]:chains)if(!controlled(end)&&effector[size_t(goal)]<0)effector[size_t(goal)]=end;
+    for(auto goal:m.order){int end=effector[goal];if(end<0||(!anchor.empty()&&anchor[goal]>=0))continue;
+        if(ancestor(m.bones[goal].parent,[&](int p){return controlled(p)||(!anchor.empty()&&anchor[size_t(p)]>=0);})>=0)continue;
+        int on=ancestor(m.bones[size_t(end)].parent,controlled);if(on>=0)set(int(goal),on);}
+    return anchor;
+}
+void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut,int sourceRoot){
     local=manual;global.resize(local.size());skin.resize(local.size());
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){nanoem_rsize_t n=0;auto entries=nanoemModelMorphGetAllBoneMorphObjects(m.morphs[i],&n);for(size_t k=0;k<n;k++){
         int id=boneIndex(nanoemModelMorphBoneGetBoneObject(entries[k]));if(id<0)continue;
@@ -415,18 +439,31 @@ void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const st
     }}
     effectiveOut.assign(local.size(),btTransform::getIdentity());auto& effective=effectiveOut;
     auto controlled=[&](size_t i){return sourceControl&&(*sourceControl)[i]>=0;};
+    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    // Under Source control nothing poses the bones outside the Source skeleton's subtree: MMD
+    // control roots above the pelvis (全ての親, センター, グルーブ, 腰), other roots and the IK
+    // goals below them. Left at rest in the instance frame (the world origin of a client
+    // carrier), they pulled their vertices and follower bodies there (issue #6). Roots ride
+    // with the Source root (rig bone 0, the pelvis) as if attached at rest; IK goals ride on
+    // their chain's Source-driven bone (ikAnchors), so goals hung below them (heel IK) follow
+    // the foot. Frames are skinning transforms (rest model space to pose).
+    btTransform carrier;const btTransform* root=nullptr;std::vector<int> anchor;
+    if(sourceControl&&sourcePose&&sourceRoot>=0&&size_t(sourceRoot)<sourcePose->size()){
+        carrier=(*sourcePose)[sourceRoot]*btTransform(btQuaternion::getIdentity(),-m.bones[sourceRoot].position);root=&carrier;anchor=ikAnchors(m,*sourceControl);
+    }
     auto rebuild=[&](){for(auto i:m.order){auto& b=m.bones[i];auto t=local[i];
         if(b.inherit>=0&&b.inherit!=int(i)){auto inherited=b.localInherit?local[b.inherit]:effective[b.inherit];if(b.inheritRotation)t.setRotation(t.getRotation()*btQuaternion::getIdentity().slerp(inherited.getRotation(),b.coefficient));if(b.inheritTranslation)t.getOrigin()+=inherited.getOrigin()*b.coefficient;}
         if(b.fixedAxis.length2()>1e-8f){auto axis=b.fixedAxis.normalized();auto q=t.getRotation();auto projected=axis*axis.dot(btVector3(q.x(),q.y(),q.z()));btQuaternion twist(projected.x(),projected.y(),projected.z(),q.w());t.setRotation(twist.length2()>1e-8f?twist.normalized():btQuaternion::getIdentity());}
         effective[i]=t;
-        auto rest=b.position-(b.parent>=0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
-        global[i]=b.parent>=0?global[b.parent]*t:t;
+        int on=anchor.empty()?-1:anchor[i];btTransform pinned;const btTransform* frame=b.parent>=0?&global[b.parent]:root;
+        if(on>=0){pinned=(*sourcePose)[on]*btTransform(btQuaternion::getIdentity(),-m.bones[on].position);frame=&pinned;}
+        auto rest=b.position-(b.parent>=0&&on<0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
+        global[i]=frame?*frame*t:t;
         if(controlled(i))global[i]=(*sourcePose)[i];
-        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:nullptr);
-        if(sourceControl){effective[i]=b.parent>=0?global[b.parent].inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
+        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:root); // a root's frame is the pelvis carrier, as in SpringSystem
+        if(sourceControl){effective[i]=frame?frame->inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
         skin[i]=global[i]*btTransform(btQuaternion::getIdentity(),-b.position);
     }};rebuild();
-    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
     auto physicsDriven=[&](int i){return hooks&&hooks->driven&&hooks->driven(size_t(i));};
     for(size_t k=0;k<count;k++){
         auto constraint=constraints[k];int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(constraint)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(constraint));if(goal<0||end<0)continue;
@@ -460,10 +497,24 @@ void Instance::evaluate(bool physics){
         hooks.driven=[&](size_t i){return drivers[i]>=0||(secondary&&secondary->drives(i));};
     }
     // Evaluate in place: feedback reads the live `local` array for mode-2 bodies.
-    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch);
+    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch,sourceRig?sourceRig->bones[0].mmd:-1);
     evaluateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 void Instance::ensureSnapshot(){if(!snapshot||poseDirty)publish(owner->time);}
+void Instance::drawnVertices(const std::function<void(size_t,const btVector3&)>& visit) const {
+    if(!snapshot)return;const auto& s=*snapshot;const auto& m=*model;std::vector<uint8_t> drawn(m.vertices.size(),0);
+    // The renderer skips hidden and fully transparent parts.
+    for(size_t part=0;part<m.materials.size()&&part<s.materials.size();part++){if((part<materialVisible.size()&&!materialVisible[part])||s.materials[part].alpha<=.0001f)continue;
+        const auto& r=m.materials[part];for(size_t i=r.first;i<size_t(r.first)+r.count&&i<m.indices.size();i++)drawn[m.indices[i]]=1;}
+    // A hardware-skinned snapshot deforms only GpuSkin::cpuVertices; the shader skins the rest
+    // with three renormalised weights.
+    auto plan=s.gpu?m.gpuSkin():nullptr;std::unique_lock<std::mutex> lock(gpuRest->mutex,std::defer_lock);if(plan)lock.lock();const auto& rest=gpuRest->positions;
+    for(size_t i=0;i<drawn.size()&&i<s.vertices.size();i++)if(drawn[i]){
+        if(plan&&!plan->cpuVertex[i]&&rest.size()>=i*3+3){btVector3 p(0,0,0);const float* r=&rest[i*3];
+            for(int k=0;k<3;k++){float w=plan->weights[i][k];if(w==0)continue;const float* row=&s.palette[size_t(plan->bones[i][k])*12];for(int a=0;a<3;a++)p[a]+=w*(row[a*4]*r[0]+row[a*4+1]*r[1]+row[a*4+2]*r[2]+row[a*4+3]);}
+            visit(i,p);}
+        else{const auto& d=s.vertices[i];visit(i,btVector3(d.x,d.y,d.z));}}
+}
 namespace {
 constexpr size_t Lanes=8;
 bool avx2FmaAvailable(){static const bool value=[]{int info[4];__cpuid(info,1);bool osxsave=(info[2]&(1<<27))!=0;

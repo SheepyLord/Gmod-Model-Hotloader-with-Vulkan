@@ -63,7 +63,7 @@ btTransform SpringSystem::centre(const SpringSetup::Spring& s,const std::vector<
 void SpringSystem::place(const std::vector<btTransform>& skin,bool keepBend){
  auto& d=*data;
  for(int b:d.affected){
-  int p=model.bones[b].parent;auto parentAnimated=p>=0?animated(skin,p):btTransform::getIdentity();auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
+  int p=model.bones[b].parent;auto parentAnimated=parentFrame(skin,p);auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
   auto local=parentAnimated.inverseTimes(animated(skin,b));int ji=d.jointOfBone[b];
   if(ji<0){global[b]=parentCurrent*local;continue;}
   auto& j=d.joints[ji];auto head=parentCurrent*local.getOrigin();auto rotation=(parentCurrent.getRotation()*(keepBend?currentLocal[ji]:btQuaternion::getIdentity())).normalized();
@@ -89,7 +89,7 @@ void SpringSystem::step(float dt,const std::vector<btTransform>& skin,float grav
  if(reference>=0&&size_t(reference)<skin.size()){auto now=animated(skin,reference).getOrigin();if(haveReference&&relativeDamping)referenceStep=now-lastReference;lastReference=now;haveReference=true;}
  previousLocal=currentLocal;
  for(int b:d.affected){
-  int p=model.bones[b].parent;auto parentAnimated=p>=0?animated(skin,p):btTransform::getIdentity();auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
+  int p=model.bones[b].parent;auto parentAnimated=parentFrame(skin,p);auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
   auto local=parentAnimated.inverseTimes(animated(skin,b));int ji=d.jointOfBone[b];
   if(ji<0){global[b]=parentCurrent*local;continue;}
   auto& j=d.joints[ji];auto& s=state[ji];auto& spring=d.springs[j.spring];

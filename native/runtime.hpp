@@ -177,7 +177,13 @@ struct PoseHooks {
     std::function<void(size_t bone,btTransform& global,btTransform& effective,const btVector3& rest,const btTransform* parentGlobal)> physics;
     std::function<bool(size_t bone)> driven;
 };
-void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effective);
+// Under Source control, the Source-driven bone each IK goal Source does not reach rides on as if
+// attached at rest (the chain's effector, or its nearest driven ancestor); -1 for other bones,
+// empty when no goal needs one.
+std::vector<int> ikAnchors(const Model&,const std::vector<int>& sourceControl);
+// sourceRoot: the model bone of the Source root (rig bone 0, the pelvis) under Source control;
+// the bones Source does not reach (control roots above the pelvis) ride with it.
+void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effective,int sourceRoot=-1);
 // Exactly the verified Source model vertex (stride 64): position, normal,
 // colour, one UV set and a four-float tangent in user data. The trailing
 // bytes are padding for the engine and carry the edge/extra UV values the
@@ -303,6 +309,9 @@ struct Instance {
     std::vector<float> gpuMorphWeights;std::vector<unsigned> gpuTouched;
     // Deform every vertex in the next publish (Lua position queries), then return to hardware skinning.
     void requireCpuVertices(){if(snapshot&&snapshot->gpu){cpuRequest=true;poseDirty=true;}ensureSnapshot();}
+    // Every vertex of the parts the renderer draws, where the published snapshot draws it (Source
+    // units): under hardware skinning from the rest data and the palette, as the vertex shader does.
+    void drawnVertices(const std::function<void(size_t,const btVector3&)>& visit) const;
     Instance(World&,std::shared_ptr<Model>,uint64_t,const Json&);
     ~Instance();
     void evaluate(bool physics);

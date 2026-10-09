@@ -614,7 +614,7 @@ void Secondary::runAsync(){
 }
 void Secondary::resetTick(const Input& input){
  int root=instance.sourceRig->bones[0].mmd;
- tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective);
+ tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective,instance.sourceRig->bones[0].mmd);
  follow(true,tickPose.skin);nanoemPhysicsWorldReset(world);followSoft(true,tickPose.skin);accumulator=inputTime=simulationTime=0;inputs.clear();inputs.push_back({0,input.pose});
  readSolved(true,root>=0?tickSourcePose[root]:btTransform::getIdentity(),tickPose.skin);if(springs)springs->reset(tickPose.skin);++resets;resetReason=input.resetReason;tickImpulseWeights=input.morphs;
 }
@@ -624,7 +624,7 @@ void Secondary::tickAsync(const Input& input){
  if(input.reset)resetTick(input);
  activeDivisor=input.qualityDivisor;applyTuning();nanoemWorld(world)->getSolverInfo().m_numIterations=std::min(baseIterations,std::max(2,(baseIterations+activeDivisor-1)/activeDivisor));
  if(input.resumeQuality&&!input.reset){
-  tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective);
+  tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective,instance.sourceRig->bones[0].mmd);
   resumeQualityPose(tickPose.skin,tickSourcePose);
  }
  inputTime+=input.elapsed;
@@ -633,7 +633,7 @@ void Secondary::tickAsync(const Input& input){
  if(external){external->sync(instance,effectiveCollisionFlags,input.boundsMinimum,input.boundsMaximum);sceneMs=external->syncMs;}
  applyImpulses(input.morphs,tickImpulseWeights);
  applySleepPolicy();
- unsigned steps=advance(tickSourcePose,[&]()->const std::vector<btTransform>&{auto started=std::chrono::steady_clock::now();evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective);evaluateMs+=elapsedMs(started);return tickPose.skin;});
+ unsigned steps=advance(tickSourcePose,[&]()->const std::vector<btTransform>&{auto started=std::chrono::steady_clock::now();evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective,instance.sourceRig->bones[0].mmd);evaluateMs+=elapsedMs(started);return tickPose.skin;});
  if(steps&&testStepDelayMs.load()>0){auto until=std::chrono::steady_clock::now()+std::chrono::duration<double,std::milli>(testStepDelayMs.load());while(std::chrono::steady_clock::now()<until)std::this_thread::yield();} // busy, like a longer solve; a sleep would add timer granularity
  if(external)external->measure();
  physicsTotalMs+=physicsMs;guardTotalMs+=surfaceGuardMs+stretchGuardMs;tickTotalMs+=elapsedMs(start);tickCpuTotalMs+=threadCpuMs()-cpuStart;
