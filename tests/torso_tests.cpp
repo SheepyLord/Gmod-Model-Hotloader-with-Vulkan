@@ -164,10 +164,22 @@ int main(int argc,char** argv){try{
   check(fitRig(*model,pins({{VB+"L_Toe0",-1.0}})).key==pinned.key,"pins: an integral number from Lua's JSON is the same pin");
   check(carrierFitKey("a",normalizeCarrierOptions(pins({{VB+"L_Toe0",-1}})))!=carrierFitKey("a",Json::object()),"pins: the fit cache key holds the bone map");
   fitted(*model,pinned,"pins");}
- // The cached fit answers only without pins.
- {auto cached=fixture();cached->fittedRig=std::make_shared<Rig>(fitRig(*cached,Json::object()));
-  check(cachedFitApplies(*cached,Json::object())&&cachedFitApplies(*cached,{{"boneMap",Json::object()}})&&!cachedFitApplies(*cached,pins({{VB+"L_Toe0",-1}})),"cache: pins bypass the cached fit, an empty map does not");
-  check(fitRig(*cached,pins({{VB+"L_Toe0",-1}})).bones[carrier(rag,"L_Toe0")].mmd<0,"cache: a model with a cached fit still takes its pins");}
+ // Pins are fitted once per model and pin set; every carrier with them (another role, scale
+ // or mass: the c_arms of a pinned player model, a respawn) rescales that fit like the cached one.
+ {auto cached=fixture();cached->fittedRig=std::make_shared<Rig>(fitRig(*cached,Json::object()));auto pinned=pins({{VB+"L_Toe0",-1}});
+  check(cachedFitApplies(*cached,Json::object())&&cachedFitApplies(*cached,{{"boneMap",Json::object()}})&&!cachedFitApplies(*cached,pinned),"cache: no pins or an empty map rescale the cached fit; new pins are fitted first");
+  auto scaled=pinned;scaled["role"]="ragdoll";scaled["scaleMultiplier"]=1.2;auto rig=fitRig(*cached,scaled);
+  check(rig.bones[carrier(rig,"L_Toe0")].mmd<0&&cached->pinnedFits.size()==1&&cachedFitApplies(*cached,pinned)&&cachedFitApplies(*cached,scaled),"cache: a model with a cached fit takes its pins, fitted once and kept");
+  auto heavy=pinned;heavy["mass"]=50;auto other=fitRig(*cached,heavy);
+  check(other.bones[carrier(other,"L_Toe0")].mmd<0&&other.mass==50&&cached->pinnedFits.size()==1&&fitRig(*cached,scaled).key==rig.key,"cache: another scale or mass with the same pins rescales that fit; the same options give the same carrier");
+  auto full=fitRig(*fixture(),pinned);bool same=full.bones.size()==rig.bones.size();for(size_t i=0;same&&i<rig.bones.size();i++)same&=full.bones[i].mmd==rig.bones[i].mmd&&full.bones[i].aliases==rig.bones[i].aliases;
+  check(same,"cache: the rescaled pinned fit maps the bones as a full fit does");
+  fitted(*cached,rig,"pinned and rescaled");
+  for(auto key:{"R_Toe0","Spine2","Spine4","L_Clavicle","R_Clavicle"}){auto extra=pins({{VB+key,-1}});extra["role"]="ragdoll";fitRig(*cached,extra);}
+  check(cached->pinnedFits.size()==4,"cache: a model keeps the fits of its last four pin sets");
+  auto rescue=fixture();rescue->fittedRig.reset();fitRig(*rescue,scaled);
+  check(rescue->pinnedFits.size()==1&&cachedFitApplies(*rescue,scaled)&&!cachedFitApplies(*rescue,Json::object()),"cache: pins are kept for a model without a cached fit too (the rescue case)");
+  auto tall=pinned;tall["height"]=70;check(!cachedFitApplies(*cached,tall),"cache: a height is fitted in full, with or without pins");}
  // An extended fixture: a toe tip and a spine helper off the chain.
  {auto extended=fixture();int tip=add(*extended,"toe tip",extended->bones[leftToe].position+btVector3(0,0,-.5f),leftToe);
   int helper=add(*extended,"spine helper",extended->bones[upper].position.lerp(extended->bones[neck].position,.3f),upper);

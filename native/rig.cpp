@@ -223,10 +223,23 @@ Json boneMapProposal(const Model& m,const Json& options){
  try{requireMapping(map);}catch(const ImportError& e){out["error"]=e.what();out["errorCode"]=e.code;}
  return out;
 }
-bool cachedFitApplies(const Model& m,const Json& options){
+// The fit scaledFit rescales for these options: the model's cached fit or, with pins, the
+// fit of options.boneMap alone, made once per pin set (make) and kept with the model: a
+// pinned player model, its c_arms, the arms preview and respawns all reach PrepareCarrier
+// on the main thread and must not each fit again.
+static std::shared_ptr<const Rig> baseFit(const Model& m,const Json& options,bool make){
+ if(options.contains("height")||!options.value("excludedMaterials",Json::array()).empty())return {};
  auto pins=options.find("boneMap");
- return m.fittedRig&&!options.contains("height")&&options.value("excludedMaterials",Json::array()).empty()&&(pins==options.end()||pins->is_null()||(pins->is_object()&&pins->empty()));
+ if(pins==options.end()||pins->is_null()||(pins->is_object()&&pins->empty()))return m.fittedRig;
+ if(!pins->is_object())return {};
+ auto key=pins->dump();
+ {std::lock_guard lock(m.fitMutex);if(auto it=m.pinnedFits.find(key);it!=m.pinnedFits.end())return it->second;}
+ // Options holding nothing but the pins are that fit itself.
+ if(!make||options.size()==1)return {};
+ auto base=std::make_shared<const Rig>(fitRig(m,{{"boneMap",*pins}}));
+ std::lock_guard lock(m.fitMutex);if(m.pinnedFits.size()>=4)m.pinnedFits.erase(m.pinnedFits.begin());m.pinnedFits[key]=base;return base;
 }
+bool cachedFitApplies(const Model& m,const Json& options){return baseFit(m,options,false)!=nullptr;}
 Json prepareModelFit(Model& model,const fs::path& cache){
  const Json ok={{"ok",true}};
  if(model.fittedRig)return ok;
@@ -240,8 +253,8 @@ Json prepareModelFit(Model& model,const fs::path& cache){
 }
 // The canonical profile a fit writes: c_arms have no physics bodies of their own; every other role carries it.
 static Json fitPhysics(const Json& options){return options.value("role",std::string("ragdoll"))=="arms"?Json::object():requireCanonicalPhysics(options.value("physicsOverrides",Json::object()));}
-static Rig scaledFit(const Model& m,const Json& options){
- Rig r=*m.fittedRig;float target=resolveSourceScale(options,m.maximum.y()-m.minimum.y()),factor=target/r.scale;r.scale=target;r.mass=options.value("mass",70.f);
+static Rig scaledFit(const Rig& base,const Model& m,const Json& options){
+ Rig r=base;float target=resolveSourceScale(options,m.maximum.y()-m.minimum.y()),factor=target/r.scale;r.scale=target;r.mass=options.value("mass",70.f);
  if(!std::isfinite(r.mass)||r.mass<1||r.mass>1000)throw std::runtime_error("Invalid carrier mass");
  for(size_t i=0;i<r.bones.size();i++){r.bones[i].rest.getOrigin()*=factor;r.manifest["bones"][i]["position"]=xyz(r.bones[i].rest.getOrigin());}
  auto overrides=options.value("collisionOverrides",Json::object());
@@ -257,7 +270,7 @@ static Rig scaledFit(const Model& m,const Json& options){
  r.manifest["eyesAttachment"]["position"]=xyz(v3(r.manifest["eyesAttachment"]["position"])*factor);r.manifest["mass"]=r.mass;r.manifest["scale"]=r.scale;r.manifest["sourceUnitsPerPmx"]=r.scale;r.manifest["scaleMultiplier"]=r.scale/ScmiSourceUnitsPerPmx;r.manifest["maxInitialPenetration"]=r.manifest.value("maxInitialPenetration",0.f)*factor;applyPhysics(r,fitPhysics(options));configureAnimations(r,options);identify(r);return r;
 }
 Rig fitRig(const Model& m,const Json& options){
- if(cachedFitApplies(m,options))return scaledFit(m,options);
+ if(auto base=baseFit(m,options,true))return scaledFit(*base,m,options);
  const auto data=Json::parse(ScmiData);Rig r;float height=m.maximum.y()-m.minimum.y();
  if(height<=0)throw std::runtime_error("Model has no height");r.scale=resolveSourceScale(options,height);r.mass=options.value("mass",70.f);
  if(!std::isfinite(r.scale)||r.scale<.001f||r.scale>10000||!std::isfinite(r.mass)||r.mass<1||r.mass>1000)throw std::runtime_error("Invalid carrier scale/mass");

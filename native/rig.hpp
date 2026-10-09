@@ -22,7 +22,8 @@ inline btTransform rigMeshBind(const Rig& rig){
 // over a converted character's own map (Model::conversionBoneMap). Bad pins throw
 // ImportError "fit.bone_map", missing landmarks "fit.landmarks" (details: missing, searched).
 Rig fitRig(const Model&,const Json& options);
-// Whether fitRig rescales the model's cached fit instead of fitting again.
+// Whether fitRig rescales a cached fit instead of fitting again: the model's own or,
+// with options.boneMap, the one made for those pins (Model::pinnedFits).
 bool cachedFitApplies(const Model&,const Json& options);
 // native.GetBoneMapProposal: fitRig's bone choice for these options, without bodies:
 // {version, asset, bones:[{name, mmd, aliases, provenance, required}], missing, searched,

@@ -115,9 +115,15 @@ The keys are the 52 assignable parts of `native/humanoid_slots.hpp` (not
   lower legs, feet) throw ImportError `fit.landmarks`: the message lists every part
   in words with the names searched, `details` has `missing` (ValveBiped names) and
   `searched` (ValveBiped name -> names).
-* `boneMap` is part of the fitted-rig cache key (`carrierFitKey`), and a non-empty
-  map bypasses the rescaled cached fit (`cachedFitApplies`, also used by
-  `PreviewCarrierFit`), so pinned carriers are always fitted again.
+* `boneMap` is part of the fitted-rig cache key (`carrierFitKey`). The model's
+  cached fit (`Model::fittedRig`) has no pins, so a non-empty map is fitted once
+  with the pins alone (`Model::pinnedFits`, the last four pin sets per loaded
+  model) and every carrier with those pins (other scales, masses, roles, physics)
+  rescales that fit like the cached one (`cachedFitApplies`, also used by
+  `PreviewCarrierFit`). A pinned player model, its `c_arms`, the arms preview and
+  respawns call `PrepareCarrier` on the server's main thread and so never refit
+  each time. Options with `height` or `excludedMaterials` are fitted in full, as
+  without pins.
 
 ### `native.GetBoneMapProposal(assetId, optionsJSON)` (both realms)
 

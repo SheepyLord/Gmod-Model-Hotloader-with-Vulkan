@@ -104,6 +104,10 @@ struct Model {
     std::vector<const nanoem_model_morph_t*> morphs;
     btVector3 minimum{0,0,0},maximum{0,0,0};
     std::shared_ptr<Rig> fittedRig;
+    // Fits of the bone window's pins (options.boneMap alone) by the pins' JSON, made once
+    // and rescaled like fittedRig (rig.cpp baseFit); fits run on worker threads too.
+    mutable std::mutex fitMutex;
+    mutable std::map<std::string,std::shared_ptr<const Rig>> pinnedFits;
     // VRM avatars: spring bones simulated natively in place of PMX rigid bodies.
     std::shared_ptr<const SpringSetup> springs;
     // Characters converted from other formats: their bone assignment (slot key ->
