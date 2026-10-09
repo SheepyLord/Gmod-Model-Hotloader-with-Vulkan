@@ -42,11 +42,12 @@ API and its limits).
   one by one or all at once, and has the switch **Let addons ask to read
   files**. Turning it off takes effect at once, also for reads an addon
   already started (they deliver nothing), and revoking a folder ends the
-  reads of files in it the same way; turning it on asks for confirmation in
-  a Windows dialog. Two copies of the game running at once (another install,
+  reads of files in it the same way (also of files allowed through a smaller
+  folder it replaced); turning it on asks for confirmation in a Windows
+  dialog. Two copies of the game running at once (another install,
   `-multirun`) share the remembered folders and the switch: what you change
-  in one applies in the other too, and neither brings back what the other
-  revoked or turned off.
+  in one applies in the other too, also to the reads running there, and
+  neither brings back what the other revoked or turned off.
 * Only in **single player** and on a **server you host**. On anyone else's
   server every client script comes from that server, so Model Hotloader refuses
   all requests there and does not even show your remembered folders.
@@ -59,8 +60,9 @@ The decision is made in the native module, where Lua cannot reach it:
 
 * The dialogs run in a separate process (`mmdhl_worker.exe`), and only while
   the installation check allows that worker, as for model imports (a worker
-  from another release, or one that failed or is still running its
-  self-test, shows nothing; turning file access off needs no dialog). Lua can
+  from another release, or one that failed its self-test, shows nothing, and
+  requests wait while the self-test still runs; turning file access off, and
+  a request a remembered folder answers, need no dialog). Lua can
   click Derma buttons and override hooks, but not windows of another process.
   Their sentences are compiled into the module in the player's language; only
   the addon's name, its reported script, its stated purpose and a short title
@@ -205,8 +207,12 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
 `needs_update`, `unavailable_remote`, `disabled` (also for a read or listing
 the player turned file access off during), `worker_missing`,
 `worker_unavailable` (the installation check does not allow the worker that
-shows the dialogs; the message carries its reason). A read or listing of a
-folder the player revoked meanwhile ends with `released`.
+shows the dialogs; the message carries its reason. `RequestPath` still gets a
+path inside a folder the player always allowed for the addon, which needs no
+window. While the check still tests the worker, in the first seconds after
+Model Hotloader loads, `IsAvailable()` says `true` and requests wait for its
+verdict). A read or listing of a folder the player revoked meanwhile ends
+with `released`.
 
 ### Hooks
 
@@ -221,10 +227,12 @@ folder the player revoked meanwhile ends with `released`.
 * `MMDHL.FileAccessReady(api)`: runs once after Model Hotloader's Lua loaded.
   `mmdhl.FileAccess` exists from then on (with an old binary module its
   `IsAvailable()` says so).
-* `MMDHL.FileAccessChanged()`: a folder was remembered or revoked, or the
-  switch changed. After a request it runs from the `Think` poll after that
-  request's callback; a listener that raises an error is reported and changes
-  nothing else.
+* `MMDHL.FileAccessChanged()`: a folder was remembered or revoked, the switch
+  changed, or the installation check's verdict on the worker changed what
+  `IsAvailable()` says (its self-test failed, or the player repaired the
+  files): ask `IsAvailable()` again. After a request it runs from the `Think`
+  poll after that request's callback; a listener that raises an error is
+  reported and changes nothing else.
 
 ## Technical reference
 
@@ -238,7 +246,10 @@ folder the player revoked meanwhile ends with `released`.
   parser, `props::networkPath` (`native/props/network_path.hpp`).
 * Client module functions (JSON strings in and out; a refusal returns `nil`,
   the English reason and its code): `FileAccessInfo()`,
-  `FileAccessPick(json)`, `FileAccessRequest(json)` (both return an id),
+  `FileAccessPick(json)`, `FileAccessRequest(json)` (both return an id;
+  `"noDialog":true`, which the installation check's guard adds while it does
+  not allow the worker, lets only a remembered folder answer and refuses
+  anything else as `worker_unavailable`),
   `FileAccessPoll(id)` (`pending` with `dialog` and `position`, `granted` with
   `items`, `denied`, `failed`), `FileAccessRead(handle, json)` /
   `FileAccessPollRead(id)` (`false` while running, then `data, infoJson`),
@@ -267,11 +278,18 @@ folder the player revoked meanwhile ends with `released`.
   network share that stopped answering cannot hold the game. The grants
   store is changed under a named mutex shared by every game process: each
   change is applied to the newest file (a change that could not be saved is
-  applied again with the next one), and requests, reads and the management
-  window read the file again, so another process's revocations apply at once.
+  applied again with the next one), and requests, reads, every poll and the
+  management window read the file again, so what another process turned off
+  or revoked applies here at once: from the addon's next poll on, nothing it
+  ended is delivered and no dialog it ended stays open. An item a remembered
+  folder answered lasts while a remembered folder of its addon covers it, so
+  revoking the larger folder that replaced a smaller one ends both.
+* The picker's arming is `native/file_access_picker.hpp`: the picker is never
+  shown without it (it fails as `dialog_failed` instead).
 * Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
-  variable and is never packaged; the shipped worker has no such path. With
-  `MMDHL_FA_UI_TESTS=1` it also opens the real folder picker on the desktop and
-  checks that an OK sent at once chooses nothing), `tests/test_file_access.py`
-  and `tests/test_file_access_worker_gate.py`.
+  variable and is never packaged; the shipped worker has no such path. It
+  checks the picker's arming without a window; with `MMDHL_FA_UI_TESTS=1` it
+  also opens the real folder picker on the desktop and checks that an OK sent
+  at once chooses nothing), `tests/test_file_access.py` and
+  `tests/test_file_access_worker_gate.py`.

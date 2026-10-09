@@ -345,6 +345,35 @@ mmdhl.FeatureAvailable=nil
 ''')
 print('PASS: the installation check\'s verdict on the worker reaches addons and the window; the switch still turns file access off')
 
+# ---- While the worker's self-test runs: available, and what needs a window waits for the verdict ----
+lua.execute(r'''
+local FA=mmdhl.FileAccess
+for _,f in ipairs(TIMERS) do f() end THINK() THINK()
+local why=mmdhl.L('install.checking_feature',{feature='Model import'})
+WORKER_OK=false CHECKING=true
+mmdhl.FeatureAvailable=function() if WORKER_OK then return true end return false,why end
+mmdhl.GetInstallationStatus=function() return {probePending=CHECKING} end
+INFO={available=true,reason='ok',enabled=true}
+local changed=0 hook.Add('MMDHL.FileAccessChanged','verdict',function() changed=changed+1 end)
+hook.Run('MMDHL.InstallationChanged') THINK()
+assert(FA.IsAvailable()==true and changed==0,'file access read as unavailable while the worker self-test ran')
+-- The guard refuses what needs a window until the verdict: the request waits, nobody is called back.
+local picks=CALLED('Pick') REFUSE={why,'worker_unavailable'}
+local waited=CALLBACK() assert(FA.Pick({addon='Early'},waited.fn)==true)
+for i=1,3 do THINK() end assert(waited.runs==0 and CALLED('Pick')==picks+1,'a request refused during the self-test was not held')
+-- The self-test passes: asked again once, then answered as usual.
+CHECKING=false WORKER_OK=true hook.Run('MMDHL.InstallationChanged') THINK()
+assert(CALLED('Pick')==picks+2 and waited.runs==0 and changed==0,'the held request was not asked again once')
+STATES[SEQ]={state='granted',items={{handle=string.rep('9',32),name='late.json'}}} THINK()
+assert(waited.runs==1 and waited.args[1]==true)
+-- A verdict that changes what IsAvailable says runs MMDHL.FileAccessChanged once (from Think); one that does not, never.
+WORKER_OK=false hook.Run('MMDHL.InstallationChanged') assert(changed==0) THINK() assert(changed==1)
+hook.Run('MMDHL.InstallationChanged') THINK() assert(changed==1)
+WORKER_OK=true hook.Run('MMDHL.InstallationChanged') THINK() assert(changed==2)
+hook.Remove('MMDHL.FileAccessChanged','verdict') mmdhl.FeatureAvailable=nil mmdhl.GetInstallationStatus=nil
+''')
+print('PASS: during the worker self-test file access counts as available and requests wait for the verdict; a changed verdict runs MMDHL.FileAccessChanged')
+
 # ---- The realm count that gates file access is taken once a module opened, never before ----
 # localServerRealm() counts the server modules that opened in this process; nothing releases the
 # count of one that failed to open, which would leave file access offered on a remote server.

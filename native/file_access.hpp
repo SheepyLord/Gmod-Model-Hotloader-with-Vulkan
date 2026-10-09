@@ -74,7 +74,8 @@ struct FileTask;
 // Threads of reads and listings that have not ended yet, in this process.
 size_t fileAccessThreads();
 // One per client module. Lua calls arrive on the game thread. Turning file access off,
-// revoking a folder or unloading the module stops the reads and listings it concerns.
+// revoking a folder or unloading the module stops the reads and listings it concerns; what
+// another game process turned off or revoked applies at the latest on the next poll.
 class FileAccess {
 public:
  explicit FileAccess(FileAccessConfig config);
@@ -83,6 +84,8 @@ public:
  FileAccess& operator=(const FileAccess&)=delete;
  Json info();
  uint64_t pick(const Json& options);
+ // options "noDialog": the installation check does not allow the worker that shows the
+ // windows: only a remembered folder answers, anything else is refused "worker_unavailable".
  uint64_t request(const Json& options);
  Json poll(uint64_t id);
  uint64_t read(const std::string& handle,const Json& options);
@@ -123,8 +126,8 @@ private:
  void refresh();
  void adopt(FileGrantStore fresh);
  void turnedOff();
- void forget(const std::set<std::string>& grants,bool all);
- void available(const std::string& requester);
+ void prune();
+ void available(const std::string& requester,bool worker=true);
  uint64_t enqueue(std::unique_ptr<Request> r);
  void pump();
  void start(Request& r);

@@ -3,6 +3,7 @@
 // requester, script, purpose and title fields come from the addon, shown in quotes or
 // marked as not verified (cleanLabel turned their own quotation marks into apostrophes).
 #include "file_access.hpp"
+#include "file_access_picker.hpp"
 #include <windows.h>
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -135,41 +136,6 @@ HRESULT CALLBACK dialogEvents(HWND window,UINT event,WPARAM wParam,LPARAM,LONG_P
  if(event==TDN_TIMER&&!*armed&&wParam>=1200){*armed=true;for(int id:{AllowOnce,AllowAlways})SendMessageW(window,TDM_ENABLE_BUTTON,id,TRUE);}
  return S_OK;
 }
-// The picker's Allow reading button wakes up the same moment after the window appears and
-// after it takes the foreground: a stray Enter or click cannot choose anything, such as the
-// folder the picker opens in. The dialog refuses OK until then; the button looks disabled.
-constexpr ULONGLONG ArmingMs=1200;
-class PickerArming final : public IFileDialogEvents {
-public:
- std::atomic<ULONGLONG> armedAt{GetTickCount64()+ArmingMs};
- // Counted again from now (never shortened): the window appeared or was raised.
- void restart(){auto at=GetTickCount64()+ArmingMs;for(auto was=armedAt.load();was<at&&!armedAt.compare_exchange_weak(was,at);){}}
- IFACEMETHODIMP QueryInterface(REFIID id,void** out) override{
-  if(!out)return E_POINTER;
-  if(id==__uuidof(IUnknown)||id==__uuidof(IFileDialogEvents)){*out=static_cast<IFileDialogEvents*>(this);AddRef();return S_OK;}
-  *out=nullptr;return E_NOINTERFACE;
- }
- // It lives on pick()'s stack, unadvised before it goes.
- IFACEMETHODIMP_(ULONG) AddRef() override{return 2;}
- IFACEMETHODIMP_(ULONG) Release() override{return 1;}
- IFACEMETHODIMP OnFileOk(IFileDialog*) override{return GetTickCount64()>=armedAt.load()?S_OK:S_FALSE;}
- // The first folder it shows is the moment the window appears.
- IFACEMETHODIMP OnFolderChange(IFileDialog* dialog) override{
-  if(shown)return S_OK;shown=true;restart();
-  IOleWindow* ole=nullptr;HWND window=nullptr;if(SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&ole)))){ole->GetWindow(&window);ole->Release();}
-  if(HWND ok=window?GetDlgItem(window,IDOK):nullptr;ok&&IsWindowEnabled(ok)){EnableWindow(ok,FALSE);SetTimer(window,reinterpret_cast<UINT_PTR>(this),100,wake);}
-  return S_OK;
- }
- IFACEMETHODIMP OnFolderChanging(IFileDialog*,IShellItem*) override{return S_OK;}
- IFACEMETHODIMP OnSelectionChange(IFileDialog*) override{return S_OK;}
- IFACEMETHODIMP OnShareViolation(IFileDialog*,IShellItem*,FDE_SHAREVIOLATION_RESPONSE*) override{return S_OK;}
- IFACEMETHODIMP OnTypeChange(IFileDialog*) override{return S_OK;}
- IFACEMETHODIMP OnOverwrite(IFileDialog*,IShellItem*,FDE_OVERWRITE_RESPONSE*) override{return S_OK;}
-private:
- bool shown=false;
- // The timer's id is the arming (it outlives the window: pick() waits for the dialog).
- static void CALLBACK wake(HWND window,UINT,UINT_PTR id,DWORD){if(GetTickCount64()<reinterpret_cast<PickerArming*>(id)->armedAt.load())return;KillTimer(window,id);if(HWND ok=GetDlgItem(window,IDOK))EnableWindow(ok,TRUE);}
-};
 using TaskDialogFunction=HRESULT(WINAPI*)(const TASKDIALOGCONFIG*,int*,int*,BOOL*);
 // Returns the pressed button; the worker's manifest selects Common Controls 6, which has
 // TaskDialogIndirect. Without it a plain message box offers Allow once or Deny.
@@ -253,7 +219,8 @@ Json pick(const Json& request,const Text& t){
   if(!said.empty())custom->AddText(1,said.c_str());
   custom->AddText(2,t.pickNote);custom->Release();
  }
- PickerArming arming;DWORD cookie=0;if(FAILED(dialog->Advise(&arming,&cookie)))cookie=0;
+ // Never shown unarmed (file_access_picker.hpp): a picker that would take an OK at once fails instead.
+ PickerArming arming;auto cookie=armPicker(*dialog,arming);
  struct Unadvise{IFileDialog* dialog;DWORD cookie;~Unadvise(){if(cookie)dialog->Unadvise(cookie);}} unadvise{dialog,cookie};
  std::atomic<bool> shown{false};std::thread raising([&]{raise(title,shown,[&]{arming.restart();});});
  auto hr=dialog->Show(nullptr);shown=true;raising.join();
