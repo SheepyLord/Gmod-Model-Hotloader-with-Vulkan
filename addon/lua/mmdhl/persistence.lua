@@ -47,6 +47,12 @@ local function rigForClass(rig,class,state)
  if not converted then
   local err o,err=mmdhl.ActorOptions(o) if not o then return nil,err end
   local raw,e=native.PrepareCarrier(rig.asset,util.TableToJSON(o))
+  -- A physics profile this server cannot build must not lose the character: keep its shapes, drop the rest.
+  local P=mmdhl.physics
+  if not raw and P and P.HasPhysicsEdits and P.HasPhysicsEdits(o) then
+   o=P.WithoutPhysics(o) raw,e=native.PrepareCarrier(rig.asset,util.TableToJSON(o))
+   if raw then MsgN('[Model Hotloader restore] '..mmdhl.Localize(L'physics_editor.notice.dupe_physics_dropped')) end
+  end
   if not raw then return nil,e end
   converted=util.JSONToTable(raw)
   local mounted,error=available(converted) if not mounted then return nil,error end

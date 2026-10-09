@@ -288,8 +288,12 @@ local function installed(job)
     if info or err or tries>=60 then timer.Remove(name) refreshLibraries() end
    end)
   end
- -- Only a dedicated server installs in the server realm.
- else remember(job.key,item) end
+ -- Only a dedicated server installs in the server realm; it also needs the
+ -- package's saved collision and physics to use them for its spawns.
+ else
+  remember(job.key,item)
+  local fit=item.kind=='character' and game.IsDedicated() and W.ItemFit(item) if fit then writeIfMissing('mmd_hotloader/fit_overrides/'..item.asset..'.json',fit) end
+ end
  for _,handler in ipairs(installedHandlers) do handler(item,package) end
 end
 local function fail(job,err)
