@@ -38,8 +38,9 @@ void TextureResolver::index(){
 }
 ResolvedTexture TextureResolver::resolve(const std::string& reference){
     if(reference.find("://")!=std::string::npos)throw std::runtime_error("Network textures are not supported");
+    // A share on another computer is never opened: only its file name is looked up here.
     auto ref=fs::path(wide(reference));auto direct=ref.is_absolute()?ref:root/ref;
-    if(regular(direct))return{direct.lexically_normal(),false};
+    if(!networkPath(reference)&&regular(direct))return{direct.lexically_normal(),false};
     auto name=ref.filename();
     if(name.empty())throw std::runtime_error("Texture reference has no filename");
     // A colocated exact basename is a stronger match than resource aliases.

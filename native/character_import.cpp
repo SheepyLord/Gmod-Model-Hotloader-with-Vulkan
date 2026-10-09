@@ -41,7 +41,8 @@ constexpr size_t MaxRequestBytes=64*1024;
 std::string lowerAscii(std::string s){for(auto& c:s)c=char(std::tolower((unsigned char)c));return s;}
 std::string formatOf(const fs::path& p){auto e=lowerAscii(utf8(p.extension().wstring()));return e.size()>1?e.substr(1):e;}
 std::string formatLabel(const std::string& f){return f=="fbx"?"FBX":f=="glb"?"GLB":f=="gltf"?"glTF":f=="dae"?"DAE":f;}
-bool networkReference(std::string_view s){return s.starts_with("\\\\")||s.starts_with("//")||s.find("://")!=std::string_view::npos;}
+// \\host, //host, /\host, \\?\UNC\, \??\, \\.\ and URLs (props::networkPath decides on the parsed root).
+bool networkReference(std::string_view s){return props::networkPath(s);}
 Mat4 toGlm(const aiMatrix4x4& a){Mat4 m;for(int r=0;r<4;r++)for(int c=0;c<4;c++)m[c][r]=a[r][c];return m;}
 Vec3 v3(const aiVector3D& v){return {v.x,v.y,v.z};}
 Json xyz(Vec3 v){return Json::array({v.x,v.y,v.z});}
