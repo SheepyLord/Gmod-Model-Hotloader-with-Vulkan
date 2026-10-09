@@ -13,4 +13,10 @@ struct CharacterConversion {
 };
 // importAsset for a converted character: the same identity, cache, registry and fit.
 Json importConverted(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion&& converted);
+// A sources.local.json (Reload's source paths: the characters' or the static props')
+// for adding an entry. One that does not read as a JSON object must not block every
+// import, nor be overwritten: it is renamed to <name>.damaged-<UTC time> beside it, its
+// file name goes to `setAside` (the import result reports it as registryBackup), and a
+// new registry starts. A file that cannot be read or renamed fails the import instead.
+Json openSourceRegistry(const fs::path& path,std::string& setAside);
 }

@@ -59,6 +59,7 @@ struct Variant {
  int second=0;               // 1: an outfit on a copy of the skeleton (rebound); 2: on a foreign skeleton (dropped)
  int copies=1;               // the outfit's vertices repeated this often (identical, as FBX writes polygon corners)
  bool shiftJis=false;        // one bone name stored as Shift-JIS bytes
+ bool surrogate=false;       // one bone name holding bytes no code page decodes (a UTF-16 surrogate in UTF-8 form)
  bool duplicate=false;       // two bones share one name
 };
 std::vector<BoneSpec> skeleton(Names style){
@@ -94,7 +95,7 @@ std::vector<BoneSpec> skeleton(Names style){
  return b;
 }
 Bytes humanoid(const Variant& v=Variant{}){
- auto bones=skeleton(v.names);if(v.duplicate)bones[bones.size()-1].name="Hair_02";if(v.shiftJis)bones.back().name="@SJIS@";
+ auto bones=skeleton(v.names);if(v.duplicate)bones[bones.size()-1].name="Hair_02";if(v.shiftJis)bones.back().name="@SJIS@";if(v.surrogate)bones.back().name="@BAD@";
  int n=int(bones.size());Glb g;auto& j=g.j;j["asset"]={{"version","2.0"},{"generator","mmdhl character_import_tests"}};
  // Node 0 is the armature (not a joint); bones follow; then the mesh nodes.
  j["nodes"].push_back({{"name","Armature"},{"children",Json::array()}});
@@ -144,7 +145,7 @@ Bytes humanoid(const Variant& v=Variant{}){
  auto image=png();int iv=g.view(image.data(),image.size());j["images"]=Json::array({{{"bufferView",iv},{"mimeType","image/png"}}});j["textures"]=Json::array({{{"source",0}}});
  j["materials"]=Json::array({{{"name","Body"},{"alphaMode","MASK"},{"alphaCutoff",.5f},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}},{"baseColorFactor",{1,1,1,1}}}}}});
  // 左足 in Shift-JIS: 8D B6 91 AB.
- return g.file({{"@SJIS@",std::string("\x8D\xB6\x91\xAB",4)}});
+ return g.file({{"@SJIS@",std::string("\x8D\xB6\x91\xAB",4)},{"@BAD@",std::string("\xED\xA0\x80\xFF",4)}});
 }
 // The same humanoid as COLLADA 1.4.1 (Unreal names, a box per weighted bone), in
 // centimetres with Z up as 3ds Max and Maya write it: Assimp applies <unit> and <up_axis>.
@@ -249,6 +250,14 @@ void nameTests(){
   check(sanitizeBoneName(std::string("\x8D\xB6\x91\xAB",4),&issue)=="左足"&&issue=="cp932","sanitise: Shift-JIS names are decoded");
   auto bad=sanitizeBoneName(std::string("A\xFF\xFF",3),&issue);check(bad=="A\xEF\xBF\xBD\xEF\xBF\xBD"&&issue=="replaced","sanitise: undecodable bytes become U+FFFD");
   check(sanitizeBoneName("Bone\x01\x7F",&issue)=="Bone","sanitise: control characters are stripped");
+  // Bytes no decoder takes (UTF-8, cp932 and cp936 all refuse them): a UTF-16 surrogate in
+  // UTF-8 form or a code point past U+10FFFF is not UTF-8 either, so it becomes U+FFFD too.
+  // Invalid UTF-8 would stop status.json and the manifest from being written.
+  {bool valid=true;
+   for(auto raw:{std::string("\xED\xA0\x80\xFF",4),std::string("\xED\xB0\x80\x81",4),std::string("\xF4\x90\x80\x80\x81",5),std::string("\xF5\x80\x80\x80\x81",5)}){
+    auto name=sanitizeBoneName(raw,&issue);try{(void)Json(name).dump();}catch(const std::exception&){valid=false;}
+    valid&=issue=="replaced"&&name.find("\xEF\xBF\xBD")!=std::string::npos;}
+   check(valid&&sanitizeBoneName(std::string("\xED\xA0\x80\xFF",4),&issue)=="\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD","sanitise: surrogates and code points past U+10FFFF become U+FFFD, never invalid UTF-8");}
   std::string longName;for(int i=0;i<100;i++)longName+="あ";auto cut=sanitizeBoneName(longName,&issue);check(cut.size()==255&&cut.substr(252)=="あ","sanitise: long names are cut at 255 bytes on a character boundary");}
 }
 
@@ -450,6 +459,9 @@ void converterTests(){
    &&b[toe]["position"][2].get<float>()>b[foot]["position"][2].get<float>()+.05f,"probe: feet give the facing without losing the up axis of the hips and head");}
  {Variant v;v.shiftJis=true;auto p=probeCharacter(writeFile(L"sjis.glb",humanoid(v)),Json::object(),{});int b=boneNamed(p,"左足");check(b>=0&&p["skeleton"]["bones"][b]["nameIssue"]=="cp932","probe: a Shift-JIS bone name is decoded and marked");}
  {Variant v;v.duplicate=true;auto p=probeCharacter(writeFile(L"duplicate.glb",humanoid(v)),Json::object(),{});check(boneNamed(p,"Hair_02 #2")>=0,"probe: duplicate names are numbered");}
+ {Variant v;v.surrogate=true;auto p=probeCharacter(writeFile(L"surrogate.glb",humanoid(v)),Json::object(),{});bool written=true;try{(void)p.dump();}catch(const std::exception&){written=false;}
+  bool marked=false;for(auto& b:p["skeleton"]["bones"])marked|=b["nameIssue"]=="replaced";
+  check(written&&marked,"probe: a bone name no code page decodes still gives valid JSON for status.json");}
 
  // ---- convert ----
  auto request=autoRequest(probe,hairJiggle());
@@ -562,7 +574,43 @@ void converterTests(){
   fs::create_directories(cache/L"assets"/wide(forged));fs::copy_file(cache/L"assets"/wide(id)/L"model.bin",cache/L"assets"/wide(forged)/L"model.bin");writeJson(cache/L"assets"/wide(forged)/L"manifest.json",manifest);
   bool refused=false;try{loadAsset(cache,forged);}catch(const std::exception& e){refused=std::string(e.what())=="Cached conversion map is invalid";}
   check(refused,"reload: an out-of-range conversion map is refused");}
+ // A damaged source list (Reload's paths for every other model) is set aside, never written over.
+ for(auto [damage,label]:{std::pair{std::string("{\"broken\": "),"cut-off"},{std::string("[1,2]"),"non-object"}}){
+  writeAtomic(cache/L"sources.local.json",Bytes(damage.begin(),damage.end()));
+  auto again=importConverted(mixamo,cache,request,{},convertCharacter(mixamo,request,{}));
+  auto backup=again.value("registryBackup",std::string());auto kept=cache/wide(backup);
+  bool same=backup.starts_with("sources.local.json.damaged-")&&fs::is_regular_file(kept)&&readFile(kept)==Bytes(damage.begin(),damage.end());
+  auto registry=readJson(cache/L"sources.local.json");
+  check(same&&registry.is_object()&&registry.size()==1&&registry.contains(again["asset"].get<std::string>()),std::string("registry: a ")+label+" source list is kept beside the new one and reported");
+  fs::remove(kept);}
+ check(!first.contains("registryBackup")&&!second.contains("registryBackup"),"registry: a readable source list is not reported");
  fs::remove_all(cache,ec);
+}
+// ---- what a model file may name: its own folder, never another place ----
+// The humanoid as a .gltf that names its buffer (and image) by uri.
+std::string asGltf(const Bytes& glb,const std::string& buffer,const std::string& image,Bytes& bin){
+ uint32_t length,size;std::memcpy(&length,glb.data()+12,4);auto j=Json::parse(glb.begin()+20,glb.begin()+20+length);
+ std::memcpy(&size,glb.data()+20+length,4);bin.assign(glb.begin()+28+length,glb.begin()+28+length+size);
+ j["buffers"][0]["uri"]=buffer;if(!image.empty())j["images"][0]=Json{{"uri",image}};return j.dump();
+}
+void dependencyTests(){
+ auto root=temp(L"deps");std::error_code ec;fs::remove_all(root,ec);for(auto f:{L"model",L"outside",L"textures"})fs::create_directories(root/f);
+ Bytes bin;auto gltf=[&](const wchar_t* name,const std::string& buffer,const std::string& image=""){auto text=asGltf(humanoid(),buffer,image,bin);auto p=root/L"model"/name;writeAtomic(p,Bytes(text.begin(),text.end()));return p;};
+ auto beside=gltf(L"beside.gltf","beside.bin");writeAtomic(root/L"model"/L"beside.bin",bin);writeAtomic(root/L"outside"/L"far.bin",bin);
+ check(probeCharacter(beside,Json::object(),{})["auto"]["humanoid"]==true,"dependencies: a .gltf with its buffer beside it is read");
+ // A buffer out of the model's folder (climbing out, absolute or behind a junction) would become vertex data: never read.
+ // (Assimp then tries the file name in the model's folder, so the outside file has a name of its own.)
+ auto junction=[](const fs::path& link,const fs::path& target){auto cmd=L"cmd /c mklink /J \""+link.wstring()+L"\" \""+target.wstring()+L"\" >nul";return _wsystem(cmd.c_str())==0;};
+ check(junction(root/L"model"/L"linked",root/L"outside"),"dependencies: the test junction is made");
+ for(auto [name,uri,label]:{std::tuple{L"escape.gltf",std::string("../outside/far.bin"),"that climbs out of the model's folder"},{L"absolute.gltf",utf8((root/L"outside"/L"far.bin").generic_wstring()),"at an absolute path"},{L"linked.gltf",std::string("linked/far.bin"),"behind a junction"}}){
+  auto file=gltf(name,uri);fails([&]{probeCharacter(file,Json::object(),{});},"character.parse","",std::string("dependencies: a buffer ")+label+" is never read");}
+ // Textures likewise; the textures folder beside the model still works.
+ writeAtomic(root/L"outside"/L"secret.png",png());writeAtomic(root/L"textures"/L"skin.png",png());
+ for(auto [name,image,loaded]:{std::tuple{L"secret.gltf",std::string("../outside/secret.png"),false},{L"skin.gltf",std::string("../textures/skin.png"),true}}){
+  auto file=gltf(name,"beside.bin",image);auto cv=convertCharacter(file,autoRequest(probeCharacter(file,Json::object(),{})),{});
+  bool missing=false;for(auto& w:cv.warnings)missing|=w.find("Missing texture: secret.png (checked model, tex and textures folders)")!=std::string::npos;
+  check(loaded?cv.textures.size()==1&&!missing:cv.textures.empty()&&missing,loaded?"dependencies: a texture in the textures folder beside the model is read":"dependencies: a texture outside the model's folders is never read");}
+ fs::remove(root/L"model"/L"linked",ec);fs::remove_all(root,ec);
 }
 }
 
@@ -571,6 +619,6 @@ int main(int argc,char** argv){try{
   writeAtomic(dir/L"mixamo.glb",humanoid());Variant ue;ue.names=Names::Unreal;writeAtomic(dir/L"unreal.glb",humanoid(ue));Variant numbered;numbered.names=Names::Nonsense;writeAtomic(dir/L"numbered.glb",humanoid(numbered));
   Variant z;z.zUpCentimetres=true;writeAtomic(dir/L"mixamo-zup-cm.glb",humanoid(z));Variant mirror;mirror.mirrored=true;writeAtomic(dir/L"mixamo-mirrored.glb",humanoid(mirror));writeAtomic(dir/L"humanoid.dae",daeHumanoid());std::cout<<"fixtures written to "<<utf8(dir.wstring())<<"\n";return 0;}
  if(argc==3&&std::string(argv[1])=="--write-slots"){auto text=slotsJson().dump(1)+"\n";writeAtomic(argv[2],std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));return 0;}
- nameTests();conventionTests();ruleTests();converterTests();
+ nameTests();conventionTests();ruleTests();converterTests();dependencyTests();
  std::cout<<checks<<" checks passed\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}}

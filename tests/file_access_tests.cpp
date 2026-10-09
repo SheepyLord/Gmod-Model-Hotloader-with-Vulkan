@@ -3,10 +3,14 @@
 // trip through the test-only worker (argv[1], answers from MMDHL_FA_TEST_ANSWER). argv[2]
 // is the shipped worker: its --request refuses network sources and cache folders before
 // opening them, and takes the cache folder from its command line when the game names one.
+// Imports on another server (picked_models.hpp): only files the player picked, and the
+// private job folders.
 #include "file_access.hpp"
+#include "picked_models.hpp"
 #include "props/network_path.hpp"
 #include <windows.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
@@ -247,6 +251,29 @@ int wmain(int argc,wchar_t** argv){try{
   check(refusal([&]{reader.read(file,Json::object());})=="busy","a ninth read ran beside eight");
   Sleep(1500);check(readNow(reader,file,Json::object()).data=="{\"x\":1}\r\n","uncollected results kept their slots");
   check(refusal([&]{reader.pollRead(forgotten[0]);})=="unknown_request","an uncollected result was kept");}
+ // ---- Imports on a server this game does not host (picked_models.hpp) ----
+ // Lua there may name only files the player chose in the picker: any session's to import or
+ // reload, this session's to read the notes beside them. A refusal comes before anything
+ // opens the path, the same whether the file exists or not.
+ {auto store=root/L"picked"/L"picked-models.json";write(root/L"models"/L"chosen.pmx","PMX ");write(root/L"models"/L"other.pmx","PMX ");
+  auto chosen=u8(root/L"models"/L"chosen.pmx"),other=u8(root/L"models"/L"other.pmx"),missing=u8(root/L"models"/L"missing.pmx");
+  {PickedModels picked(store);
+   for(auto use:{SourceUse::Import,SourceUse::Notes})check(sourceAllowed(picked,other,true,use)&&sourceAllowed(picked,missing,true,use),"single player or a listen host lost direct paths");
+   check(!sourceAllowed(picked,other,false,SourceUse::Import)&&!sourceAllowed(picked,missing,false,SourceUse::Import)&&!sourceAllowed(picked,other,false,SourceUse::Notes),"another server imported a file the player did not pick");
+   check(picked.add(chosen)&&fs::is_regular_file(store),"the picked store was not saved");
+   check(sourceAllowed(picked,chosen,false,SourceUse::Import)&&sourceAllowed(picked,chosen,false,SourceUse::Notes),"a file picked in this session");
+   auto spelled=chosen;for(auto& c:spelled)c=char(std::toupper((unsigned char)c));std::replace(spelled.begin(),spelled.end(),'\\','/');
+   check(sourceAllowed(picked,spelled,false,SourceUse::Import),"the picked file spelled another way Windows accepts");
+   check(!sourceAllowed(picked,chosen+"x",false,SourceUse::Import)&&!sourceAllowed(picked,"",false,SourceUse::Import)&&!sourceAllowed(picked,"C:\\\xff.pmx",false,SourceUse::Import),"a neighbour, empty or broken path counted as picked");}
+  {PickedModels later(store);
+   check(sourceAllowed(later,chosen,false,SourceUse::Import)&&!sourceAllowed(later,chosen,false,SourceUse::Notes),"an earlier session's pick: imported, notes not read");
+   check(!sourceAllowed(later,other,false,SourceUse::Import),"the store let in a file nobody picked");}
+  write(store,"{\"schema\":1,\"paths\":");check(!sourceAllowed(PickedModels(store),chosen,false,SourceUse::Import),"a damaged store let a file in");
+  // A job's request, status and the picker's answer: a folder of its own, outside garrysmod/data.
+  fs::create_directories(root/L"temp");auto job=createPrivateFolder(L"mmdhl-job-",root/L"temp"),next=createPrivateFolder(L"mmdhl-job-",root/L"temp");
+  check(fs::is_directory(job)&&job.parent_path()==root/L"temp"&&job.filename().wstring().starts_with(L"mmdhl-job-")&&job.filename().wstring().size()==42&&next!=job,"a private job folder");
+  write(job/L"status.json","{}");fs::last_write_time(job,fs::file_time_type::clock::now()-std::chrono::hours(48));
+  check(sweepPrivateFolders(L"mmdhl-job-",std::chrono::hours(24),root/L"temp")==1&&!fs::exists(job)&&fs::exists(next),"job folders a crash left are swept after a day, recent ones stay");}
  fa.reset();releaseRuntimeRealm(true);check(!localServerRealm(),"the server realm count");
  std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule and dialogs\n";
  return 0;

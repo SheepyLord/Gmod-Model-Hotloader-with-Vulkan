@@ -28,6 +28,7 @@
 #include "physics_profile.hpp"
 #include "import_error.hpp"
 #include "file_access.hpp"
+#include "picked_models.hpp"
 #include "props/network_path.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
@@ -36,11 +37,11 @@ constexpr bool ServerRealm=true;
 #else
 constexpr bool ServerRealm=false;
 #endif
-struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;};
+struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;bool picker=false;};
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;std::unique_ptr<PickedModels> picked;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -67,16 +68,27 @@ void retireJob(Job& j){std::error_code error;if(plainDirectory(j.dir))fs::remove
 #ifndef MMDHL_SERVER
 void pruneJobs(){std::vector<uint64_t> done;for(auto& [id,j]:context->jobs)if(!j.process&&!j.result.is_null())done.push_back(id);for(size_t i=0;i+16<done.size();i++)context->jobs.erase(done[i]);}
 #endif
+#ifndef MMDHL_SERVER
+// The files the player chose in the picker (picked_models.hpp), read on first use.
+PickedModels& picked(){if(!context->picked){fs::path store;try{store=pickedModelsStore();}catch(...){}context->picked=std::make_unique<PickedModels>(store);}return *context->picked;}
+// Where jobs keep their request, status and log: %TEMP%\mmdhl-jobs\job-<random> (picked_models.hpp).
+fs::path jobsFolder(){wchar_t temp[MAX_PATH+1]{};if(!GetTempPathW(MAX_PATH+1,temp))throw std::runtime_error("No temporary folder for the import");auto dir=fs::path(temp)/L"mmdhl-jobs";fs::create_directories(ioPath(dir));return dir;}
+#endif
 uint64_t launch(bool picker,const std::string& source,const Json& options){
 #ifdef MMDHL_SERVER
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
+    // On a server this game does not host, every client script is that server's: it imports
+    // only files the player picked, decided before anything opens the path (picked_models.hpp).
+    if(!source.empty()&&!sourceAllowed(picked(),source,localServerRealm(),SourceUse::Import))throw std::runtime_error("On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.");
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
     // Sources come from Lua (or registries in data/ that Lua can write): a path to another
     // computer would make Windows sign in there. Mapped drive letters still work.
     if(props::networkPath(source))throw std::runtime_error("Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
     pruneJobs();
-    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
+    // The request, the status and the picker's answer go through a folder of the job's own
+    // in the user's temporary folder: Lua can rewrite anything under garrysmod/data.
+    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.picker=picker;j.dir=createPrivateFolder(L"job-",jobsFolder());
     writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"stageCode",picker?"pick":"start"},{"progress",0}});
     if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"options",options}});
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
@@ -173,7 +185,12 @@ Json finishedJob(Job& j,Json last,const std::string& readError){
 FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->jobs.end())throw std::runtime_error("Unknown job");auto& j=it->second;if(!j.result.is_null()){push(LUA,j.result);return 1;}
     bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;std::string readError;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)readError=e.what();else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
     if(!finished&&GetTickCount64()-j.started>300000)result["warning"]="Import is taking longer than five minutes. You can keep waiting or cancel.";
-    if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);}
+    if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);
+#ifndef MMDHL_SERVER
+     // The picker's answer came through the job's private folder: the player chose this file.
+     if(j.picker&&result.value("state","")=="selected"&&result.contains("source")&&result["source"].is_string())picked().add(result["source"].get<std::string>());
+#endif
+    }
     else if(result.value("state","")!="running")result={{"state","running"},{"stage","Committing asset"},{"progress",.99}};
     push(LUA,result);return 1;} END_FUNCTION
 FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);j.group=nullptr;}if(j.process){CloseHandle(j.process);j.process=nullptr;}j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION
@@ -302,7 +319,10 @@ FUNCTION(PollPackageExport) {
  push(LUA,job.result);return 1;
 } END_FUNCTION
 // Readme, licence and embedded terms of a model file the player chose, before importing it.
-FUNCTION(InspectModelNotes) {push(LUA,inspectModelNotes(fs::path(wide(stringArg(LUA,1)))));return 1;} END_FUNCTION
+// On a server this game does not host, only beside a file picked in this session.
+FUNCTION(InspectModelNotes) {auto source=stringArg(LUA,1);
+ if(!sourceAllowed(picked(),source,localServerRealm(),SourceUse::Notes))throw std::runtime_error("On a server you do not host, model terms are read only beside a model just chosen in the file window");
+ push(LUA,inspectModelNotes(fs::path(wide(source))));return 1;} END_FUNCTION
 FUNCTION(CancelPackageExport) {auto it=context->packages.find(number(LUA,1));if(it!=context->packages.end())it->second.progress->cancel=true;LUA->PushBool(true);return 1;} END_FUNCTION
 // Shows an export in Explorer. Only plain file names inside data/mmd_hotloader/exports.
 FUNCTION(RevealPackageExport) {
@@ -598,7 +618,7 @@ GMOD_MODULE_OPEN(){
     try {context=std::make_unique<Context>();acquireRuntimeRealm(ServerRealm);wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
-        sweepJobFolders(context->cache,std::chrono::hours(24));
+        sweepJobFolders(context->cache,std::chrono::hours(24));try{sweepPrivateFolders(L"job-",std::chrono::hours(24),jobsFolder());}catch(...){}
 #endif
         LUA->CreateTable();
 #define REGISTER(name) LUA->PushCFunction(name);LUA->SetField(-2,#name)

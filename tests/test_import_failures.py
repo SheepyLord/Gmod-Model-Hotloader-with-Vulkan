@@ -117,6 +117,8 @@ assert(mmdhl.ImportHint('Cannot open file C:/x.obj','unknown')==L'library.hint.c
 assert(mmdhl.ImportHint('x','worker.crash',nil,'pick')==L'library.hint.picker_crash' and mmdhl.ImportHint('x','worker.crash',nil,'textures')==L'library.hint.worker_crash')
 assert(mmdhl.ImportHint('x','worker.crash',nil,'start')==L'library.hint.worker_start' and mmdhl.ImportHint('x','pmx.truncated',nil,'pick')==L'library.hint.pmx_truncated')
 assert(mmdhl.ImportStage({stageCode='pick'})==L'library.stage.pick')
+-- On another player's server only models chosen in the file window open (natives after 2.3.0).
+assert(mmdhl.ImportHint('On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.')==L'library.hint.remote_picked')
 ''')
 print('PASS: hints by error code and family first; the English phrases (fixed order) for older natives')
 
@@ -253,6 +255,27 @@ AFTER[2]() assert(#FRAMES==1 and HAS(FRAMES[1],L'library.fit_failed.title') and 
 mmdhl.boneMapper=nil mmdhl.OpenBoneMapper=nil
 ''')
 print('PASS: a character imported without a ragdoll lists the missing parts; Assign bones… only with the bone window; other reasons are said; nothing for older natives')
+
+# ---- a damaged list of source paths is kept, and the player told where ----
+lua.execute(r'''
+local L=mmdhl.L local library=mmdhl.library
+color_white=Color(255,255,255) CHAT={}
+chat.AddText=function(...) local parts={} for i=1,select('#',...) do local v=select(i,...) if type(v)=='string' then parts[#parts+1]=v end end CHAT[#CHAT+1]=table.concat(parts) end
+mmdhl.boneMapper=nil library.Refresh=function() end
+local function poll(status) NOTES={} CHAT={} TIMERS={} library.job=12 library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode(status) end HOOKS['Think/MMDHL.LibraryImport']() TIMERS={} end
+local function noted(text) for _,n in ipairs(NOTES) do if n==text then return true end end return false end
+local base={state='complete',asset=string.rep('f',64),source='C:/m/hero.pmx',filename='hero.pmx',info={name='Hero'},fit={ok=true}}
+poll(base) for _,n in ipairs(NOTES) do assert(not n:find('sources.local',1,true),'a readable list was reported: '..n) end
+local damaged=table.Copy(base) damaged.registryBackup='sources.local.json.damaged-20261009-101500' poll(damaged)
+local want=L('library.import.registry_damaged',{file='mmd_hotloader/sources.local.json.damaged-20261009-101500'})
+assert(want:find('mmd_hotloader/sources.local.json.damaged-20261009-101500',1,true) and noted(want) and CHAT[#CHAT]:find(want,1,true),'the kept list was not reported')
+-- A static prop's list lives in mmd_hotloader/static.
+mmdhl.props={library={OnImported=function() return 'Imported Box',0 end},ImportOptions=function() return {} end}
+poll({state='complete',kind='static',asset=string.rep('f',64),source='C:/m/box.obj',filename='box.obj',info={name='Box'},registryBackup='sources.local.json.damaged-20261009-101501'})
+assert(noted(L('library.import.registry_damaged',{file='mmd_hotloader/static/sources.local.json.damaged-20261009-101501'})),'the static prop list was not reported')
+mmdhl.props=nil
+''')
+print('PASS: a damaged list of source paths is reported with the name it was kept under')
 
 # ---- spawn: the fitter's reason inside a translated token ----
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)

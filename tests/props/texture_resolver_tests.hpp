@@ -1,4 +1,5 @@
 #include "texture_resolver.hpp"
+#include <cstring>
 void textureResolverTests(){
     const auto dir=fs::temp_directory_path()/fs::path(L"gmodel-resolver-test-"+std::to_wstring(GetCurrentProcessId()));
     fs::create_directories(dir/L"model"/L"tex");fs::create_directories(dir/L"textures");
@@ -26,5 +27,52 @@ void textureResolverTests(){
     TextureResolver nested(dir/L"model"/L"nested");
     check(nested.resolve("speaker.jpeg").path==dir/L"textures"/L"speaker.jpg.001.jpg","Packed JPEG alias or grandparent package texture lookup failed");
     rejects([&]{nested.resolve("speaker_other.jpeg");},"Texture alias selected an unrelated image");
+    // A model names only its own files: never one outside its folder and the tex and
+    // textures folders near it, however the reference is written. Its bytes would go into
+    // the cache and to other players with the model.
+    fs::create_directories(dir/L"outside");writeAtomic(dir/L"outside"/L"secret.png",data);writeAtomic(dir/L"secret.png",data);
+    TextureResolver confined(dir/L"model");
+    for(auto escape:{std::string("../secret.png"),std::string("..\\outside\\secret.png"),std::string("tex/../../outside/secret.png"),std::string("C:secret.png"),std::string("\\secret.png"),
+        utf8((dir/L"outside"/L"secret.png").wstring()),utf8((dir/L"secret.png").wstring()),utf8((dir/L"outside"/L"secret.png").generic_wstring())})
+        rejects([&]{confined.resolve(escape);},"a texture outside the model's folders was read");
+    // ...nor a download's Zone.Identifier stream (its source address), nor one a junction leads to.
+    {std::ofstream stream(dir/L"model"/L"body.png:Zone.Identifier");stream<<"[ZoneTransfer]\nHostUrl=https://example.invalid/private-link\n";}
+    rejects([&]{confined.resolve("body.png:Zone.Identifier");},"an alternate data stream was read as a texture");
+    auto junction=[](const fs::path& link,const fs::path& target){auto cmd=L"cmd /c mklink /J \""+link.wstring()+L"\" \""+target.wstring()+L"\" >nul";return _wsystem(cmd.c_str())==0;};
+    check(junction(dir/L"model"/L"linked",dir/L"outside"),"cannot create the test junction");
+    rejects([&]{confined.resolve("linked/secret.png");},"a junction in the model's folder led a texture outside it");
+    // Textures in the tex and textures folders beside and above the model (and below them), and
+    // absolute paths into the model's own folder, still resolve as written.
+    fs::create_directories(dir/L"textures"/L"skin");writeAtomic(dir/L"textures"/L"skin"/L"face.png",data);
+    auto sibling=confined.resolve("../textures/skin/face.png");
+    check(sibling.path==dir/L"textures"/L"skin"/L"face.png"&&!sibling.repaired,"a texture below the textures folder beside the model no longer resolves as written");
+    auto inside=confined.resolve(utf8((dir/L"model"/L"tex"/L"normal_map.png").wstring()));
+    check(inside.path==dir/L"model"/L"tex"/L"normal_map.png"&&!inside.repaired,"an absolute reference into the model's own folder no longer resolves");
+    check(confined.resolve("tex/../body.png").path==dir/L"model"/L"body.png","a reference that stays in the model's folder no longer resolves");
+    // The worker's denylist (file access's never-readable places) applies to every texture.
+    writeAtomic(dir/L"model"/L"wallet.png",data);
+    setDependencyDenylist([](const fs::path& p){return p.filename()==L"wallet.png";});
+    rejects([&]{TextureResolver(dir/L"model").resolve("wallet.png");},"a denied file was read as a texture");
+    setDependencyDenylist({});
+    check(TextureResolver(dir/L"model").resolve("wallet.png").path==dir/L"model"/L"wallet.png","the denylist outlived its process setting");
+    // The model's buffers (glTF) come only from its own folder too: a reference that climbs
+    // out fails the import instead of reading another file. (Assimp then tries the file name
+    // in the model's folder, so the outside file has a name of its own.)
+    {std::vector<float> points{0,0,0, 1,0,0, 0,1,0, 0,0,1};std::vector<uint16_t> faces{0,2,1, 0,1,3, 0,3,2, 1,2,3};
+     Bytes bin(points.size()*4+faces.size()*2);std::memcpy(bin.data(),points.data(),points.size()*4);std::memcpy(bin.data()+points.size()*4,faces.data(),faces.size()*2);
+     auto gltf=[&](const std::string& uri){return Json{{"asset",{{"version","2.0"}}},{"scene",0},{"scenes",{{{"nodes",{0}}}}},{"nodes",{{{"mesh",0}}}},
+         {"meshes",{{{"primitives",{{{"attributes",{{"POSITION",0}}},{"indices",1}}}}}}},
+         {"buffers",{{{"uri",uri},{"byteLength",bin.size()}}}},
+         {"bufferViews",{{{"buffer",0},{"byteOffset",0},{"byteLength",points.size()*4}},{{"buffer",0},{"byteOffset",points.size()*4},{"byteLength",faces.size()*2}}}},
+         {"accessors",{{{"bufferView",0},{"componentType",5126},{"count",4},{"type","VEC3"},{"min",{0,0,0}},{"max",{1,1,1}}},{{"bufferView",1},{"componentType",5123},{"count",12},{"type","SCALAR"}}}}}.dump();};
+     auto write=[](const fs::path& p,const std::string& text){writeAtomic(p,Bytes(text.begin(),text.end()));};
+     writeAtomic(dir/L"model"/L"shape.bin",bin);writeAtomic(dir/L"outside"/L"far.bin",bin);
+     write(dir/L"model"/L"beside.gltf",gltf("shape.bin"));write(dir/L"model"/L"escape.gltf",gltf("../outside/far.bin"));write(dir/L"model"/L"linked.gltf",gltf("linked/far.bin"));
+     Options options;
+     auto beside=importModel(dir/L"model"/L"beside.gltf",options,{});
+     check(beside.vertices.size()==4&&beside.indices.size()==12,"a glTF buffer beside the model no longer imports");
+     rejects([&]{importModel(dir/L"model"/L"escape.gltf",options,{});},"a glTF buffer outside the model's folder was read");
+     rejects([&]{importModel(dir/L"model"/L"linked.gltf",options,{});},"a glTF buffer behind a junction was read");}
+    fs::remove(dir/L"model"/L"linked");
     fs::remove_all(dir);
 }

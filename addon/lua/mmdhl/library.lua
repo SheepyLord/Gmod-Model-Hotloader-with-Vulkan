@@ -222,6 +222,8 @@ end
 -- Natives before 2.3.0 send no error code: the first phrase the English message
 -- contains picks the hint, so specific phrases come before general ones.
 local function hints() return {
+ -- Natives after 2.3.0, on another player's server: a file the player did not choose in the file window.
+ {'only models chosen in its file window',L'library.hint.remote_picked'},
  {'vrm avatar',L'library.hint.vrm_avatar'},
  {'spring bone',L'library.hint.vrm_spring'},
  {'invalid/truncated pmx',L'library.hint.pmx'},
@@ -654,6 +656,11 @@ hook.Add('Think','MMDHL.LibraryImport',function()
  if status.warning then library.status=library.status..' — '..status.warning end
  if isnumber(status.progress) then library.progress=math.max(library.progress or 0,math.Clamp(status.progress,0,1)) end
  library.filename=status.filename or library.filename
+ -- The import kept a damaged list of source paths (Reload's) under this name and started a new one (natives after 2.3.0).
+ if status.state=='complete' and isstring(status.registryBackup) and status.registryBackup~='' then
+  local text=L('library.import.registry_damaged',{file='mmd_hotloader/'..(status.kind=='static' and 'static/' or '')..status.registryBackup})
+  notification.AddLegacy(text,NOTIFY_ERROR,15) chat.AddText(Color(255,170,80),'[Model Hotloader] ',color_white,text)
+ end
  if status.state=='selected' then
   local source=status.path or status.source local kind=status.kind
   library.job=nil

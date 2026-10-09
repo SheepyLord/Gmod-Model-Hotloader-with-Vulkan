@@ -43,6 +43,10 @@ API and its limits).
 * Only in **single player** and on a **server you host**. On anyone else's
   server every client script comes from that server, so Model Hotloader refuses
   all requests there and does not even show your remembered folders.
+* Model imports follow the same rule there: a script from another server can
+  import, reimport or read the readmes beside only models you chose in Model
+  Hotloader's own file picker, so it cannot use the importer to learn whether
+  other files exist or what they are.
 * Whatever an addon reads, it can use as it likes, including sending it to a
   server or a website. Allow only addons you trust, and only what they need.
 
@@ -246,7 +250,9 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
   and a network path there is refused. `InspectModelNotes` reads only beside an existing local
   model file (`.pmx`, `.pmd`, `.vrm`, `.fbx`, `.glb`, `.gltf`, `.dae`, `.obj`,
   `.blend`), and the Workshop package scan ignores network paths.
-* Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only
+* Tests: `tests/file_access_tests.cpp` (CTest `file_access`, also the picked
+  files that imports on another server are limited to and the private job folders;
+  with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
   variable and is never packaged; the shipped worker has no such path) and
   `tests/test_file_access.py`.

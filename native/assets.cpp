@@ -178,6 +178,19 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
  }
  writeGma(package,files,"Model Hotloader materials "+id);
 }
+Json openSourceRegistry(const fs::path& path,std::string& setAside){
+    setAside.clear();std::error_code ec;if(!fs::exists(ioPath(path),ec))return Json::object();
+    Json registry;bool damaged=false;
+    try{registry=readJson(path);damaged=!registry.is_object();}catch(const Json::exception&){damaged=true;}
+    if(!damaged)return registry;
+    // Every other model's source path is in it: kept for repair, never written over.
+    SYSTEMTIME t{};GetSystemTime(&t);wchar_t stamp[32];swprintf_s(stamp,L"%04u%02u%02u-%02u%02u%02u",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
+    for(int n=0;;n++){
+        auto name=path.filename().wstring()+L".damaged-"+stamp+(n?L"-"+std::to_wstring(n):std::wstring());
+        if(MoveFileExW(ioPath(path).c_str(),ioPath(path.parent_path()/name).c_str(),MOVEFILE_WRITE_THROUGH)){setAside=utf8(name);return Json::object();}
+        auto error=GetLastError();if((error!=ERROR_ALREADY_EXISTS&&error!=ERROR_FILE_EXISTS)||n>=99)fileFailure("Cannot set aside the damaged source registry "+utf8(path.wstring()),path,error,true);
+    }
+}
 Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion* character){
     // Every step has a code (stageCode) the addon names in the player's language; the
     // texture step also says which material it is on, for a failure or a crash report.
@@ -225,14 +238,16 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     report("Saving to the cache","cache",.9f);
     manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
     auto directory=cache/L"assets"/wide(id);writeAtomic(directory/L"model.bin",raw);writeJson(directory/L"manifest.json",manifest);
-    // A damaged registry (Reload's source paths) must not block every import: start a new one.
-    auto registryPath=cache/L"sources.local.json";Json registry=Json::object();if(fs::exists(registryPath))try{registry=readJson(registryPath);}catch(const Json::exception&){}if(!registry.is_object())registry=Json::object();
+    // A damaged registry (Reload's source paths) must not block every import: it is set aside and a new one starts.
+    auto registryPath=cache/L"sources.local.json";std::string setAside;Json registry=openSourceRegistry(registryPath,setAside);
     registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
     model->id=id;report("Preparing Source materials","materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy","fit",.94f);auto fit=prepareModelFit(*model,cache);
     // The fit stays outside the manifest (and so outside the asset's identity). A failed
     // one carries its facts as errorDetails too, like any import failure (the Lua reads either).
     if(!fit.value("ok",true)&&!fit.contains("errorDetails"))fit["errorDetails"]={{"missing",fit.value("missing",Json::array())}};
-    return {{"state","complete"},{"asset",id},{"info",manifest},{"fit",fit}};
+    Json result={{"state","complete"},{"asset",id},{"info",manifest},{"fit",fit}};
+    if(!setAside.empty())result["registryBackup"]=setAside;
+    return result;
 }
 Json importConverted(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion&& converted){return importAsset(source,cache,options,progress,&converted);}
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){

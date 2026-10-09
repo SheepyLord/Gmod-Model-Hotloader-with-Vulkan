@@ -54,7 +54,8 @@ kept.
 ## Where the texts come from
 
 `native.InspectModelNotes(path)` (client module, `native/model_notes.cpp`)
-reads, without importing anything:
+reads, without importing anything (on a server the game does not host, only
+beside a model picked in the file picker in this session; see [API.md](API.md)):
 
 - **Embedded texts**: PMX name, English name, comment and English comment
   (UTF-16LE or UTF-8, as the header says); PMD name and comment (Shift-JIS).

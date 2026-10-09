@@ -10,6 +10,7 @@
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
 #include "props/core.hpp"
+#include "props/texture_resolver.hpp"
 #include <windows.h>
 #include <shobjidl.h>
 #include <atomic>
@@ -46,6 +47,16 @@ void watchCrashes(const mmd::fs::path& log){
     ULONG reserve=64*1024;SetThreadStackGuarantee(&reserve); // room to log a stack overflow
     SetUnhandledExceptionFilter(crashed);signal(SIGABRT,aborted);
     std::set_terminate([]{char line[160];snprintf(line,sizeof line,"std::terminate during stage %s\r\n",*mmd::importStage()?mmd::importStage():"start");crashLine(line);std::abort();});
+}
+// A model file names its own buffers and textures; those are read only from its folders
+// (props::DependencyScope) and never from a place file access never lets addons read
+// (FilePolicy: credential stores, browser profiles, keys, Windows, the game's cfg...).
+// The worker runs from <game>/garrysmod/lua/bin.
+void guardDependencies(){
+    wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);auto bin=mmd::fs::path(exe).parent_path();mmd::fs::path game;
+    if(!lstrcmpiW(bin.filename().c_str(),L"bin")&&!lstrcmpiW(bin.parent_path().filename().c_str(),L"lua")&&!lstrcmpiW(bin.parent_path().parent_path().filename().c_str(),L"garrysmod"))game=bin.parent_path().parent_path().parent_path();
+    auto policy=std::make_shared<const mmd::FilePolicy>(mmd::FilePolicy::system(game));
+    props::setDependencyDenylist([policy](const mmd::fs::path& path){return policy->deniedPath(path);});
 }
 // Characters for --inspect/--fit: PMX/PMD as-is, VRM and other formats through the
 // same conversion as import (FBX/glTF/DAE with the automatic bone assignment).
@@ -100,15 +111,16 @@ props::Json importProp(const mmd::fs::path& source,const mmd::fs::path& cache,co
     PropProgress progress(status,mmd::utf8(source.filename().wstring()));
     props::Progress report{[&](const props::ProgressUpdate& event){progress.update(event);}};
     auto asset=props::importModel(source,options,report);auto id=props::saveAsset(root,asset,report,options.limits);
-    // Local-only registry for Reimport. It is never shared with a server.
-    auto registryPath=root/L"sources.local.json";props::Json registry=props::Json::object();
-    if(mmd::fs::exists(registryPath))try{registry=props::readJson(registryPath,8ull<<20);}catch(...){registry=props::Json::object();}
+    // Local-only registry for Reimport. It is never shared with a server. A damaged one is set aside, not overwritten.
+    auto registryPath=root/L"sources.local.json";std::string setAside;auto registry=mmd::openSourceRegistry(registryPath,setAside);
     registry[id]={{"source",mmd::utf8(mmd::fs::absolute(source).wstring())},{"options",request}};props::writeJson(registryPath,registry);
     props::Json info={{"name",asset.manifest.value("name",std::string("Imported prop"))},{"warnings",asset.manifest.value("warnings",props::Json::array())},{"triangles",asset.indices.size()/3},{"vertices",asset.vertices.size()},
         {"materials",asset.manifest.at("materials").size()},{"collision_hulls",asset.hulls.size()},{"collision_method",asset.manifest.value("collision_method",std::string("coacd"))},{"format",asset.manifest.value("format",std::string())},{"mins",asset.manifest.at("mins")},{"maxs",asset.manifest.at("maxs")}};
     if(asset.manifest.contains("skeleton"))info["skeleton"]=asset.manifest["skeleton"];
     if(info["format"]=="pmx")try{info["classification"]=classifyPmx(source);}catch(...){}
-    return progress.complete({{"state","complete"},{"kind","static"},{"progress",1},{"stage","Import complete"},{"asset",id},{"info",info}});
+    props::Json result={{"state","complete"},{"kind","static"},{"progress",1},{"stage","Import complete"},{"asset",id},{"info",info}};
+    if(!setAside.empty())result["registryBackup"]=setAside;
+    return progress.complete(result);
 }
 // A .blend file can hold many objects; list its meshes so the player picks.
 props::Json listBlend(const mmd::fs::path& source,const props::Json& request,const mmd::fs::path& status){
@@ -176,6 +188,9 @@ int wmain(int argc,wchar_t** argv){
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--installation-test"){auto result=workerSelfTest(argc==4&&std::wstring(argv[3])==L"coacd");result["identity"]={{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"}};writeJson(argv[2],result);return 0;}
         if(argc==3&&std::wstring(argv[1])==L"--probe-compute"){auto result=openclCapabilities(false);writeJson(argv[2],result);return result.value("available",false)?0:1;}
         if(argc==3&&std::wstring(argv[1])==L"--probe-vulkan"){auto result=vulkanCapabilities(false);shutdownVulkan();writeJson(argv[2],result);return result.value("available",false)?0:1;}
+        // Every mode that reads a model file.
+        static const std::set<std::wstring> reading={L"--inspect",L"--convert-vrm",L"--inspect-physics",L"--probe-character",L"--convert-character",L"--inspect-bone-map",L"--bone-map-proposal",L"--fit",L"--fit-raw",L"--request"};
+        if(argc>=2&&reading.contains(argv[1]))guardDependencies();
         if(argc==3&&std::wstring(argv[1])==L"--inspect"){auto m=loadCharacter(argv[2]);std::cout<<m->info().dump()<<std::endl;return 0;}
         // Development aid: write the converted PMX, its textures and the VRM metadata.
         if(argc==4&&std::wstring(argv[1])==L"--convert-vrm"){auto converted=convertVrm(readFile(argv[2]),utf8(fs::path(argv[2]).stem().wstring()));fs::path out=argv[3];
