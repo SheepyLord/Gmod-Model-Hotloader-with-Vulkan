@@ -496,7 +496,7 @@ Json probeCharacter(const fs::path& source,const Json&,const CharacterProgress& 
  if(!c.dropped.empty()){std::string names;for(size_t i=0;i<c.dropped.size();i++)names+=(i?", ":"")+c.dropped[i];warnings.push_back(std::to_string(c.dropped.size())+" meshes use a second skeleton and will be left out: "+names);}
  auto skeleton=skeletonJson(a.view,a.meanings);skeleton["armatures"]=armatures;
  float height=a.view.height;bool normalized=height<.3f||height>3.f;
- Json probe={{"version",1},{"format",loaded.format},{"generator",loaded.generator},
+ Json probe={{"version",1},{"format",loaded.format},{"generator",loaded.generator},{"sourceSha256",hash(readFile(source))},
   {"units",{{"metersPerUnit",loaded.metersPerUnit},{"up",a.frame.up},{"upSource",a.frame.upSource},{"facingSource",a.frame.facingSource}}},
   {"height",{{"meters",std::round(height*1e3f)/1e3f},{"normalized",normalized}}},
   {"skeleton",skeleton},{"auto",guessJson(a.guess)},{"meshes",meshes},{"materials",loaded.scene->mNumMaterials},{"textures",textures.size()},{"vertices",c.vertices},{"triangles",c.triangles},

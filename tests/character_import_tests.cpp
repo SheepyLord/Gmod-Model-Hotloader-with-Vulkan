@@ -357,7 +357,8 @@ void converterTests(){
  auto mixamo=writeFile(L"mixamo.glb",humanoid());
  // ---- probe ----
  auto probe=probeCharacter(mixamo,Json::object(),{});
- bool keys=true;for(auto k:{"version","format","generator","units","height","skeleton","auto","meshes","materials","textures","vertices","triangles","morphs","warnings"})keys&=probe.contains(k);
+ bool keys=true;for(auto k:{"version","format","generator","sourceSha256","units","height","skeleton","auto","meshes","materials","textures","vertices","triangles","morphs","warnings"})keys&=probe.contains(k);
+ keys&=probe["sourceSha256"]==hash(readFile(mixamo));
  for(auto k:{"signature","maxDepth","armatures","bones","points"})keys&=probe["skeleton"].contains(k);
  check(keys&&probe["version"]==1&&probe["format"]=="glb","probe: every field of the bone window's input is present");
  auto& bones=probe["skeleton"]["bones"];bool parentsFirst=true;for(size_t i=0;i<bones.size();i++)parentsFirst&=bones[i]["parent"].get<int>()<int(i);
