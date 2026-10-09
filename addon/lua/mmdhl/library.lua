@@ -228,7 +228,7 @@ local function hints() return {
  {'import worker missing',L'library.hint.worker_missing'},
  {'cannot start import worker',L'library.hint.worker_start'},
  {'cannot isolate worker',L'library.hint.worker_start'},
- {'belong in static props',mmdhl.boneMapper and mmdhl.boneMapper.Available('convert') and L'library.hint.character_format' or L'library.hint.static_file'},
+ {'belong in static props',istable(mmdhl.boneMapper) and isfunction(mmdhl.boneMapper.Available) and mmdhl.boneMapper.Available('convert') and L'library.hint.character_format' or L'library.hint.static_file'},
  {'humanoid map',L'library.hint.vrm_humanoid'},
  {'external buffer',L'library.hint.vrm_external_buffer'},
  {'vrm file',L'library.hint.vrm_damaged'},
@@ -439,8 +439,9 @@ function library.StartStaticImport(source,objects)
 end
 local function startImport(kind,source)
  if kind=='static' then return library.StartStaticImport(source) end
+ -- The bone window may be missing or partly loaded (its files did not arrive): imports work without it.
  local BM=mmdhl.boneMapper
- if BM and BM.Convertible(source) then return BM.Probe(source) end
+ if istable(BM) and isfunction(BM.Convertible) and isfunction(BM.Probe) and BM.Convertible(source) then return BM.Probe(source) end
  return library.StartImport(native.BeginImport(source,'{}'))
 end
 -- Wrapped text height in a label this wide: each line's measured width wraps, plus breaks.
@@ -482,7 +483,7 @@ function mmdhl.ShowImportFailure(status,kind)
   -- A failed conversion goes back to the bone window with the player's choices.
   local BM=mmdhl.boneMapper local session=BM and BM.sessions and BM.sessions[status.source]
   if session then
-   local back=UI.button(buttons,L'library.failure.back_to_bones',function() frame:Close() if not IsValid(BM.frame) then BM.ShowWindow(session,{}) end end,s(34),f.Body)
+   local back=UI.button(buttons,L'library.failure.back_to_bones',function() frame:Close() if not IsValid(BM.frame) and isfunction(BM.ShowWindow) then BM.ShowWindow(session,{}) end end,s(34),f.Body)
    back:Dock(LEFT) back:SetWide(s(200)) back:DockMargin(s(8),0,0,0)
   end
  end
@@ -629,7 +630,7 @@ local function promptCharacterInstead(status)
    end,L'library.character_instead.keep')
  elseif info.skeleton and info.skeleton.humanoid then
   local BM=mmdhl.boneMapper
-  if BM and status.source and BM.Convertible(status.source) then
+  if istable(BM) and isfunction(BM.Convertible) and status.source and BM.Convertible(status.source) then
    Derma_Query(L('library.rigged_prop.query',{name=name,bones=info.skeleton.bones or 0}),L'library.rigged_prop.title',L'library.rigged_prop.import',function()
     mmdhl.props.library.Delete({status.asset},function() if not library.job then startImport('library',status.source) end end)
    end,L'library.rigged_prop.keep')
@@ -648,7 +649,8 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   local failure={state='failed',error=tostring(err or L'library.import.unknown_error'),stageCode='worker',filename=library.filename}
   timer.Simple(0,function() mmdhl.ShowImportFailure(failure,kind) end) return
  end
- if mmdhl.boneMapper and mmdhl.boneMapper.OnJobStatus(status) then hook.Run('MMDHL.ImportChanged') return end
+ local BM=mmdhl.boneMapper
+ if istable(BM) and isfunction(BM.OnJobStatus) and BM.OnJobStatus(status) then hook.Run('MMDHL.ImportChanged') return end
  if status.state~='running' or status.stage~='Select model' then pickerNotice(false) end
  library.status=status.state=='failed' and L('library.import.failed',{error=tostring(status.error or L'library.import.unknown_error')}) or status.stage or status.error or status.state
  if status.warning then library.status=library.status..' — '..status.warning end
@@ -660,7 +662,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   local function proceed()
    if library.job then library.status=L'library.import.busy' hook.Run('MMDHL.ImportChanged') return end
    if kind=='static' then library.StartStaticImport(source)
-   elseif mmdhl.boneMapper and mmdhl.boneMapper.Convertible(source) then mmdhl.boneMapper.Probe(source)
+   elseif istable(BM) and isfunction(BM.Convertible) and isfunction(BM.Probe) and BM.Convertible(source) then BM.Probe(source)
    else library.StartImport(native.BeginImport(source,'{}')) library.status=L'library.import.importing_model' end
    hook.Run('MMDHL.ImportChanged')
   end

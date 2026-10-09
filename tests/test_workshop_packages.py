@@ -41,6 +41,7 @@ mmdhl={library={entries={}},props={library={entries={}}}}
 isstring=function(v) return type(v)=='string' end
 istable=function(v) return type(v)=='table' end
 isnumber=function(v) return type(v)=='number' end
+isfunction=function(v) return type(v)=='function' end
 IsValid=function(v) return v~=nil end
 string.Trim=function(s) return (s:gsub('^%s+',''):gsub('%s+$','')) end
 string.GetPathFromFilename=function(p) return p:match('^(.*[/\\])') or '' end
@@ -419,3 +420,82 @@ calls = len(G.CALLS); W.Scan(); run()
 assert [G.CALLS[i][2] for i in range(calls + 1, len(G.CALLS) + 1)] == [model_path], 'a dedicated server repairs a changed file'
 assert G.INVALIDATED == 1 and not G.FS['DATA|mmd_hotloader/' + model_path].strip('x')
 print('PASS: failed files are reported; dedicated servers install, approve, repair and withdraw Workshop models')
+
+# --- A model's saved fit travels with it: collision corrections, bone pins (often saved alone:
+# new pins drop the corrections made for the old bones) and a physics default, each optional and
+# each checked when present. The pins follow the bone window's own rules (bone_mapper_rules.lua).
+VB = 'ValveBiped.Bip01_'
+
+
+def item_fit(fit, kind='character'):
+    return to_py(W.ItemFit(to_lua({'kind': kind, 'asset': character, 'fit': fit})))
+
+
+base_fit = {'version': 3, 'generator': 18}
+pins_only = dict(base_fit, boneMap={VB + 'L_Thigh': 12.0, VB + 'Spine2': -1}, boneMapVersion=1, boneMapSavedAt=1790000000)
+physics_only = dict(base_fit, mass=55, physics={'schema': 1, 'bodies': {}}, editor={'schema': 1, 'savedAt': 1790000000}, excludedMaterials=['skin'])
+assert item_fit(pins_only) is None, 'without the pin rules a package\'s pins cannot be checked'
+lua.execute((ROOT / 'addon/lua/mmdhl/bone_mapper_rules.lua').read_text(encoding='utf-8'))
+assert item_fit(dict(base_fit, bodies=[{'bone': 1}], scale=1))['bodies'] == [{'bone': 1}], 'collision corrections alone, as before'
+assert item_fit(dict(base_fit, generator=14, bodies=[]))['generator'] == 14
+got = item_fit(pins_only)
+assert got['boneMap'] == {VB + 'L_Thigh': 12, VB + 'Spine2': -1} and got['boneMapSavedAt'] == 1790000000 and 'bodies' not in got, got
+got = item_fit(physics_only)
+assert got['mass'] == 55 and got['physics']['schema'] == 1 and got['excludedMaterials'] == ['skin'] and 'boneMap' not in got, got
+assert item_fit(dict(base_fit, excludedMaterials=['skin']))['excludedMaterials'] == ['skin'], 'excluded materials survive dropped corrections'
+assert item_fit(dict(base_fit, bodies=[], boneMap={})) is not None, 'an empty pin set (no pins) beside corrections'
+for broken, why in [
+    (dict(pins_only, version=2), 'version'),
+    (dict(pins_only, generator=9), 'generator'),
+    (dict(base_fit), 'nothing to install'),
+    (dict(base_fit, boneMap={}), 'nothing but an empty pin set'),
+    (dict(base_fit, excludedMaterials=[]), 'nothing but an empty list'),
+    (dict(base_fit, bodies='x'), 'bodies of the wrong type'),
+    (dict(pins_only, physics='x'), 'physics of the wrong type'),
+    (dict(pins_only, mass='heavy'), 'mass of the wrong type'),
+    (dict(pins_only, excludedMaterials='skin'), 'excluded materials of the wrong type'),
+    (dict(pins_only, editor=1), 'editor of the wrong type'),
+    (dict(pins_only, boneMap=[1, 2]), 'pins without part names'),
+    (dict(pins_only, boneMap={'Eye_L': 3}), 'eyes are pinned only when converting'),
+    (dict(pins_only, boneMap={'Nonsense': 3}), 'an unknown part'),
+    (dict(pins_only, boneMap={VB + 'L_Thigh': 1.5}), 'a fractional bone'),
+    (dict(pins_only, boneMap={VB + 'L_Thigh': -2}), 'a bone below -1'),
+    (dict(pins_only, boneMap={VB + 'L_Thigh': 'twelve'}), 'a bone that is no number'),
+    (dict(pins_only, boneMap={VB + 'L_Thigh': '12'}), 'a bone number as text (the native reads numbers)'),
+    (dict(pins_only, boneMap=12), 'pins of the wrong type'),
+    (dict(pins_only, pad='x' * (512 * 1024)), 'over 512 KiB'),
+]:
+    assert item_fit(broken) is None, why
+assert item_fit(pins_only, 'static') is None, 'props have no fit'
+print('PASS: a saved fit installs with collision corrections, bone pins or physics alone, each checked, within 512 KiB')
+
+# Installed on a dedicated server and on clients: the pins and the physics default reach
+# fit_overrides; a fit with a wrong pin is left out while its model installs.
+pins_id, physics_id, bad_id = '1' * 64, '2' * 64, '3' * 64
+pins_pkg_id = 'c' * 32
+pins_items, pins_files = [], {}
+for asset, fit in ((pins_id, pins_only), (physics_id, physics_only), (bad_id, dict(pins_only, boneMap={VB + 'L_Thigh': 1.5}))):
+    paths = [f'assets/{asset}/manifest.json', f'assets/{asset}/model.bin']
+    pins_items.append({'kind': 'character', 'asset': asset, 'name': 'Model ' + asset[0], 'files': paths, 'fit': fit})
+    pins_files.update({paths[0]: files[f'assets/{character}/manifest.json'], paths[1]: files[f'assets/{character}/model.bin']})
+pins_pkg = package(pins_pkg_id, 'Pins Pack', 'workshop', pins_items, pins_files)
+mount(pins_pkg, 'Pins Pack', ['GAME', 'Pins Pack'])
+G.ADDONS = to_lua([{'title': 'Anime Pack', 'wsid': '123456', 'mounted': True, 'file': 'x.gma'}, {'title': 'Pins Pack', 'wsid': '888', 'mounted': True, 'file': 'y.gma'}])
+
+
+def installed_fits():
+    for asset in (pins_id, physics_id, bad_id): assert W.InCache('character', asset), asset
+    pins = json.loads(G.FS['DATA|mmd_hotloader/fit_overrides/' + pins_id + '.json'])
+    physics = json.loads(G.FS['DATA|mmd_hotloader/fit_overrides/' + physics_id + '.json'])
+    assert pins['boneMap'] == {VB + 'L_Thigh': 12, VB + 'Spine2': -1} and pins['version'] == 3, pins
+    assert physics['mass'] == 55 and physics['physics']['schema'] == 1, physics
+    assert 'DATA|mmd_hotloader/fit_overrides/' + bad_id + '.json' not in G.FS
+
+
+W.Scan(); run()
+installed_fits()
+lua.execute('CLIENT=true SERVER=false SINGLE=true DEDICATED=false')
+for k in [k for k in G.FS.keys() if k.startswith('DATA|mmd_hotloader/')]: del G.FS[k]
+new_session(); W.Scan(); run()
+installed_fits()
+print('PASS: dedicated servers and clients install fits that hold only bone pins or only physics')

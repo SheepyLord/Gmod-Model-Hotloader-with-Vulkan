@@ -42,6 +42,8 @@ if SERVER then
     AddCSLuaFile('mmdhl/physics_profile.lua')
     AddCSLuaFile('mmdhl/physics_editor_ui.lua')
     AddCSLuaFile('mmdhl/bone_mapper.lua')
+    AddCSLuaFile('mmdhl/bone_mapper_rules.lua')
+    AddCSLuaFile('mmdhl/bone_mapper_ui.lua')
     AddCSLuaFile('mmdhl/file_access.lua')
 end
 mmdhl = mmdhl or {}
