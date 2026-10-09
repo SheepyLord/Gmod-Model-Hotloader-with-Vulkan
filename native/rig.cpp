@@ -103,7 +103,9 @@ void prepareModelFit(Model& model,const fs::path& cache){
  try{auto stored=readJson(path);auto text=stored.at("fit").dump();if(stored.at("sha256")==hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))&&stored["fit"]["asset"]==model.id){auto rig=rigFromManifest(stored["fit"]);validateRig(rig,model);model.fittedRig=std::make_shared<Rig>(std::move(rig));return;}}catch(const std::exception&){}
  try{auto rig=fitRig(model,Json::object());auto text=rig.manifest.dump();writeJson(path,{{"fit",rig.manifest},{"sha256",hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))}});model.fittedRig=std::make_shared<Rig>(std::move(rig));}catch(const std::exception& e){model.warnings.push_back(std::string("Native fit unavailable: ")+e.what());}
 }
-static Rig scaledFit(const Model& m,const Json& options,const Json& physics){
+// The canonical profile a fit writes: c_arms have no physics bodies of their own; every other role carries it.
+static Json fitPhysics(const Json& options){return options.value("role",std::string("ragdoll"))=="arms"?Json::object():requireCanonicalPhysics(options.value("physicsOverrides",Json::object()));}
+static Rig scaledFit(const Model& m,const Json& options){
  Rig r=*m.fittedRig;float target=resolveSourceScale(options,m.maximum.y()-m.minimum.y()),factor=target/r.scale;r.scale=target;r.mass=options.value("mass",70.f);
  if(!std::isfinite(r.mass)||r.mass<1||r.mass>1000)throw std::runtime_error("Invalid carrier mass");
  for(size_t i=0;i<r.bones.size();i++){r.bones[i].rest.getOrigin()*=factor;r.manifest["bones"][i]["position"]=xyz(r.bones[i].rest.getOrigin());}
@@ -117,12 +119,10 @@ static Rig scaledFit(const Model& m,const Json& options,const Json& physics){
   convexTopology(corrected);if(style!="fitted"&&corrected.fallback)throw std::runtime_error("Invalid collision override: style");
   r.bodies[i].style=style;if(style!="fitted")body["style"]=style;r.bodies[i].hull=corrected.vertices;body["hull"]=Json::array();for(auto v:corrected.vertices)body["hull"].push_back(xyz(v));body["faces"]=corrected.faces;body["center"]=xyz(corrected.center);body["extent"]=xyz(corrected.extent);body["topologyRepaired"]=body.value("topologyRepaired",false)||corrected.repaired;if(corrected.fallback){body["topologyFallback"]=true;body["needsReview"]=true;body["confidence"]=0;r.bodies[i].confidence=0;}
  }
- r.manifest["eyesAttachment"]["position"]=xyz(v3(r.manifest["eyesAttachment"]["position"])*factor);r.manifest["mass"]=r.mass;r.manifest["scale"]=r.scale;r.manifest["sourceUnitsPerPmx"]=r.scale;r.manifest["scaleMultiplier"]=r.scale/ScmiSourceUnitsPerPmx;r.manifest["maxInitialPenetration"]=r.manifest.value("maxInitialPenetration",0.f)*factor;applyPhysics(r,physics);configureAnimations(r,options);identify(r);return r;
+ r.manifest["eyesAttachment"]["position"]=xyz(v3(r.manifest["eyesAttachment"]["position"])*factor);r.manifest["mass"]=r.mass;r.manifest["scale"]=r.scale;r.manifest["sourceUnitsPerPmx"]=r.scale;r.manifest["scaleMultiplier"]=r.scale/ScmiSourceUnitsPerPmx;r.manifest["maxInitialPenetration"]=r.manifest.value("maxInitialPenetration",0.f)*factor;applyPhysics(r,fitPhysics(options));configureAnimations(r,options);identify(r);return r;
 }
 Rig fitRig(const Model& m,const Json& options){
- // c_arms have no physics bodies of their own; every other role carries the profile.
- const Json physics=options.value("role",std::string("ragdoll"))=="arms"?Json::object():requireCanonicalPhysics(options.value("physicsOverrides",Json::object()));
- if(m.fittedRig&&!options.contains("height")&&options.value("excludedMaterials",Json::array()).empty())return scaledFit(m,options,physics);
+ if(m.fittedRig&&!options.contains("height")&&options.value("excludedMaterials",Json::array()).empty())return scaledFit(m,options);
  const auto data=Json::parse(ScmiData);Rig r;float height=m.maximum.y()-m.minimum.y();
  if(height<=0)throw std::runtime_error("Model has no height");r.scale=resolveSourceScale(options,height);r.mass=options.value("mass",70.f);
  if(!std::isfinite(r.scale)||r.scale<.001f||r.scale>10000||!std::isfinite(r.mass)||r.mass<1||r.mass>1000)throw std::runtime_error("Invalid carrier scale/mass");
@@ -227,7 +227,7 @@ Rig fitRig(const Model& m,const Json& options){
 
  }
  // Only pairs that collide under the profile are separated, and a box or capsule keeps the size the player chose.
- float maxPenetration=0;int overlapAdjustments=0;std::set<std::pair<int,int>> colliding;for(auto pair:enabledPairs(physics))colliding.insert(pair);
+ const Json physics=fitPhysics(options);float maxPenetration=0;int overlapAdjustments=0;std::set<std::pair<int,int>> colliding;for(auto pair:enabledPairs(physics))colliding.insert(pair);
  for(int iteration=0;iteration<5;iteration++){
   std::vector<std::unique_ptr<btConvexHullShape>> shapes;for(auto& body:r.bodies){auto shape=std::make_unique<btConvexHullShape>();shape->setMargin(0);for(auto v:body.hull)shape->addPoint(v,false);shape->recalcLocalAabb();shapes.push_back(std::move(shape));}
   std::set<int> shrink;maxPenetration=0;
