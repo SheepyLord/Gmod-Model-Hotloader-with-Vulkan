@@ -2,11 +2,14 @@
 window opens a few seconds after joining, once per game run (not again on the next map);
 Skip this version lasts until a newer release is recommended; Don't remind me again turns
 mmdhl_native_update_reminder off for good, and the installation window's checkbox turns it
-back on; a pending binary problem (or any problem notice) keeps it closed, a required
-update replaces the problem notice; Download opens only the public releases page, the
-mirror only a plain https address. The banner shows an update as a line, never as a
-problem, and the installation window always does; a language switch relabels the window.
-Also the dialog other features show for a native function the binary lacks."""
+back on; a pending binary problem keeps it closed, other problems' notice waits until it
+closes (also when VGUI deletes the closed window a frame later), and a required update
+replaces the problem notice once per game run unless dismissed; Download opens only the
+public releases page, the mirror only a plain https address. The banner shows an update as
+a line, never as a problem (Dismiss hides problems first, then skips the release), and the
+installation window always does, with the server's update for its administrators; a
+language switch relabels the window. Also the dialog other features show for a native
+function the binary lacks."""
 from pathlib import Path
 import json
 from lupa import LuaRuntime
@@ -18,6 +21,7 @@ UI = (ROOT / 'addon/lua/mmdhl/installation_ui.lua').read_text(encoding='utf-8')
 RELEASES = 'https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases'
 MIRROR = 'https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord'
 STATE = 'mmd_hotloader/native_update.json'
+DISMISSED = 'mmd_hotloader/installation_dismissed.txt'
 
 # What outlives a Lua session: the DATA folder, archived convars and the game's clocks.
 DATA, CONVARS, CLOCK = {}, {}, {'now': 1_800_000_000, 'up': 120.0}
@@ -29,14 +33,20 @@ isstring=function(v) return type(v)=='string' end istable=function(v) return typ
 IsValid=function(v) return v~=nil and v~=false and not (type(v)=='table' and v.removed) end
 COMMANDS={} concommand={Add=function(name,f) COMMANDS[name]=f end}
 TIMERS={} timer={Simple=function(delay,f) TIMERS[#TIMERS+1]={delay,f} end,Create=function() end,Remove=function() end}
-function RunTimers() local due=TIMERS TIMERS={} table.sort(due,function(a,b) return a[1]<b[1] end) for _,t in ipairs(due) do t[2]() end end
+-- As in the game, a removed panel stays valid until VGUI deletes it on a later frame: here
+-- after the timers due, the order that hides a closing window from timer.Simple(0,...).
+DELETING={}
+function RunTimers()
+ local due=TIMERS TIMERS={} table.sort(due,function(a,b) return a[1]<b[1] end) for _,t in ipairs(due) do t[2]() end
+ local gone=DELETING DELETING={} for _,p in ipairs(gone) do p.removed=true end
+end
 HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end,
  Run=function(event,...) local list={} for name,f in pairs(HOOKS[event] or {}) do if not (type(name)=='table' and name.removed) then list[#list+1]=f end end for _,f in ipairs(list) do f(...) end end}
 CALLBACKS={} cvars={AddChangeCallback=function(name,f) CALLBACKS[name]=CALLBACKS[name] or {} table.insert(CALLBACKS[name],f) end}
 local function convar(name,default) if PY_CVAR(name)==nil then PY_SETCVAR(name,default) end return {GetBool=function() return PY_CVAR(name)=='1' end,GetString=function() return PY_CVAR(name) end,GetInt=function() return tonumber(PY_CVAR(name)) or 0 end} end
 CreateClientConVar=function(name,default) return convar(name,default) end GetConVar=function(name) return convar(name,'') end
 RunConsoleCommand=function(name,value) PY_SETCVAR(name,tostring(value)) for _,f in ipairs(CALLBACKS[name] or {}) do f(name,nil,tostring(value)) end end
-SP=true ADMIN=false PLAYER={IsAdmin=function() return ADMIN end,IsListenServerHost=function() return false end}
+SP=true ADMIN=false HOST=false PLAYER={IsAdmin=function() return ADMIN end,IsListenServerHost=function() return HOST end}
 game={SinglePlayer=function() return SP end} LocalPlayer=function() return PLAYER end
 OPENED={} gui={OpenURL=function(url) OPENED[#OPENED+1]=url end}
 surface={SetFont=function() end,GetTextSize=function(t) return 7*#tostring(t),14 end,SetDrawColor=function() end,DrawRect=function() end,CreateFont=function() end}
@@ -49,7 +59,8 @@ function panel(kind)
   SetText=function(self,t) self.text=t end,GetText=function(self) return self.text end,SetTitle=function(self,t) self.title=t end,
   SetTooltip=function(self,t) self.tooltip=t end,SetVisible=function(self,v) self.visible=v end,IsVisible=function(self) return self.visible end,
   SetConVar=function(self,c) self.convar=c end,GetFont=function() return 'font' end,SetWide=function(self,w) self.wide=w end,GetWide=function(self) return self.wide or 100 end,
-  Remove=function(self) self.removed=true end,Close=function(self) self.removed=true if self.OnClose then self:OnClose() end end,
+  -- DFrame:Close hides the frame, removes it, then calls OnClose.
+  Remove=function(self) DELETING[#DELETING+1]=self end,Close=function(self) self.visible=false self:Remove() if self.OnClose then self:OnClose() end end,
  }
  -- Methods (CamelCase) do nothing unless listed; fields (lowercase) stay nil until set.
  return setmetatable(p,{__index=function(t,k) if type(k)=='string' and k:match('^%u') then return methods[k] or function() end end end})
@@ -98,7 +109,13 @@ def join(lua):
 
 
 def windows(g, title=None):
-    return [p for p in g.CREATED.values() if p.kind == 'DFrame' and not p.removed and (title is None or p.title == title)]
+    """The windows on screen (closed ones are hidden at once, deleted a frame later)."""
+    return [p for p in g.CREATED.values() if p.kind == 'DFrame' and not p.removed and p.visible and (title is None or p.title == title)]
+
+
+def notices(g, key='install.notice'):
+    """The problem notices shown (the small panel at the top right)."""
+    return [p for p in g.CREATED.values() if p.kind == 'DPanel' and find(p, L(g, key))]
 
 
 def find(p, text):
@@ -202,41 +219,67 @@ new_run(); lua, g = session(status(recommended='9.0.0')); join(lua)
 assert len(windows(g, title)) == 1, 'turning reminders back on did not remind'
 print("PASS: Don't remind me again turns the reminder off for good; the checkbox turns it back on")
 
-# --- Never beside the problem notice: a pending binary problem (or any notice) keeps it closed.
+# --- Never beside the problem notice. A pending binary problem keeps the window closed (the
+# notice says to download); other problems' notice waits until the window closes.
 DATA.pop(STATE, None)
 missing = {'code': 'missing', 'component': 'worker', 'message': 'Missing lua/bin/mmdhl_worker.exe', 'feature': 'imports'}
 new_run(); lua, g = session(status(issues=[missing])); join(lua)
 assert not windows(g, title), 'the update window opened beside a binary problem'
-notices = [p for p in g.CREATED.values() if p.kind == 'DPanel' and find(p, L(g, 'install.notice_binary'))]
-assert len(notices) == 1, 'the problem notice is missing'
+assert len(notices(g, 'install.notice_binary')) == 1, 'the problem notice is missing'
 # Dismissed, the binary problem raises no notice, and still no update window.
 new_run(); lua, g = session(status(issues=[missing])); g.mmdhl.DismissInstallation(); join(lua)
 assert not windows(g, title) and not g.mmdhl.installationNoticeShown, 'the update window opened beside a dismissed binary problem'
+DATA.pop(DISMISSED)
+# A warning (a game build no profile describes, after every Garry's Mod update): the window
+# first, the notice once it closes; later maps of the run get the notice at once.
 warning = {'code': 'game_unverified', 'component': 'game', 'message': 'untested', 'feature': 'rendering', 'warning': True}
 new_run(); lua, g = session(status(issues=[warning])); join(lua)
-assert not windows(g, title) and g.mmdhl.installationNoticeShown, 'the update window opened beside the problem notice'
-# ...but an outdated release's own warning is the reminder's: no notice, the window.
+assert len(windows(g, title)) == 1 and not notices(g), 'a warning kept the update window closed, or showed beside it'
+find(windows(g, title)[0], L(g, 'install.update.button.later')).DoClick(); lua.execute('RunTimers()')
+assert len(notices(g)) == 1, 'the warning got no notice after the update window closed'
+new_map(); lua, g = session(status(issues=[warning])); join(lua)
+assert not windows(g, title) and len(notices(g)) == 1
+# A problem that comes up while the window is open (the worker probe) gets its notice when it
+# closes, although the closing window is deleted only a frame later.
+new_run(); lua, g = session(status()); join(lua)
+lua.execute("S.issues[1]={code='worker_failed',component='worker',message='no answer',feature='imports'} hook.Run('MMDHL.InstallationChanged',S)")
+assert not notices(g), 'the notice opened beside the update window'
+find(windows(g, title)[0], L(g, 'install.update.button.later')).DoClick(); lua.execute('RunTimers()')
+assert len(notices(g)) == 1, 'the problem that came up meanwhile got no notice'
+# An outdated release's own warning is the reminder's: no notice, the window. So is a compatibility
+# policy newer than the binary while an update is known; without one it is a problem as before.
 outdated = {'code': 'outdated_release', 'component': 'module', 'message': 'old', 'feature': 'core', 'warning': True}
-new_run(); lua, g = session(status(issues=[outdated], approved=None)); join(lua)
-assert len(windows(g, title)) == 1 and not g.mmdhl.installationNoticeShown
-_, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 0
-# A module this Lua cannot use: the window, worded as required and without skipping, instead of the notice; every map.
+fallback = {'code': 'compatibility_fallback', 'component': 'compatibility', 'message': 'older binary', 'feature': 'core', 'warning': True}
+for issues in ([outdated], [outdated, fallback]):
+    new_run(); lua, g = session(status(issues=issues, approved=None)); join(lua)
+    assert len(windows(g, title)) == 1 and not g.mmdhl.installationNoticeShown, issues
+    _, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 0 and not g.mmdhl.InstallationDismissed()
+lua, g = session(status(installed='2.3.0', issues=[fallback])); join(lua)
+_, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 1 and len(notices(g)) == 1
+# A module this Lua cannot use: the window, worded as required and without skipping, instead of
+# the notice; once per game run (it takes the mouse and keyboard), later maps get the notice.
 blocked = {'code': 'outdated', 'component': 'module', 'message': 'no verification', 'feature': 'core'}
 required = status(issues=[blocked], required=True)
-for _ in range(2):
-    new_map(); lua, g = session(required); join(lua)
-    frame = windows(g, L(g, 'install.update.title_required'))
-    assert len(frame) == 1 and not g.mmdhl.installationNoticeShown, 'a required update did not open its window'
-    frame = frame[0]
-    assert find(frame, L(g, 'install.update.button.skip')).visible is False and find(frame, L(g, 'install.update.button.never')).visible is False and find(frame, L(g, 'common.close')) is not None
-# Closed, problems that are left get their notice; with reminders off, the notice as before.
+new_run(); lua, g = session(required); join(lua)
+frame = windows(g, L(g, 'install.update.title_required'))
+assert len(frame) == 1 and not g.mmdhl.installationNoticeShown, 'a required update did not open its window'
+frame = frame[0]
+assert find(frame, L(g, 'install.update.button.skip')).visible is False and find(frame, L(g, 'install.update.button.never')).visible is False and find(frame, L(g, 'common.close')) is not None
+# Closed, it was this map's notice.
 frame.Close(frame); lua.execute('RunTimers()')
 assert not g.mmdhl.installationNoticeShown, 'the notice repeated the required update'
+new_map(); lua, g = session(required); join(lua)
+assert not windows(g) and len(notices(g, 'install.notice_binary')) == 1, 'a required update opened its window again in the same game run'
+# Dismiss in the banner silences both, as it did the notice, until the problems change.
+new_run(); lua, g = session(required); g.mmdhl.DismissInstallation(); join(lua)
+assert not windows(g) and not g.mmdhl.installationNoticeShown, 'Dismiss did not silence the required update'
+DATA.pop(DISMISSED)
+# With reminders off, the notice as before.
 CONVARS['mmdhl_native_update_reminder'] = '0'
 new_run(); lua, g = session(required); join(lua)
 assert not windows(g) and g.mmdhl.installationNoticeShown
 CONVARS['mmdhl_native_update_reminder'] = '1'
-print('PASS: the update window never opens beside the problem notice; a required update replaces it')
+print('PASS: the update window never opens beside the problem notice; other notices follow it; a required update replaces it once per run')
 
 # --- The banner: a line while due (nothing pending), hidden once skipped; the window always has it.
 DATA.pop(STATE, None)
@@ -248,11 +291,23 @@ assert banner.visible is True and line in summary.text, summary.text
 _, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 0, 'the update counts as a problem'
 controls = banner.children[1]
 dismiss = find(controls, L(g, 'install.button.dismiss'))
-assert dismiss.visible is True
+assert dismiss.visible is True and dismiss.tooltip == L(g, 'install.update.dismiss_tip', recommended='2.3.0'), 'Dismiss does not say that it skips the release'
 dismiss.DoClick()
 assert banner.visible is False and json.loads(DATA[STATE])['skipped'] == '2.3.0', 'Dismiss did not hide the update line'
 always = g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True)
 assert line in always.children[2].children[1].text and L(g, 'install.update.available_tag') in always.children[2].children[1].text
+# Beside a problem, Dismiss hides the problem first and keeps the reminder; then the update line.
+DATA.pop(STATE, None)
+new_run(); lua, g = session(status(issues=[warning]))
+banner = g.mmdhl.AddInstallationBanner(g.panel('DPanel'))
+dismiss = find(banner.children[1], L(g, 'install.button.dismiss'))
+assert dismiss.tooltip == L(g, 'install.button.dismiss_tip')
+dismiss.DoClick()
+assert g.mmdhl.InstallationDismissed() and STATE not in DATA and banner.visible is True, 'Dismiss skipped the release beside a problem'
+assert dismiss.tooltip == L(g, 'install.update.dismiss_tip', recommended='2.3.0') and line in banner.children[2].children[1].text
+dismiss.DoClick()
+assert banner.visible is False and json.loads(DATA[STATE])['skipped'] == '2.3.0'
+DATA.pop(DISMISSED)
 # No update: no line and no tag.
 lua, g = session(status(installed='2.3.0'))
 always = g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True)
@@ -266,6 +321,12 @@ assert server_line not in g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True)
 g.ADMIN = True
 assert server_line in g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True).children[2].children[1].text
 assert server_line not in g.mmdhl.AddInstallationBanner(g.panel('DPanel')).children[2].children[1].text, 'the server line belongs to the installation window'
+# A dedicated server's administrator sees it even when their own game runs that release too;
+# the listen-server host, whose game shares the server's files, has only their own line.
+lua, g = session(status(installed='2.1.0-native.12'), server=server); g.SP = False; g.ADMIN = True
+assert server_line in g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True).children[2].children[1].text, 'a dedicated server administrator with the same release misses the server line'
+g.HOST = True
+assert server_line not in g.mmdhl.AddInstallationBanner(g.panel('DFrame'), True).children[2].children[1].text
 print('PASS: the banner shows an update as a line, never as a problem; the installation window always does')
 
 # --- A language switch relabels the open window.
@@ -289,6 +350,10 @@ assert dialog.query.title == L(g, 'install.update.needed_title') and dialog.quer
 assert lua.eval('rawequal')(g.mmdhl.ShowNativeUpdateNeeded(L(g, 'physics_editor.feature'), '2.3.0'), dialog) and len(g.QUERIES) == 1, 'the same feature opened a second dialog'
 dialog.query.click()
 assert len(windows(g, title)) == 1, 'the dialog did not open the update window'
+# Closed (deleted only a frame later), the next request opens a new dialog.
+dialog.Close(dialog)
+again = g.mmdhl.ShowNativeUpdateNeeded(L(g, 'physics_editor.feature'), '2.3.0')
+assert not lua.eval('rawequal')(again, dialog) and len(g.QUERIES) == 2, 'a closed dialog was reused'
 lua, g = session(status(installed='2.3.0', recommended='2.3.0'))
 g.mmdhl.ShowNativeUpdateNeeded(L(g, 'bonemap.feature'), '2.4.0').query.click()
 assert len(windows(g, L(g, 'install.window_title'))) == 1, 'without a known update the dialog should open the installation window'

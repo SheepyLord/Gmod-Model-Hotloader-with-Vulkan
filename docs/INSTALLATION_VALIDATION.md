@@ -90,14 +90,17 @@ What players see:
   release, or an advisory, reminds again. Don't remind me again sets the archived
   client ConVar `mmdhl_native_update_reminder` to 0, for good; the checkbox in the
   installation window and under Utilities > User > Character Models turns it back
-  on. A required update cannot be skipped and opens on every map in place of the
-  problem notice.
-- It never opens beside the problem notice: while a problem the download fixes is
-  pending, or once the notice showed, the window stays closed (the banner and the
-  installation window still show the update).
+  on. A required update cannot be skipped. It opens once per game run in place of
+  the problem notice (later maps of that run get the notice), and **Dismiss** in
+  the banner silences both until the problems change.
+- It never opens beside the problem notice. While a problem the download fixes is
+  pending, the window stays closed: the notice already says to download (the banner
+  and the installation window still show the update). Other problems, such as a
+  game build no profile describes, get their notice when the window closes.
 - **The banners** of External Models and the library window show one line, "Native
-  update available: …", while the reminder is due. It is not a problem: nothing
-  else is pending for it, and Dismiss there skips this version.
+  update available: …", while the reminder is due. It is not a problem and counts
+  as nothing pending. **Dismiss** there hides the problems first; with none left,
+  it hides the line by skipping this version (its tooltip says so).
 - **The installation window** always shows the update, "(update available)" after
   the recommended release, and the reminder checkbox. Administrators of a
   dedicated server, and a listen-server host whose server files differ from the
@@ -173,15 +176,18 @@ interface, a slot another module replaced) turns the affected feature off.
 
 A `compatibility_policy.lua` newer than the installed binary must not stop it
 either. The binary validates the whole policy before it takes it, once per process,
-and rejects a library name or a guard it does not know. Lua therefore offers the
-policy whole; when it is rejected, without one library at a time (in policy order);
-then without libraries. The libraries left out run as unverified game builds behind
-the binary's own interface, slot and class checks (releases before 2.1.0-native.6
-turn the affected engine features off instead), and the player gets one warning
-naming them, which disables nothing. The order is fixed, so every later map of that
-game finds the same policy. Another ABI family is never forced on a binary: that
-policy still stops it. Keep new profiles additive anyway, so approved releases take
-them whole.
+and rejects a library it does not know, or a profile it cannot validate: one
+without a guard that binary requires (or with an RVA outside the image), another
+`sha256` or evidence format. Guard names it does not use are ignored. Lua therefore
+offers the policy whole; when it is rejected, without one library at a time (in
+policy order); then without libraries. The libraries left out run as unverified
+game builds behind the binary's own interface, slot and class checks (releases
+before 2.1.0-native.6 turn the affected engine features off instead), and the
+player gets one warning naming them, which disables nothing. While an update is
+known it is not counted as a problem either: the update reminder speaks for it. The
+order is fixed, so every later map of that game finds the same policy. Another ABI
+family is never forced on a binary: that policy still stops it. Keep new profiles
+additive anyway, so approved releases take them whole.
 
 Game updates can still change what the compiled modules call. The default branch's
 64-bit build of 2026-09-17 keeps the `VMaterialSystem080` and `VPhysics031`
