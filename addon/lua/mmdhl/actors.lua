@@ -2,6 +2,17 @@
 local native=mmdhl.native
 local L=mmdhl.L
 local capabilities=mmdhl.Decode(native.GetCapabilities()) or {}
+-- A carrier this module loads: its rig version and a generator from rigGeneratorMin to
+-- rigGenerator (2.3.0: 30, the fits of 2.2, to 31). Saves, dupes, published NPCs and
+-- player models keep such a carrier as it was; new spawns and fits get rigGenerator.
+-- A module without rigGeneratorMin (2.2.0 and older) loads its own generator only.
+function mmdhl.IsLoadableRig(rig)
+ local newest=capabilities.rigGenerator
+ if not istable(rig) or rig.version~=capabilities.rigVersion or not isnumber(rig.generator) or not isnumber(newest) then return false end
+ local oldest=isnumber(capabilities.rigGeneratorMin) and capabilities.rigGeneratorMin or newest
+ return rig.generator>=oldest and rig.generator<=newest
+end
+-- A carrier of the fit this module makes now.
 function mmdhl.IsCurrentRig(rig)
  return rig and rig.version==capabilities.rigVersion and rig.generator==capabilities.rigGenerator
 end
@@ -20,13 +31,16 @@ mmdhl.actorAnimationReferences={
  player={female='models/f_anm.mdl',male='models/m_anm.mdl'}
 }
 mmdhl.actorRegistrations=mmdhl.actorRegistrations or {}
+-- Removes the registration of a carrier model and its NPC and player-model entries.
+function mmdhl.UnregisterActor(model)
+ local entry=mmdhl.actorRegistrations[model] if not entry then return end
+ local key='mmd_'..entry.rig.key:sub(1,16)
+ mmdhl.actorRegistrations[model]=nil
+ list.GetForEdit('NPC')[key]=nil list.GetForEdit('PlayerOptionsModel')[key]=nil
+ player_manager.RemoveValidModel(key)
+end
 function mmdhl.UnregisterAsset(id)
- for model,entry in pairs(mmdhl.actorRegistrations) do if entry.rig.asset==id then
-  local key='mmd_'..entry.rig.key:sub(1,16)
-  mmdhl.actorRegistrations[model]=nil
-  list.GetForEdit('NPC')[key]=nil list.GetForEdit('PlayerOptionsModel')[key]=nil
-  player_manager.RemoveValidModel(key)
- end end
+ for model,entry in pairs(mmdhl.actorRegistrations) do if entry.rig.asset==id then mmdhl.UnregisterActor(model) end end
 end
 -- Use the same userinfo selection and weapon whitelist as Sandbox's NPC menu.
 -- An empty selection means the profile default; "none" explicitly means unarmed.
@@ -56,8 +70,28 @@ end
 function mmdhl.ActorClass(role)
  return role=='combine' and 'npc_combine_s' or 'npc_citizen'
 end
+-- The same character's NPC or player model: asset, role and gender.
+local function sameActor(a,b)
+ local function gender(r) return istable(r.animation) and isstring(r.animation.profile) and r.animation.profile:find('_male$') and 'male' or 'female' end
+ return a.asset==b.asset and a.role==b.role and gender(a)==gender(b)
+end
+-- The registration of a newer rig generator for the same character, role and gender.
+-- It replaces the older one (2.2's generator 30 after a 2.3.0 spawn or fit) in the
+-- clients' NPC tab and player-model selector. The server keeps both registered:
+-- saves, dupes and players who chose the older entry keep its carrier.
+function mmdhl.NewerActor(rig)
+ for _,entry in pairs(mmdhl.actorRegistrations) do
+  if entry.rig.generator>rig.generator and sameActor(entry.rig,rig) then return entry end
+ end
+end
 function mmdhl.RegisterActor(rig,arms)
- if not mmdhl.IsCurrentRig(rig) or not rig.model then return end
+ if not mmdhl.IsLoadableRig(rig) or not rig.model then return end
+ if CLIENT then
+  if mmdhl.NewerActor(rig) then return end
+  for model,entry in pairs(mmdhl.actorRegistrations) do
+   if entry.rig.generator<rig.generator and sameActor(entry.rig,rig) then mmdhl.UnregisterActor(model) end
+  end
+ end
  local role=rig.role local key='mmd_'..rig.key:sub(1,16)
  local name=CLIENT and mmdhl.names and (mmdhl.names.Display(rig.name,rig.asset)) or rig.name
  mmdhl.actorRegistrations[rig.model]={rig=rig,arms=arms}
@@ -183,6 +217,8 @@ if SERVER then
   mmdhl.LoadAsset(id,function(info,err)
    if not info then reply(nil,err) return end
    local options,error=mmdhl.ActorOptions({role='arms',gender=gender,armsParts=clean}) if not options then reply(nil,error) return end
+   -- The same bones as the player model the preview stands for (pins from the bone window).
+   options.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(id) or nil
    local rig,e=mmdhl.Decode(native.PrepareCarrier(id,util.TableToJSON(options))) reply(rig,e)
   end)
  end)

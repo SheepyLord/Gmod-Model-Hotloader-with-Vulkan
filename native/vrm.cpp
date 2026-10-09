@@ -5,6 +5,9 @@
 // become group/material/UV morphs. Spring bones and colliders are returned as
 // JSON for the native spring simulation (spring_bones.cpp).
 #include "vrm.hpp"
+#include "humanoid_slots.hpp"
+#include "pmx_writer.hpp"
+#include "import_error.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -39,6 +42,11 @@ Vec3 vec3(const Json& j,Vec3 fallback){if(j.is_array()&&j.size()>=3&&j[0].is_num
  if(j.is_object()&&j.contains("x"))return {number(j,"x",0),number(j,"y",0),number(j,"z",0)};return fallback;}
 Vec4 vec4(const Json& j,Vec4 fallback){if(j.is_array()&&j.size()>=4){Vec4 v;for(int k=0;k<4;k++){if(!j[k].is_number())return fallback;v[k]=j[k].get<float>();}return v;}return fallback;}
 bool finite(Vec3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
+// Every failure names the glTF element at fault (code vrm.truncated, vrm.data, vrm.container,
+// vrm.external, vrm.image, vrm.humanoid, vrm.no_skeleton or vrm.no_geometry); the mesh and
+// primitive scopes around it join its "where", and JSON errors inside become vrm.json.
+[[noreturn]] void vrmFail(const char* code,const std::string& message,Json at=Json(),Json details=Json::object()){if(!at.is_null())details["where"]=Json::array({at});importFail(code,message,std::move(details));}
+std::string number(size_t v){return thousands(v);}
 
 Bytes base64(std::string_view s){
  auto value=[](char c)->int{if(c>='A'&&c<='Z')return c-'A';if(c>='a'&&c<='z')return c-'a'+26;if(c>='0'&&c<='9')return c-'0'+52;if(c=='+'||c=='-')return 62;if(c=='/'||c=='_')return 63;return -1;};
@@ -51,36 +59,38 @@ Bytes base64(std::string_view s){
 struct Document {
  Json j;std::vector<Bytes> owned;std::vector<std::span<const unsigned char>> buffers;
  std::span<const unsigned char> view(int index)const{
-  auto& views=j.at("bufferViews");if(index<0||size_t(index)>=views.size())throw std::runtime_error("Invalid VRM buffer view reference");
+  auto& views=j.at("bufferViews");if(index<0||size_t(index)>=views.size())vrmFail("vrm.data","Invalid VRM file: buffer view "+std::to_string(index)+" does not exist (the file has "+number(views.size())+")",place("buffer_view",index));
+  ImportScope scope("buffer_view",index,{});
   auto& v=views[index];int buffer=v.at("buffer");size_t offset=v.value("byteOffset",size_t(0)),length=v.at("byteLength");
-  if(buffer<0||size_t(buffer)>=buffers.size())throw std::runtime_error("Invalid VRM buffer reference");
-  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)throw std::runtime_error("Truncated VRM file: a buffer view points past its buffer");
+  if(buffer<0||size_t(buffer)>=buffers.size())vrmFail("vrm.data","Invalid VRM file: buffer view "+std::to_string(index)+" uses buffer "+std::to_string(buffer)+", which does not exist (the file has "+number(buffers.size())+")",Json(),{{"buffer",buffer}});
+  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)vrmFail("vrm.truncated","Truncated VRM file: buffer view "+std::to_string(index)+" reads bytes "+number(offset)+" to "+number(offset+length)+" of buffer "+std::to_string(buffer)+", which has only "+number(data.size()),Json(),{{"buffer",buffer},{"byteOffset",offset},{"byteLength",length},{"bufferSize",data.size()}});
   return data.subspan(offset,length);
  }
 };
 Document open(std::span<const unsigned char> b){
- if(b.size()<20||std::memcmp(b.data(),"glTF",4))throw std::runtime_error("Not a VRM file: the glTF binary (GLB) header is missing");
- if(le32(b.data()+4)!=2)throw std::runtime_error("Unsupported glTF container version "+std::to_string(le32(b.data()+4))+"; VRM uses glTF 2.0");
+ if(b.size()<4||std::memcmp(b.data(),"glTF",4))vrmFail("vrm.container","Not a VRM file: the glTF binary (GLB) header is missing",place("header"));
+ if(b.size()<20)vrmFail("vrm.truncated","Truncated VRM file: it ends after "+number(b.size())+" bytes, inside its GLB header; the file is incomplete",place("header"),{{"offset",b.size()},{"size",b.size()}});
+ if(le32(b.data()+4)!=2)vrmFail("vrm.container","Unsupported glTF container version "+std::to_string(le32(b.data()+4))+"; VRM uses glTF 2.0",place("header"));
  size_t length=std::min<size_t>(le32(b.data()+8),b.size());Document d;bool json=false;std::span<const unsigned char> bin;
  for(size_t at=12;at+8<=length;){
   uint32_t size=le32(b.data()+at),type=le32(b.data()+at+4);at+=8;
-  if(size>length-at)throw std::runtime_error("Truncated VRM file: a GLB chunk ends past the end of the file");
-  if(type==0x4E4F534Au&&!json){d.j=Json::parse(b.begin()+at,b.begin()+at+size);json=true;}
+  if(size>length-at)vrmFail("vrm.truncated","Truncated VRM file: a GLB chunk of "+number(size)+" bytes starts at byte "+number(at)+" of "+number(length)+"; the file is incomplete",place("header"),{{"offset",at},{"length",size},{"size",length}});
+  if(type==0x4E4F534Au&&!json){ImportScope scope("header",-1,{});d.j=Json::parse(b.begin()+at,b.begin()+at+size);json=true;}
   else if(type==0x004E4942u&&bin.empty())bin=b.subspan(at,size);
   at+=size;
  }
- if(!json)throw std::runtime_error("Truncated VRM file: the glTF JSON chunk is missing");
+ if(!json)vrmFail("vrm.truncated","Truncated VRM file: the glTF JSON chunk is missing",place("header"));
  auto& buffers=arr(d.j,"buffers");d.owned.resize(buffers.size());
  for(size_t i=0;i<buffers.size();i++){
   auto uri=string(buffers[i],"uri");
-  if(uri.empty()){if(i!=0)throw std::runtime_error("VRM buffer "+std::to_string(i)+" has no data");d.buffers.push_back(bin);continue;}
-  auto comma=uri.find(',');if(!uri.starts_with("data:")||comma==std::string::npos||uri.substr(0,comma).find(";base64")==std::string::npos)throw std::runtime_error("The VRM file refers to an external buffer ("+uri.substr(0,64)+"); only self-contained .vrm files are supported");
+  if(uri.empty()){if(i!=0)vrmFail("vrm.data","Invalid VRM file: buffer "+std::to_string(i)+" has no data",place("buffer",int64_t(i)));d.buffers.push_back(bin);continue;}
+  auto comma=uri.find(',');if(!uri.starts_with("data:")||comma==std::string::npos||uri.substr(0,comma).find(";base64")==std::string::npos)vrmFail("vrm.external","The VRM file refers to an external buffer ("+uri.substr(0,64)+"); only self-contained .vrm files are supported",place("buffer",int64_t(i)));
   d.owned[i]=base64(std::string_view(uri).substr(comma+1));d.buffers.push_back(d.owned[i]);
  }
  return d;
 }
-int componentSize(int type){switch(type){case 5120:case 5121:return 1;case 5122:case 5123:return 2;case 5125:case 5126:return 4;}throw std::runtime_error("Invalid VRM accessor component type "+std::to_string(type));}
-int componentCount(const std::string& type){if(type=="SCALAR")return 1;if(type=="VEC2")return 2;if(type=="VEC3")return 3;if(type=="VEC4"||type=="MAT2")return 4;if(type=="MAT3")return 9;if(type=="MAT4")return 16;throw std::runtime_error("Invalid VRM accessor type "+type);}
+int componentSize(int type){switch(type){case 5120:case 5121:return 1;case 5122:case 5123:return 2;case 5125:case 5126:return 4;}vrmFail("vrm.data","Invalid VRM file: unknown accessor component type "+std::to_string(type));}
+int componentCount(const std::string& type){if(type=="SCALAR")return 1;if(type=="VEC2")return 2;if(type=="VEC3")return 3;if(type=="VEC4"||type=="MAT2")return 4;if(type=="MAT3")return 9;if(type=="MAT4")return 16;vrmFail("vrm.data","Invalid VRM file: unknown accessor type \""+type+"\"");}
 float component(const unsigned char* p,int type,bool normalized){
  switch(type){
   case 5120:{int8_t v;std::memcpy(&v,p,1);return normalized?std::max(v/127.f,-1.f):float(v);}
@@ -91,7 +101,7 @@ float component(const unsigned char* p,int type,bool normalized){
   default:{float v;std::memcpy(&v,p,4);return v;}
  }
 }
-uint32_t unsignedComponent(const unsigned char* p,int type){switch(type){case 5121:return p[0];case 5123:{uint16_t v;std::memcpy(&v,p,2);return v;}case 5125:{uint32_t v;std::memcpy(&v,p,4);return v;}}throw std::runtime_error("Invalid VRM index component type");}
+uint32_t unsignedComponent(const unsigned char* p,int type){switch(type){case 5121:return p[0];case 5123:{uint16_t v;std::memcpy(&v,p,2);return v;}case 5125:{uint32_t v;std::memcpy(&v,p,4);return v;}}vrmFail("vrm.data","Invalid VRM file: index component type "+std::to_string(type)+" is not an unsigned integer");}
 struct Accessor {size_t count=0;int components=0;std::vector<float> values;float at(size_t i,int c)const{return values[i*components+c];}};
 // Offsets, strides and counts come from the file: compare by division so no product can wrap.
 bool fits(std::span<const unsigned char> data,size_t offset,size_t stride,size_t element,size_t count){
@@ -99,32 +109,33 @@ bool fits(std::span<const unsigned char> data,size_t offset,size_t stride,size_t
 }
 size_t stride(const Document& d,const Json& a,size_t element){size_t s=d.j["bufferViews"][int(a["bufferView"])].value("byteStride",size_t(0));return s?s:element;}
 Accessor accessor(const Document& d,int index){
- auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())throw std::runtime_error("Invalid VRM accessor reference");
- auto& a=list[index];Accessor out;out.count=a.at("count");out.components=componentCount(a.at("type"));int type=a.at("componentType");bool normalized=a.value("normalized",false);int size=componentSize(type);
- if(out.components>4&&size!=4)throw std::runtime_error("Unsupported packed matrix accessor in the VRM file");
- if(out.count>(1ull<<28)/out.components)throw std::runtime_error("VRM accessor is too large");
+ auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" does not exist (the file has "+number(list.size())+")",place("accessor",index));
+ ImportScope scope("accessor",index,{});auto& a=list[index];Accessor out;out.count=a.at("count");out.components=componentCount(a.at("type"));int type=a.at("componentType");bool normalized=a.value("normalized",false);int size=componentSize(type);
+ if(out.components>4&&size!=4)vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" is a packed matrix, which the importer cannot read");
+ if(out.count>(1ull<<28)/out.components)vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(out.count)+" elements, more than the importer reads",Json(),{{"count",out.count}});
  size_t element=size_t(size)*out.components;std::span<const unsigned char> data;size_t offset=0,step=element;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,element);
-  if(!fits(data,offset,step,element,out.count))throw std::runtime_error("Truncated VRM file: an accessor reads past its buffer view");}
+  if(!fits(data,offset,step,element,out.count))vrmFail("vrm.truncated","Truncated VRM file: accessor "+std::to_string(index)+" reads "+number(out.count)+" elements past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",out.count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  out.values.assign(out.count*out.components,0.f);
  if(viewed)for(size_t i=0;i<out.count;i++)for(int c=0;c<out.components;c++)out.values[i*out.components+c]=component(data.data()+offset+i*step+size_t(c)*size,type,normalized);
  if(a.contains("sparse")){
   auto& s=a["sparse"];size_t count=s.at("count");auto& ix=s.at("indices");auto& vx=s.at("values");int indexType=ix.at("componentType");int indexSize=componentSize(indexType);
-  if(count>out.count)throw std::runtime_error("Invalid sparse accessor in the VRM file");
+  if(count>out.count)vrmFail("vrm.data","Invalid VRM file: sparse accessor "+std::to_string(index)+" replaces "+number(count)+" of only "+number(out.count)+" elements");
   auto indices=d.view(ix.at("bufferView")),values=d.view(vx.at("bufferView"));size_t io=ix.value("byteOffset",size_t(0)),vo=vx.value("byteOffset",size_t(0));
-  if(count&&(io>indices.size()||indexSize*count>indices.size()-io||vo>values.size()||element*count>values.size()-vo))throw std::runtime_error("Truncated VRM file: a sparse accessor reads past its data");
-  for(size_t k=0;k<count;k++){size_t target=unsignedComponent(indices.data()+io+k*indexSize,indexType);if(target>=out.count)throw std::runtime_error("Invalid sparse accessor index in the VRM file");
+  if(count&&(io>indices.size()||indexSize*count>indices.size()-io||vo>values.size()||element*count>values.size()-vo))vrmFail("vrm.truncated","Truncated VRM file: sparse accessor "+std::to_string(index)+" reads past its data");
+  for(size_t k=0;k<count;k++){size_t target=unsignedComponent(indices.data()+io+k*indexSize,indexType);if(target>=out.count)vrmFail("vrm.data","Invalid VRM file: sparse accessor "+std::to_string(index)+" replaces element "+number(target)+" of only "+number(out.count));
    for(int c=0;c<out.components;c++)out.values[target*out.components+c]=component(values.data()+vo+k*element+size_t(c)*size,type,normalized);}
  }
- for(float v:out.values)if(!std::isfinite(v))throw std::runtime_error("The VRM file contains non-finite vertex or transform data");
+ for(size_t k=0;k<out.values.size();k++)if(!std::isfinite(out.values[k]))vrmFail("vrm.data","The VRM file contains non-finite vertex or transform data: element "+number(k/out.components)+" of accessor "+std::to_string(index)+" is not a number",Json(),{{"element",k/out.components}});
  return out;
 }
 std::vector<uint32_t> indexAccessor(const Document& d,int index){
- auto& a=d.j.at("accessors").at(index);int type=a.at("componentType");if(a.at("type")!="SCALAR"||type==5126)throw std::runtime_error("Invalid VRM triangle index accessor");
- size_t count=a.at("count");int size=componentSize(type);if(count>(1ull<<28))throw std::runtime_error("VRM accessor is too large");
+ auto& list=d.j.at("accessors");if(index<0||size_t(index)>=list.size())vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" does not exist (the file has "+number(list.size())+")",place("accessor",index));
+ ImportScope scope("accessor",index,{});auto& a=list[index];int type=a.at("componentType");if(a.at("type")!="SCALAR"||type==5126)vrmFail("vrm.data","Invalid VRM file: triangle index accessor "+std::to_string(index)+" does not hold whole numbers");
+ size_t count=a.at("count");int size=componentSize(type);if(count>(1ull<<28))vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(count)+" elements, more than the importer reads",Json(),{{"count",count}});
  std::span<const unsigned char> data;size_t offset=0,step=size;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,size);
-  if(!fits(data,offset,step,size,count))throw std::runtime_error("Truncated VRM file: triangle indices read past their buffer view");}
+  if(!fits(data,offset,step,size,count))vrmFail("vrm.truncated","Truncated VRM file: triangle index accessor "+std::to_string(index)+" reads past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  std::vector<uint32_t> out(count,0);
  if(viewed)for(size_t i=0;i<count;i++)out[i]=unsignedComponent(data.data()+offset+i*step,type);
  if(a.contains("sparse")){auto acc=accessor(d,index);for(size_t i=0;i<count;i++)out[i]=uint32_t(acc.values[i]);}
@@ -152,53 +163,12 @@ struct Axes {
  Vec3 unity(Vec3 p)const{return dir(Vec3(p.x,p.y,-p.z));}
 };
 
-// ---- humanoid names ----
-struct HumanName {const char* vrm;const char* jp;const char* en;};
-const HumanName humanNames[]={
- {"hips","下半身","lower body"},{"spine","上半身","upper body"},{"chest","上半身2","upper body2"},{"upperChest","上半身3","upper body3"},
- {"neck","首","neck"},{"head","頭","head"},{"jaw","顎","jaw"},{"leftEye","左目","eye_L"},{"rightEye","右目","eye_R"},
- {"leftShoulder","左肩","shoulder_L"},{"leftUpperArm","左腕","arm_L"},{"leftLowerArm","左ひじ","elbow_L"},{"leftHand","左手首","wrist_L"},
- {"rightShoulder","右肩","shoulder_R"},{"rightUpperArm","右腕","arm_R"},{"rightLowerArm","右ひじ","elbow_R"},{"rightHand","右手首","wrist_R"},
- {"leftUpperLeg","左足","leg_L"},{"leftLowerLeg","左ひざ","knee_L"},{"leftFoot","左足首","ankle_L"},{"leftToes","左つま先","toe_L"},
- {"rightUpperLeg","右足","leg_R"},{"rightLowerLeg","右ひざ","knee_R"},{"rightFoot","右足首","ankle_R"},{"rightToes","右つま先","toe_R"},
- {"leftThumbMetacarpal","左親指０","thumb0_L"},{"leftThumbProximal","左親指１","thumb1_L"},{"leftThumbDistal","左親指２","thumb2_L"},
- {"leftIndexProximal","左人指１","fore1_L"},{"leftIndexIntermediate","左人指２","fore2_L"},{"leftIndexDistal","左人指３","fore3_L"},
- {"leftMiddleProximal","左中指１","middle1_L"},{"leftMiddleIntermediate","左中指２","middle2_L"},{"leftMiddleDistal","左中指３","middle3_L"},
- {"leftRingProximal","左薬指１","third1_L"},{"leftRingIntermediate","左薬指２","third2_L"},{"leftRingDistal","左薬指３","third3_L"},
- {"leftLittleProximal","左小指１","little1_L"},{"leftLittleIntermediate","左小指２","little2_L"},{"leftLittleDistal","左小指３","little3_L"},
- {"rightThumbMetacarpal","右親指０","thumb0_R"},{"rightThumbProximal","右親指１","thumb1_R"},{"rightThumbDistal","右親指２","thumb2_R"},
- {"rightIndexProximal","右人指１","fore1_R"},{"rightIndexIntermediate","右人指２","fore2_R"},{"rightIndexDistal","右人指３","fore3_R"},
- {"rightMiddleProximal","右中指１","middle1_R"},{"rightMiddleIntermediate","右中指２","middle2_R"},{"rightMiddleDistal","右中指３","middle3_R"},
- {"rightRingProximal","右薬指１","third1_R"},{"rightRingIntermediate","右薬指２","third2_R"},{"rightRingDistal","右薬指３","third3_R"},
- {"rightLittleProximal","右小指１","little1_R"},{"rightLittleIntermediate","右小指２","little2_R"},{"rightLittleDistal","右小指３","little3_R"}};
-// VRM 1.0 renamed the thumb (0.x proximal/intermediate/distal = 1.0 metacarpal/proximal/distal).
-std::string humanName1(std::string name){
- for(auto side:{"left","right"}){auto s=std::string(side);
-  if(name==s+"ThumbProximal")return s+"ThumbMetacarpal";if(name==s+"ThumbIntermediate")return s+"ThumbProximal";}
- return name;
-}
 // VRM 0.x expression presets under their VRM 1.0 names.
 std::string presetName1(const std::string& p){
  static const std::map<std::string,std::string> names={{"a","aa"},{"i","ih"},{"u","ou"},{"e","ee"},{"o","oh"},{"joy","happy"},{"angry","angry"},{"sorrow","sad"},{"fun","relaxed"},
   {"blink","blink"},{"blink_l","blinkLeft"},{"blink_r","blinkRight"},{"lookup","lookUp"},{"lookdown","lookDown"},{"lookleft","lookLeft"},{"lookright","lookRight"},{"neutral","neutral"}};
  auto it=names.find(p);return it==names.end()?std::string():it->second;
 }
-
-// ---- PMX output ----
-struct PVertex {Vec3 p{0},n{0,1,0};Vec2 uv{0};std::array<int,4> bone{-1,-1,-1,-1};std::array<float,4> weight{};};
-struct PBone {std::string name,english;Vec3 position{0};int parent=-1,tail=-1,inherit=-1;float inheritWeight=0;Vec3 tailOffset{0},fixedAxis{0};bool movable=false,fixed=false;};
-struct PMaterial {std::string name,memo;Vec4 diffuse{1};Vec4 edgeColor{0,0,0,1};float edgeSize=1;int texture=-1,sphere=-1,sphereMode=0,queue=2000,source=-1;bool twoSided=false,edge=false;std::vector<uint32_t> indices;};
-struct MaterialOffset {int material=-1;Vec4 diffuse{0};};
-struct PMorph {std::string name,english;int panel=4,type=1;std::vector<std::pair<uint32_t,Vec3>> vertex;std::vector<std::pair<int,float>> group;std::vector<MaterialOffset> material;std::vector<std::pair<uint32_t,Vec4>> uv;};
-struct Writer {
- Bytes b;
- void u8(uint8_t v){b.push_back(v);}
- void u16(uint16_t v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+2);}
- void i32(int32_t v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+4);}
- void f32(float v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+4);}
- void v2(Vec2 v){f32(v.x);f32(v.y);}void v3(Vec3 v){f32(v.x);f32(v.y);f32(v.z);}void v4(Vec4 v){f32(v.x);f32(v.y);f32(v.z);f32(v.w);}
- void text(const std::string& s){i32(int32_t(s.size()));b.insert(b.end(),s.begin(),s.end());}
-};
 
 // Material alpha variants: glTF OPAQUE ignores texture alpha and MASK is a
 // hard cutoff, while the character renderer infers cutout/blending from the
@@ -215,28 +185,29 @@ struct Converter {
  std::vector<Target> targets;std::map<std::pair<int,int>,std::vector<int>> targetsOfMeshIndex; // (mesh, target) -> targets
  std::map<std::string,Bytes> textures;std::map<std::tuple<int,int,int>,int> textureIndex;std::vector<std::string> texturePaths;
  std::vector<std::string> meshNames;
+ std::string meshText(int mesh,size_t primitive)const{return "primitive "+std::to_string(primitive)+" of "+placeText(place("mesh",mesh,string(arr(d.j,"meshes")[mesh],"name")));}
 
  void warn(std::string s){if(std::find(warnings.begin(),warnings.end(),s)==warnings.end())warnings.push_back(std::move(s));}
  void note(std::string s){if(std::find(notes.begin(),notes.end(),s)==notes.end())notes.push_back(std::move(s));}
 
  void readNodes(){
   auto& list=arr(d.j,"nodes");nodes.resize(list.size());
-  for(size_t i=0;i<list.size();i++){auto& n=list[i];auto& out=nodes[i];out.name=string(n,"name");out.mesh=integer(n,"mesh",-1);out.skin=integer(n,"skin",-1);
+  for(size_t i=0;i<list.size();i++){auto& n=list[i];auto& out=nodes[i];out.name=string(n,"name");out.mesh=integer(n,"mesh",-1);out.skin=integer(n,"skin",-1);ImportScope scope("node",int64_t(i),out.name);
    if(n.contains("matrix")&&n["matrix"].is_array()&&n["matrix"].size()==16){float m[16];for(int k=0;k<16;k++)m[k]=n["matrix"][k].get<float>();out.local=glm::make_mat4(m);}
    else{Vec3 t=vec3(n.value("translation",Json()),Vec3(0)),s=vec3(n.value("scale",Json()),Vec3(1));Vec4 r=vec4(n.value("rotation",Json()),Vec4(0,0,0,1));
     glm::quat q(r.w,r.x,r.y,r.z);if(glm::length(q)<1e-8f)q=glm::quat(1,0,0,0);out.local=glm::translate(Mat4(1.f),t)*glm::mat4_cast(glm::normalize(q))*glm::scale(Mat4(1.f),s);}
-   for(auto& c:arr(n,"children")){int child=c.get<int>();if(child<0||size_t(child)>=list.size())throw std::runtime_error("Invalid VRM node hierarchy");out.children.push_back(child);}
+   for(auto& c:arr(n,"children")){int child=c.get<int>();if(child<0||size_t(child)>=list.size())vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",int64_t(i),out.name))+" lists child "+std::to_string(child)+", which does not exist (the file has "+number(list.size())+" nodes)",Json(),{{"child",child}});out.children.push_back(child);}
   }
-  for(size_t i=0;i<nodes.size();i++)for(int c:nodes[i].children){if(nodes[c].parent>=0)throw std::runtime_error("Invalid VRM node hierarchy: node "+std::to_string(c)+" has two parents");nodes[c].parent=int(i);}
+  for(size_t i=0;i<nodes.size();i++)for(int c:nodes[i].children){if(nodes[c].parent>=0)vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",c,nodes[c].name))+" has two parents, "+placeText(place("node",nodes[c].parent,nodes[nodes[c].parent].name))+" and "+placeText(place("node",int64_t(i),nodes[i].name)),place("node",c,nodes[c].name));nodes[c].parent=int(i);}
   // Scene roots first, in scene order; then any other roots.
   std::vector<bool> isRoot(nodes.size(),false);auto& scenes=arr(d.j,"scenes");int scene=integer(d.j,"scene",0);
   if(scene>=0&&size_t(scene)<scenes.size())for(auto& r:arr(scenes[scene],"nodes")){int n=r.get<int>();if(n>=0&&size_t(n)<nodes.size()&&nodes[n].parent<0&&!isRoot[n]){isRoot[n]=true;roots.push_back(n);}}
   for(size_t i=0;i<nodes.size();i++)if(nodes[i].parent<0&&!isRoot[i]){isRoot[i]=true;roots.push_back(int(i));}
   // Later walks (bones, meshes, springs) recurse over the same tree, so its depth is bounded here.
-  std::vector<int> state(nodes.size(),0);std::function<void(int,const Mat4&,int)> visit=[&](int i,const Mat4& parent,int depth){if(state[i])throw std::runtime_error("Invalid VRM node hierarchy: cycle at node "+std::to_string(i));
-   if(depth>MaxNodeDepth)throw std::runtime_error("Invalid VRM node hierarchy: nodes are nested more than "+std::to_string(MaxNodeDepth)+" levels deep");state[i]=1;nodes[i].world=parent*nodes[i].local;for(int c:nodes[i].children)visit(c,nodes[i].world,depth+1);};
+  std::vector<int> state(nodes.size(),0);std::function<void(int,const Mat4&,int)> visit=[&](int i,const Mat4& parent,int depth){if(state[i])vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",i,nodes[i].name))+" is its own ancestor",place("node",i,nodes[i].name));
+   if(depth>MaxNodeDepth)vrmFail("vrm.data","Invalid VRM node hierarchy: nodes are nested more than "+std::to_string(MaxNodeDepth)+" levels deep, at "+placeText(place("node",i,nodes[i].name)),place("node",i,nodes[i].name));state[i]=1;nodes[i].world=parent*nodes[i].local;for(int c:nodes[i].children)visit(c,nodes[i].world,depth+1);};
   for(int r:roots)visit(r,Mat4(1.f),0);
-  for(size_t i=0;i<nodes.size();i++)if(!state[i])throw std::runtime_error("Invalid VRM node hierarchy: node "+std::to_string(i)+" is not reachable");
+  for(size_t i=0;i<nodes.size();i++)if(!state[i])vrmFail("vrm.data","Invalid VRM node hierarchy: "+placeText(place("node",int64_t(i),nodes[i].name))+" is not reachable from a scene root",place("node",int64_t(i),nodes[i].name));
  }
  Vec3 worldPosition(int n)const{return Vec3(nodes[n].world[3]);}
 
@@ -246,7 +217,7 @@ struct Converter {
   boneOf.assign(nodes.size(),-1);std::vector<int> order;std::function<void(int)> dfs=[&](int i){if(keep[i]){boneOf[i]=int(order.size());order.push_back(i);}for(int c:nodes[i].children)dfs(c);};for(int r:roots)dfs(r);
   std::map<int,std::string> humanOf;for(auto& [name,node]:human)humanOf[node]=name;
   std::set<std::string> used;
-  for(int n:order){PBone b;b.position=axes.point(worldPosition(n));if(!finite(b.position))throw std::runtime_error("The VRM skeleton has non-finite bone positions");
+  for(int n:order){PBone b;b.position=axes.point(worldPosition(n));if(!finite(b.position))vrmFail("vrm.data","The VRM skeleton has non-finite bone positions: "+placeText(place("node",n,nodes[n].name))+" is not at a number position",place("node",n,nodes[n].name));
    for(int p=nodes[n].parent;p>=0;p=nodes[p].parent)if(boneOf[p]>=0){b.parent=boneOf[p];break;}
    auto h=humanOf.find(n);if(h!=humanOf.end())for(auto& e:humanNames)if(h->second==e.vrm){b.name=e.jp;b.english=e.en;break;}
    bones.push_back(b);
@@ -255,7 +226,7 @@ struct Converter {
   for(size_t i=0;i<order.size();i++){auto& b=bones[i];if(!b.name.empty())continue;int n=order[i];std::string name=nodes[n].name.empty()?"node_"+std::to_string(n):nodes[n].name;
    if(used.contains(name))name+="_"+std::to_string(n);used.insert(name);b.name=name;b.english=name;}
   for(size_t i=0;i<order.size();i++){auto& children=nodes[order[i]].children;for(int c:children)if(boneOf[c]>=0){bones[i].tail=boneOf[c];break;}}
-  if(bones.empty())throw std::runtime_error("The VRM file has no skeleton");
+  if(bones.empty())vrmFail("vrm.no_skeleton","The VRM file has no skeleton");
  }
  int boneFor(int node)const{for(int n=node;n>=0;n=nodes[n].parent)if(boneOf[n]>=0)return boneOf[n];return human.contains("hips")?boneOf[human.at("hips")]:0;}
 
@@ -282,7 +253,7 @@ struct Converter {
    bool changed=false;size_t n=size_t(x)*y;
    for(size_t i=0;i<n;i++){auto& a=pixels.get()[i*4+3];uint8_t v=use==AlphaUse::Opaque?255:(a>=cut?255:0);changed|=v!=a;a=v;}
    if(changed){Bytes png;auto sink=[](void* context,void* p,int size){auto& b=*static_cast<Bytes*>(context);auto s=static_cast<unsigned char*>(p);b.insert(b.end(),s,s+size);};
-    if(!stbi_write_png_to_func(sink,&png,x,y,4,pixels.get(),x*4))throw std::runtime_error("Texture encoding failed");out=std::move(png);extension=".png";}
+    if(!stbi_write_png_to_func(sink,&png,x,y,4,pixels.get(),x*4))vrmFail("vrm.image","Texture encoding failed: image "+std::to_string(source)+" ("+std::to_string(x)+" x "+std::to_string(y)+") cannot be saved again as PNG",place("image",source));out=std::move(png);extension=".png";}
   }
   std::string path="vrm/image"+std::to_string(source)+(use==AlphaUse::Opaque?"_opaque":use==AlphaUse::Cutout?"_cutout"+std::to_string(cut):"")+extension;
   textures[path]=std::move(out);int index=int(texturePaths.size());texturePaths.push_back(path);return textureIndex[key]=index;
@@ -341,30 +312,32 @@ struct Converter {
   auto& meshes=arr(d.j,"meshes");auto& skins=arr(d.j,"skins");
   meshNames.resize(meshes.size());for(size_t i=0;i<meshes.size();i++)meshNames[i]=string(meshes[i],"name","mesh"+std::to_string(i));
   std::vector<int> order;std::function<void(int)> dfs=[&](int i){order.push_back(i);for(int c:nodes[i].children)dfs(c);};for(int r:roots)dfs(r);
-  for(int n:order){auto& node=nodes[n];if(node.mesh<0)continue;if(size_t(node.mesh)>=meshes.size())throw std::runtime_error("Invalid VRM mesh reference");
-   auto& mesh=meshes[node.mesh];const Json* names=&arr(obj(mesh,"extras"),"targetNames");
+  for(int n:order){auto& node=nodes[n];if(node.mesh<0)continue;if(size_t(node.mesh)>=meshes.size())vrmFail("vrm.data","Invalid VRM file: "+placeText(place("node",n,node.name))+" uses mesh "+std::to_string(node.mesh)+", which does not exist (the file has "+number(meshes.size())+")",place("node",n,node.name));
+   ImportScope meshScope("mesh",node.mesh,string(meshes[node.mesh],"name"));auto& mesh=meshes[node.mesh];const Json* names=&arr(obj(mesh,"extras"),"targetNames");
    std::vector<Mat4> skinMatrices;std::vector<int> skinBones;
-   if(node.skin>=0){if(size_t(node.skin)>=skins.size())throw std::runtime_error("Invalid VRM skin reference");auto& skin=skins[node.skin];auto& joints=arr(skin,"joints");
-    Accessor inverse;if(skin.contains("inverseBindMatrices")){inverse=accessor(d,skin["inverseBindMatrices"]);if(inverse.components!=16)throw std::runtime_error("Invalid VRM inverse bind matrices");}
-    for(size_t k=0;k<joints.size();k++){int jn=joints[k].get<int>();if(jn<0||size_t(jn)>=nodes.size())throw std::runtime_error("Invalid VRM skin joint");Mat4 ibm(1.f);if(inverse.count>k)ibm=glm::make_mat4(&inverse.values[k*16]);skinMatrices.push_back(nodes[jn].world*ibm);skinBones.push_back(boneFor(jn));}}
+   if(node.skin>=0){if(size_t(node.skin)>=skins.size())vrmFail("vrm.data","Invalid VRM file: "+placeText(place("node",n,node.name))+" uses skin "+std::to_string(node.skin)+", which does not exist (the file has "+number(skins.size())+")",place("node",n,node.name));
+    ImportScope skinScope("skin",node.skin,string(skins[node.skin],"name"));auto& skin=skins[node.skin];auto& joints=arr(skin,"joints");
+    Accessor inverse;if(skin.contains("inverseBindMatrices")){inverse=accessor(d,skin["inverseBindMatrices"]);if(inverse.components!=16)vrmFail("vrm.data","Invalid VRM file: the inverse bind matrices of skin "+std::to_string(node.skin)+" are not 4 x 4 matrices");}
+    for(size_t k=0;k<joints.size();k++){int jn=joints[k].get<int>();if(jn<0||size_t(jn)>=nodes.size())vrmFail("vrm.data","Invalid VRM file: joint "+std::to_string(k)+" of skin "+std::to_string(node.skin)+" is node "+std::to_string(jn)+", which does not exist (the file has "+number(nodes.size())+" nodes)",Json(),{{"joint",k},{"node",jn}});Mat4 ibm(1.f);if(inverse.count>k)ibm=glm::make_mat4(&inverse.values[k*16]);skinMatrices.push_back(nodes[jn].world*ibm);skinBones.push_back(boneFor(jn));}}
    int fallback=boneFor(n);
    auto& primitives=arr(mesh,"primitives");
-   for(size_t pi=0;pi<primitives.size();pi++){auto& p=primitives[pi];int mode=integer(p,"mode",4);
+   for(size_t pi=0;pi<primitives.size();pi++){auto& p=primitives[pi];int mode=integer(p,"mode",4);ImportScope primitiveScope("primitive",int64_t(pi),{});
     if(mode!=4&&mode!=5&&mode!=6){warn("Mesh \""+meshNames[node.mesh]+"\" has a primitive drawn as points or lines; it was skipped.");continue;}
     auto& attributes=p.at("attributes");if(!attributes.contains("POSITION"))continue;
     if(names->empty())names=&arr(obj(p,"extras"),"targetNames");
-    auto positions=accessor(d,attributes["POSITION"]);size_t count=positions.count;if(positions.components!=3)throw std::runtime_error("Invalid VRM vertex positions");
+    auto positions=accessor(d,attributes["POSITION"]);size_t count=positions.count;if(positions.components!=3)vrmFail("vrm.data","Invalid VRM vertex positions: "+meshText(node.mesh,pi)+" has positions with "+std::to_string(positions.components)+" components instead of 3",Json(),{{"field","POSITION"}});
     Accessor normals,uvs;if(attributes.contains("NORMAL"))normals=accessor(d,attributes["NORMAL"]);
     int matIndex=integer(p,"material",-1);auto& mat=material(matIndex);int set=uvSet.count(matIndex)?uvSet[matIndex]:0;
     auto uvName="TEXCOORD_"+std::to_string(set);if(attributes.contains(uvName))uvs=accessor(d,attributes[uvName]);else if(attributes.contains("TEXCOORD_0"))uvs=accessor(d,attributes["TEXCOORD_0"]);
     std::vector<Accessor> joints,weights;for(int s=0;s<4;s++){auto j="JOINTS_"+std::to_string(s),w="WEIGHTS_"+std::to_string(s);if(!attributes.contains(j)||!attributes.contains(w))break;joints.push_back(accessor(d,attributes[j]));weights.push_back(accessor(d,attributes[w]));}
     // Attributes are read at every POSITION index with fixed component counts.
-    if(normals.count&&normals.components!=3)throw std::runtime_error("Invalid VRM vertex normals");
-    if(uvs.count&&uvs.components!=2)throw std::runtime_error("Invalid VRM texture coordinates");
-    for(size_t s=0;s<joints.size();s++)if(joints[s].components!=4||weights[s].components!=4||joints[s].count<count||weights[s].count<count)throw std::runtime_error("Invalid VRM skin weights");
+    if(normals.count&&normals.components!=3)vrmFail("vrm.data","Invalid VRM vertex normals: "+meshText(node.mesh,pi)+" has normals with "+std::to_string(normals.components)+" components instead of 3",Json(),{{"field","NORMAL"}});
+    if(uvs.count&&uvs.components!=2)vrmFail("vrm.data","Invalid VRM texture coordinates: "+meshText(node.mesh,pi)+" has texture coordinates with "+std::to_string(uvs.components)+" components instead of 2",Json(),{{"field",uvName}});
+    for(size_t s=0;s<joints.size();s++)if(joints[s].components!=4||weights[s].components!=4||joints[s].count<count||weights[s].count<count)
+     vrmFail("vrm.data","Invalid VRM skin weights: "+meshText(node.mesh,pi)+" has JOINTS_"+std::to_string(s)+"/WEIGHTS_"+std::to_string(s)+" with "+number(std::min(joints[s].count,weights[s].count))+" entries for "+number(count)+" vertices",Json(),{{"field","WEIGHTS_"+std::to_string(s)}});
     const UvTransform* transform=uvTransform.count(matIndex)?&uvTransform[matIndex]:nullptr;
     std::vector<uint32_t> index;if(p.contains("indices"))index=indexAccessor(d,p["indices"]);else{index.resize(count);for(size_t i=0;i<count;i++)index[i]=uint32_t(i);}
-    for(auto i:index)if(i>=count)throw std::runtime_error("Invalid VRM triangle index");
+    for(size_t t=0;t<index.size();t++)if(index[t]>=count)vrmFail("vrm.data","Invalid VRM triangle index: "+meshText(node.mesh,pi)+" uses vertex "+number(index[t])+", but the primitive has "+number(count)+" vertices",Json(),{{"field","indices"},{"value",index[t]},{"count",count}});
     // Primitives of one mesh often share a vertex buffer (VRoid: every submesh);
     // keep only the vertices this primitive draws.
     std::vector<int64_t> remap(count,-1);for(auto i:index)remap[i]=0;
@@ -385,7 +358,7 @@ struct Converter {
       if(sorted.size()>4)sorted.resize(4);float kept=0;for(auto& s:sorted)kept+=s.first;
       for(size_t k=0;k<sorted.size();k++){v.bone[k]=sorted[k].second;v.weight[k]=sorted[k].first/kept;}
      }else{v.bone[0]=fallback;v.weight[0]=1;}
-     if(!finite(v.p))throw std::runtime_error("The VRM mesh has non-finite vertex positions");
+     if(!finite(v.p))vrmFail("vrm.data","The VRM mesh has non-finite vertex positions: vertex "+number(i)+" of "+meshText(node.mesh,pi)+" is skinned to no number position",Json(),{{"field","POSITION"},{"vertex",i}});
      vertices.push_back(v);vertexMaterial.push_back(matIndex);
     }
     std::vector<std::array<uint32_t,3>> triangles;
@@ -400,7 +373,7 @@ struct Converter {
      for(size_t u=0;u<used.size();u++)vertices[base+u].n=glm::length(sum[u])>1e-12f?glm::normalize(sum[u]):Vec3(0,1,0);}
     for(size_t u=0;u<used.size();u++)if(glm::length(vertices[base+u].n)<.5f)vertices[base+u].n=Vec3(0,1,0);
     auto& morphs=arr(p,"targets");
-    for(size_t t=0;t<morphs.size();t++){if(!morphs[t].contains("POSITION"))continue;auto delta=accessor(d,morphs[t]["POSITION"]);if(delta.count!=count||delta.components!=3)throw std::runtime_error("Invalid VRM morph target");
+    for(size_t t=0;t<morphs.size();t++){if(!morphs[t].contains("POSITION"))continue;auto delta=accessor(d,morphs[t]["POSITION"]);if(delta.count!=count||delta.components!=3)vrmFail("vrm.data","Invalid VRM morph target: target "+std::to_string(t)+" of "+meshText(node.mesh,pi)+" has "+number(delta.count)+" positions for "+number(count)+" vertices",Json(),{{"field","targets"},{"target",t}});
      Target* target=nullptr;
      for(int ti:targetsOfMeshIndex[std::make_pair(node.mesh,int(t))])if(targets[ti].node==n)target=&targets[ti];
      if(!target){Target fresh;fresh.node=n;fresh.mesh=node.mesh;fresh.index=int(t);fresh.name=t<names->size()&&(*names)[t].is_string()?(*names)[t].get<std::string>():meshNames[node.mesh]+"_"+std::to_string(t);
@@ -410,7 +383,7 @@ struct Converter {
     }
    }
   }
-  if(vertices.empty())throw std::runtime_error("The VRM file contains no triangle geometry");
+  if(vertices.empty())vrmFail("vrm.no_geometry","The VRM file contains no triangle geometry");
  }
 };
 
@@ -454,9 +427,10 @@ Json vrmMetadata(const Json& j,const std::string& fallbackName){
  return info;
 }
 VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& fallbackName){
+ ImportScope scope("Converting VRM avatar","vrm");
  Converter c;c.d=open(file);c.fallbackName=fallbackName;auto& j=c.d.j;auto& extensions=obj(j,"extensions");
  const Json* vrm1=extensions.contains("VRMC_vrm")?&extensions.at("VRMC_vrm"):nullptr;const Json* vrm0=!vrm1&&extensions.contains("VRM")?&extensions.at("VRM"):nullptr;
- if(!vrm1&&!vrm0)throw std::runtime_error("This glTF file has no VRM extension, so it has no humanoid map. Static 3D models belong in Static Props.");
+ if(!vrm1&&!vrm0)vrmFail("vrm.container","This glTF file has no VRM extension, so it has no humanoid map. Static 3D models belong in Static Props.");
  c.v0=vrm0!=nullptr;c.vrm=vrm1?vrm1:vrm0;c.axes.v0=c.v0;
  c.readNodes();
  auto nodeRef=[&](const Json& value)->int{int n=value.is_number_integer()?value.get<int>():-1;return n>=0&&size_t(n)<c.nodes.size()?n:-1;};
@@ -465,7 +439,7 @@ VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& 
  if(c.v0){for(auto& b:arr(humanoid,"humanBones")){int n=nodeRef(b.value("node",Json()));auto name=string(b,"bone");if(n>=0&&!name.empty())c.human[humanName1(name)]=n;}}
  else{for(auto& [name,b]:obj(humanoid,"humanBones").items()){int n=nodeRef(b.value("node",Json()));if(n>=0)c.human[name]=n;}}
  for(auto required:{"hips","spine","head","leftUpperArm","leftLowerArm","leftHand","rightUpperArm","rightLowerArm","rightHand","leftUpperLeg","leftLowerLeg","leftFoot","rightUpperLeg","rightLowerLeg","rightFoot"})
-  if(!c.human.contains(required))throw std::runtime_error(std::string("The VRM humanoid map has no ")+required+" bone; the avatar cannot become a ragdoll");
+  if(!c.human.contains(required))vrmFail("vrm.humanoid",std::string("The VRM humanoid map has no ")+required+" bone; the avatar cannot become a ragdoll",place("humanoid_bone",-1,required),{{"bone",required}});
  // Nodes that must stay bones: skins, humanoid, springs and colliders.
  std::set<int> referenced;for(auto& [name,n]:c.human)referenced.insert(n);
  for(auto& skin:arr(j,"skins"))for(auto& jn:arr(skin,"joints")){int n=nodeRef(jn);if(n>=0)referenced.insert(n);}
@@ -630,41 +604,10 @@ VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& 
  c.note("Source shading approximates VRM MToon materials; shade colour, rim light, outlines and emission are not drawn.");
 
  // ---- PMX 2.0 ----
- Writer w;w.b.insert(w.b.end(),{'P','M','X',' '});w.f32(2.f);w.u8(8);for(uint8_t v:{uint8_t(1),uint8_t(0),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4)})w.u8(v);
- std::string comment="Converted from VRM "+info["version"].get<std::string>()+" by Model Hotloader.";
- if(!m["authors"].empty())comment+="\nAuthor: "+m["authors"][0].get<std::string>();
- w.text(title);w.text(title);w.text(comment);w.text(comment);
- w.i32(int32_t(c.vertices.size()));
- for(auto& v:c.vertices){w.v3(v.p);w.v3(v.n);w.v2(v.uv);int n=0;for(int k=0;k<4;k++)n+=v.bone[k]>=0;
-  if(n<=1){w.u8(0);w.i32(v.bone[0]);}
-  else if(n==2){w.u8(1);w.i32(v.bone[0]);w.i32(v.bone[1]);w.f32(v.weight[0]);}
-  else{w.u8(2);for(int k=0;k<4;k++)w.i32(v.bone[k]);for(int k=0;k<4;k++)w.f32(v.bone[k]>=0?v.weight[k]:0);}
-  w.f32(1);}
- size_t indexCount=0;for(auto* mat:order)indexCount+=mat->indices.size();w.i32(int32_t(indexCount));for(auto* mat:order)for(auto i:mat->indices)w.i32(int32_t(i));
- w.i32(int32_t(c.texturePaths.size()));for(auto& p:c.texturePaths)w.text(p);
- w.i32(int32_t(order.size()));
- for(auto* mat:order){w.text(mat->name);w.text(mat->name);w.v4(mat->diffuse);w.v3(Vec3(0));w.f32(5);w.v3(Vec3(mat->diffuse)*.5f);
-  w.u8(uint8_t((mat->twoSided?0x01:0)|0x02|0x04|0x08|(mat->edge?0x10:0)));w.v4(mat->edgeColor);w.f32(mat->edgeSize);
-  w.i32(mat->texture);w.i32(mat->sphere);w.u8(uint8_t(mat->sphereMode));w.u8(0);w.i32(-1);w.text(mat->memo);w.i32(int32_t(mat->indices.size()));}
- w.i32(int32_t(c.bones.size()));
- for(auto& b:c.bones){w.text(b.name);w.text(b.english);w.v3(b.position);w.i32(b.parent);w.i32(0);
-  uint16_t flags=0x0002|0x0008|0x0010;if(b.tail>=0)flags|=0x0001;if(b.parent<0)flags|=0x0004;if(b.inherit>=0)flags|=0x0100;if(b.fixed)flags|=0x0400;w.u16(flags);
-  if(b.tail>=0)w.i32(b.tail);else w.v3(b.tailOffset);
-  if(b.inherit>=0){w.i32(b.inherit);w.f32(b.inheritWeight);}
-  if(b.fixed)w.v3(b.fixedAxis);}
- w.i32(int32_t(morphs.size()));
- for(auto& mo:morphs){w.text(mo.name);w.text(mo.english);w.u8(uint8_t(mo.panel));w.u8(uint8_t(mo.type));
-  if(mo.type==0){w.i32(int32_t(mo.group.size()));for(auto& [i,wt]:mo.group){w.i32(i);w.f32(wt);}}
-  else if(mo.type==1){w.i32(int32_t(mo.vertex.size()));for(auto& [i,dv]:mo.vertex){w.i32(int32_t(i));w.v3(dv);}}
-  else if(mo.type==3){w.i32(int32_t(mo.uv.size()));for(auto& [i,dv]:mo.uv){w.i32(int32_t(i));w.v4(dv);}}
-  else{w.i32(int32_t(mo.material.size()));for(auto& o:mo.material){w.i32(o.material);w.u8(1);w.v4(o.diffuse);w.v3(Vec3(0));w.f32(0);w.v3(Vec3(0));w.v4(Vec4(0));w.f32(0);w.v4(Vec4(0));w.v4(Vec4(0));w.v4(Vec4(0));}}}
- // Display frames: root, expressions, then every other bone.
- w.i32(3);
- w.text("Root");w.text("Root");w.u8(1);w.i32(1);w.u8(0);w.i32(0);
- w.text("表情");w.text("Exp");w.u8(1);w.i32(int32_t(morphs.size()));for(size_t i=0;i<morphs.size();i++){w.u8(1);w.i32(int32_t(i));}
- w.text("Bones");w.text("Bones");w.u8(0);w.i32(int32_t(c.bones.size()>0?c.bones.size()-1:0));for(size_t i=1;i<c.bones.size();i++){w.u8(0);w.i32(int32_t(i));}
- w.i32(0);w.i32(0); // no rigid bodies or joints: VRM physics is simulated natively
- out.pmx=std::move(w.b);out.textures=std::move(c.textures);out.vrm=std::move(info);
+ PmxData pmx;pmx.name=title;pmx.comment="Converted from VRM "+info["version"].get<std::string>()+" by Model Hotloader.";
+ if(!m["authors"].empty())pmx.comment+="\nAuthor: "+m["authors"][0].get<std::string>();
+ pmx.vertices=std::move(c.vertices);pmx.textures=c.texturePaths;pmx.materials.assign(order.begin(),order.end());pmx.bones=c.bones;pmx.morphs=std::move(morphs);
+ out.pmx=writePmx(pmx);out.textures=std::move(c.textures);out.vrm=std::move(info);
  for(auto& s:c.warnings)out.warnings.push_back(s);for(auto& s:c.notes)out.warnings.push_back(s);
  return out;
 }

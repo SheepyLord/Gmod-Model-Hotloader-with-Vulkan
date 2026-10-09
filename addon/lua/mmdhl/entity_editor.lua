@@ -35,7 +35,12 @@ function mmdhl.OpenEntityEditor(ent)
   elseif state.effective=='gpu_opencl' and reason=='' then reason=L'editor.experimental_backend' end
   label:SetText(name..(reason~='' and (' - '..reason) or ''))
  end
- action(L'editor.reload',function() mmdhl.library.StartImport(mmdhl.native.Reload(id)) end)
+ action(L'editor.reload',function() mmdhl.library.ReloadCharacter(id) end)
+ -- Ragdolls open the physics editor; NPCs and player models inherit what is saved for new spawns.
+ if mmdhl.OpenPhysicsEditor then
+  local physics=action(L'physics_editor.open_button',function() if IsValid(ent) then frame:Close() mmdhl.OpenPhysicsEditor(ent) end end)
+  if ent:GetClass()~='prop_ragdoll' then physics:SetEnabled(false) physics:SetTooltip(L'physics_editor.actor_hint') end
+ end
  if ent:GetClass()=='prop_ragdoll' and mmdhl.CollisionEditor then mmdhl.CollisionEditor(scroll,ent) end
  local collisions=scroll:Add('DLabel') collisions:Dock(TOP) collisions:SetTall(26) collisions:SetText(L'physics.collision.label') collisions:SetDark(true)
  for _,target in ipairs(mmdhl.CollisionTargets) do

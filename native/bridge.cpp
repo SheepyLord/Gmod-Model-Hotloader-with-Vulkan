@@ -1,5 +1,6 @@
 #include "compatibility.hpp"
 #include "bridge.hpp"
+#include "physics_profile.hpp"
 #include "scene.hpp"
 #include <chrono>
 #include <windows.h>
@@ -55,7 +56,7 @@ Bytes carrierPhysics(const Rig& rig){
     Bytes result(16);auto integer=[&](size_t p,uint32_t v){std::memcpy(result.data()+p,&v,4);};
     integer(0,16);integer(8,18);integer(12,uint32_t(std::stoul(rig.key.substr(0,8),nullptr,16)));
     for(size_t index=0;index<rig.bodies.size();index++){
-        const auto& body=rig.bodies[index];
+        const auto& body=rig.bodies[index];const std::string which=" (body "+std::to_string(index)+")";
         // IVP's point/plane builders coarsen small hulls even with a tiny merge
         // tolerance. Supply the complete convex topology so limb surfaces survive
         // Source's serialization. This ABI is guarded by initialize()'s DLL hash.
@@ -67,11 +68,11 @@ Bytes carrierPhysics(const Rig& rig){
         std::map<std::pair<unsigned short,unsigned short>,unsigned short> edges;
         btVector3 center(0,0,0);for(auto v:body.hull)center+=v;center/=float(body.hull.size());
         for(const auto& face:rig.manifest["bodies"][index]["faces"]){
-            auto ids=face.get<std::vector<unsigned short>>();if(ids.size()<3)throw std::runtime_error("Invalid fitted collision face");
-            for(auto id:ids)if(id>=body.hull.size())throw std::runtime_error("Invalid fitted collision vertex index");
+            auto ids=face.get<std::vector<unsigned short>>();if(ids.size()<3)throw std::runtime_error("Invalid fitted collision face"+which);
+            for(auto id:ids)if(id>=body.hull.size())throw std::runtime_error("Invalid fitted collision vertex index"+which);
             auto a=body.hull[ids[0]];btVector3 n(0,0,0);
             for(size_t k=1;k+1<ids.size();k++){n=(body.hull[ids[k]]-a).cross(body.hull[ids[k+1]]-a);if(n.length2()>1e-12f)break;}
-            if(n.length2()<=1e-12f)throw std::runtime_error("Degenerate fitted collision face");
+            if(n.length2()<=1e-12f)throw std::runtime_error("Degenerate fitted collision face"+which);
             n.normalize();if(n.dot(a-center)<0){n=-n;std::reverse(ids.begin(),ids.end());}
             // Source polyhedra use clockwise vertex traversal with outward normals.
             // Opposite winding can trace correctly yet pass through other bodies.
@@ -86,19 +87,19 @@ Bytes carrierPhysics(const Rig& rig){
         }
         poly.pVertices=vertices.data();poly.pLines=lines.data();poly.pIndices=indices.data();poly.pPolygons=polygons.data();
         poly.iVertexCount=static_cast<unsigned short>(vertices.size());poly.iLineCount=static_cast<unsigned short>(lines.size());poly.iIndexCount=static_cast<unsigned short>(indices.size());poly.iPolygonCount=static_cast<unsigned short>(polygons.size());
-        void* convex=call<void*>(collision,collisionMethod(8),&poly);if(!convex)throw std::runtime_error("VPhysics rejected fitted collision topology");
-        void* collide=call<void*>(collision,collisionMethod(14),&convex,1);if(!collide)throw std::runtime_error("VPhysics convex conversion failed");
+        void* convex=call<void*>(collision,collisionMethod(8),&poly);if(!convex)throw std::runtime_error("VPhysics rejected fitted collision topology"+which);
+        void* collide=call<void*>(collision,collisionMethod(14),&convex,1);if(!collide)throw std::runtime_error("VPhysics convex conversion failed"+which);
         // Validate the actual engine hull before caching a .phy. Surface support
         // tests tolerate triangulation changes without accepting simplification.
         try {
             void* query=call<void*>(collision,collisionMethod(43),collide);if(!query)throw std::runtime_error("VPhysics collision query failed");
             float error=0;
             try {
-                if(call<int>(query,1)!=1)throw std::runtime_error("Expected one convex per physics body");
-                int count=call<int>(query,2,0);if(count<4||count>256)throw std::runtime_error("Unexpected collision triangle count");
+                if(call<int>(query,1)!=1)throw std::runtime_error("Expected one convex per physics body"+which);
+                int count=call<int>(query,2,0);if(count<4||count>256)throw std::runtime_error("Unexpected collision triangle count"+which);
                 std::vector<btVector3> actual;actual.reserve(count*3);
                 for(int t=0;t<count;t++){V tri[3];call<void>(query,4,0,t,tri);for(auto v:tri)actual.emplace_back(v.x,v.y,v.z);}
-                for(size_t t=0;t<actual.size();t+=3)if((actual[t+1]-actual[t]).cross(actual[t+2]-actual[t]).dot(actual[t]-center)>1e-6f)throw std::runtime_error("VPhysics collision winding is inverted");
+                for(size_t t=0;t<actual.size();t+=3)if((actual[t+1]-actual[t]).cross(actual[t+2]-actual[t]).dot(actual[t]-center)>1e-6f)throw std::runtime_error("VPhysics collision winding is inverted"+which);
                 auto check=[&](const btVector3& a,const btVector3& b,const btVector3& c,const auto& points){
                     auto n=(b-a).cross(c-a);if(n.length2()<1e-12f)return;n.normalize();if(n.dot(a-center)<0)n=-n;
                     for(const auto& v:points)error=std::max(error,n.dot(v-a));
@@ -112,15 +113,8 @@ Bytes carrierPhysics(const Rig& rig){
         try {int n=call<int>(collision,collisionMethod(17),collide);if(n<16||n>4*1024*1024)throw std::runtime_error("Invalid serialized collision size");size_t at=result.size();result.resize(at+4+n);integer(at,n);int written=call<int>(collision,collisionMethod(18),result.data()+at+4,collide,false);if(written!=n)throw std::runtime_error("Collision serialization size mismatch");}
         catch(...){call<void>(collision,collisionMethod(16),collide);throw;}call<void>(collision,collisionMethod(16),collide);
     }
-    std::ostringstream kv;float bias=0;for(auto& b:rig.bodies)bias+=b.massBias;
-    for(size_t i=0;i<rig.bodies.size();i++){auto& b=rig.bodies[i];kv<<"solid {\n\"index\" \""<<i<<"\"\n\"name\" \""<<rig.bones[b.bone].name<<"\"\n";if(b.parent>=0)kv<<"\"parent\" \""<<rig.bones[rig.bodies[b.parent].bone].name<<"\"\n";
-        kv<<"\"mass\" \""<<rig.mass*b.massBias/bias<<"\"\n\"surfaceprop\" \"flesh\"\n\"damping\" \"0.8\"\n\"rotdamping\" \""<<b.rotationDamping<<"\"\n\"inertia\" \"12\"\n}\n";
-    }
-    for(size_t i=1;i<rig.bodies.size();i++){auto& b=rig.bodies[i];kv<<"ragdollconstraint {\n\"parent\" \""<<b.parent<<"\"\n\"child\" \""<<i<<"\"\n";for(int k=0;k<3;k++){char axis='x'+char(k);kv<<'"'<<axis<<"min\" \""<<b.lower[k]<<"\"\n\""<<axis<<"max\" \""<<b.upper[k]<<"\"\n\""<<axis<<"friction\" \"0\"\n";}kv<<"}\n";}
-    // Source treats the presence of selfcollisions as OFF, regardless of value.
-    // Enabled pairs must appear without that key (CRagdollCollisionRules).
-    kv<<"collisionrules {\n";for(size_t a=0;a<18;a++)for(size_t b=a+1;b<18;b++)if(rig.bodies[b].parent!=int(a)&&rig.bodies[a].parent!=int(b))kv<<"\"collisionpair\" \""<<a<<","<<b<<"\"\n";kv<<"}\neditparams {\n\"rootname\" \"ValveBiped.Bip01_Pelvis\"\n\"totalmass\" \""<<rig.mass<<"\"\n}\n";
-    auto s=kv.str();result.insert(result.end(),s.begin(),s.end());result.push_back(0);return result;
+    // The text section (physics_profile.cpp): byte-identical to 2.2 for unedited carriers.
+    auto s=physicsText(rig);result.insert(result.end(),s.begin(),s.end());result.push_back(0);return result;
 }
 namespace {
 struct SceneTracked {uint64_t id;void* collide;float radius;V center;std::shared_ptr<SceneGeometry> geometry;uint64_t seen=0;};

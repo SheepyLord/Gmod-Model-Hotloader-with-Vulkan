@@ -175,12 +175,15 @@ function PANEL:Init()
   draw.RoundedBox(5,0,0,w,h,Color(220,237,251))
   draw.SimpleText(library.filename and L('ui.import.file',{file=library.filename}) or library.jobKind=='static' and L'ui.import.static_prop' or L'ui.import.model',f.Strong,s(12),s(8),ink)
   draw.SimpleText((library.status or L'ui.import.working')..(library.progress and ('  '..math.floor(library.progress*100)..'%') or ''),f.Small,s(12),s(31),muted)
+  if not library.job then return end
   surface.SetDrawColor(183,203,221) surface.DrawRect(s(12),h-s(15),w-s(24)-s(147),s(7)) surface.SetDrawColor(accent)
   local width=w-s(24)-s(147)
   if library.progress then surface.DrawRect(s(12),h-s(15),width*library.progress,s(7))
   else surface.DrawRect(s(12)+(width-s(80))*(RealTime()%1),h-s(15),s(80),s(7)) end
  end
  self.Cancel=button(self.ImportBanner,L'ui.import.cancel',library.CancelImport,s(36),f.Body,'danger') self.Cancel:Dock(RIGHT) self.Cancel:SetWide(s(135)) self.Cancel:DockMargin(s(8),s(19),s(12),s(19))
+ self.ShowBones=button(self.ImportBanner,L'bonemap.status.show_window',function() local BM=mmdhl.boneMapper if BM and IsValid(BM.frame) then BM.frame:MakePopup() end end,s(36),f.Body,true)
+ self.ShowBones:Dock(RIGHT) self.ShowBones:SetWide(s(135)) self.ShowBones:DockMargin(s(8),s(19),s(12),s(19)) self.ShowBones:SetVisible(false)
  -- One-time notice before names of existing models are sent for translation (names.lua).
  self.NamesNotice=self:Add('DPanel') self.NamesNotice:Dock(TOP) self.NamesNotice:SetTall(s(60)) self.NamesNotice:DockMargin(0,0,0,s(8)) self.NamesNotice:DockPadding(s(12),s(6),s(8),s(6)) self.NamesNotice:SetVisible(false)
  self.NamesNotice.Paint=function(_,w,h) draw.RoundedBox(5,0,0,w,h,Color(222,233,247)) end
@@ -231,6 +234,13 @@ function PANEL:Init()
   if self.mode=='library' then
    menu:AddOption(L'ui.spawn.ragdoll',function() self:Place('ragdoll') end)
    menu:AddOption(L'ui.bodygroups.edit',function() self:EditBodygroups() end)
+   -- The bone window may be missing or partly loaded (its files did not arrive).
+   local BM=mmdhl.boneMapper local picked=row.entry
+   if not istable(BM) or not isfunction(BM.Available) then BM=nil end
+   if BM and picked and BM.Available('fit') and isfunction(BM.OpenFit) then menu:AddOption(L'ui.menu.assign_bones',function() BM.OpenFit(picked.id,'edit',picked.name) end):SetIcon('icon16/user_edit.png') end
+   if BM and picked and istable(picked.info.conversion) and picked.source~='' and not picked.shared and isfunction(BM.Convertible) and isfunction(BM.Probe) and isfunction(BM.BringToFront) and BM.Convertible(picked.source) then
+    menu:AddOption(L'ui.menu.import_again_bones',function() if library.job then self:SetStatus(L'library.import.busy',true) elseif not BM.BringToFront() then BM.Probe(picked.source) end end):SetIcon('icon16/arrow_refresh.png')
+   end
    self:PopulateMoveMenu(menu:AddSubMenu(L'ui.menu.move_selected'))
    menu:AddOption(L'common.rename',function() self:RenameSelected() end)
   elseif self.mode=='static' then
@@ -288,6 +298,8 @@ end
 function PANEL:BuildCharacterActions()
  local s,f=self.S,self.Fonts
  local actions=self.Right:Add('DPanel') self.Actions=actions actions:Dock(BOTTOM) actions:SetPaintBackground(false) actions:DockMargin(0,s(8),0,0)
+ self.AssignBones=button(actions,'',function() local BM=mmdhl.boneMapper local entry=self.selected and library.entries[self.selected] if istable(BM) and isfunction(BM.OpenFit) and entry then BM.OpenFit(entry.id,'rescue',entry.name) end end,s(36),f.Strong,'warning')
+ self.AssignBones:Dock(TOP) self.AssignBones:DockMargin(0,0,0,s(6)) self.AssignBones:SetVisible(false)
  self.ScaleMultiplier=actions:Add('DNumSlider') self.ScaleMultiplier:Dock(TOP) self.ScaleMultiplier:SetTall(s(32)) self.ScaleMultiplier:SetText(L'ui.character.size') self.ScaleMultiplier:SetMinMax(.1,4) self.ScaleMultiplier:SetDecimals(2) self.ScaleMultiplier:SetValue(1) self.ScaleMultiplier:SetDark(true) self.ScaleMultiplier.Label:SetFont(f.Body)
  self.ScaleMultiplier.OnValueChanged=function() releasePreview(self) self:ResetCamera(false) end
  self.SizeInfo=label(actions,'',f.Small,s(22)) self.SizeInfo:Dock(TOP) self.SizeInfo:SetTextColor(muted)
@@ -580,6 +592,7 @@ function PANEL:Refresh()
    row:SetTooltip(item.name..'\n'..(item.original and L('names.original',{name=item.original})..'\n' or '')..(origin~='' and origin..'\n' or '')..(e and e.source~='' and e.source..'\n' or '')..L('ui.tooltip.cache',{id=item.id:sub(1,12)}))
    if listed and e then
     if e.deleted then badge(row,L'ui.badge.deleted',Color(128,136,148),self.Fonts.Small,self.S)
+    elseif self.mode=='library' and istable(e.settings.fit) and e.settings.fit.ok==false then badge(row,L'bonemap.badge.needs_bones',Color(191,120,22),self.Fonts.Small,self.S)
     elseif e.workshop then badge(row,L'ui.badge.workshop',Color(40,105,180),self.Fonts.Small,self.S)
     elseif e.shared then badge(row,L'ui.badge.server',Color(142,104,40),self.Fonts.Small,self.S)
     else badge(row,L'ui.badge.own',Color(74,128,92),self.Fonts.Small,self.S) end
@@ -597,7 +610,7 @@ function PANEL:Refresh()
  if IsValid(self.FaceCamera) then self.FaceCamera:SetVisible(not static) end
  self.ShowCollision:SetVisible(static)
  if kept then self:Choose(kept) else
-  self.selected=nil self.entity=nil self.deletedRow=nil releasePreview(self) self:EnableActions(false) self.Name:SetText(static and L'ui.select_prop' or L'ui.select_model') self.Warnings:SetVisible(false) self.Origin:SetVisible(false)
+  self.selected=nil self.entity=nil self.deletedRow=nil releasePreview(self) self:EnableActions(false) self:ShowFitStatus(nil) self.Name:SetText(static and L'ui.select_prop' or L'ui.select_model') self.Warnings:SetVisible(false) self.Origin:SetVisible(false)
   self.Details:SetText(#rows==0 and (self.mode=='scene' and L'ui.empty.scene' or deletedView and L'ui.empty.deleted_workshop' or self.folder==WORKSHOP and L'ui.empty.workshop' or static and L'ui.empty.props' or L'ui.empty.models') or L'ui.select_row')
  end
  self.Delete:SetEnabled(#self.Models:GetSelected()>0) self.Rename:SetEnabled(self.selected~=nil) self.Favorite:SetEnabled(self.selected~=nil) self.Move:SetEnabled(self.selected~=nil)
@@ -645,6 +658,7 @@ function PANEL:Choose(row)
    self.ScaleMultiplier:SetValue(math.Clamp(tonumber(saved.scaleMultiplier) or 1,.1,4))
   end
   self:RefreshBodygroupChoices(entry)
+  self:ShowFitStatus(entry)
   local shown,original=shownName(self.mode,entry)
   self.Name:SetText(shown) self.Name:SetTooltip(original and L('names.original',{name=original}) or shown)
   local vrmShort,vrmLong=mmdhl.VrmSummary(entry.info)
@@ -654,6 +668,14 @@ function PANEL:Choose(row)
   if changed and not library.job and not mmdhl.pendingSpawn then self:SetStatus(self.mode=='scene' and L'ui.status.scene_selected' or L('ui.status.ready_character',{name=shown})) end
  elseif changed then self:ResetCamera(false) end
  self:EnableActions(self.mode=='library' and not mmdhl.pendingSpawn) self.Move:SetEnabled(entry~=nil)
+end
+-- A character the fitter cannot map offers the bone window above the spawn buttons.
+function PANEL:ShowFitStatus(entry)
+ local fit=entry and istable(entry.settings.fit) and entry.settings.fit
+ local BM=mmdhl.boneMapper
+ local show=fit and fit.ok==false and istable(BM) and isfunction(BM.Available) and isfunction(BM.OpenFit) and BM.Available('fit') or false
+ if show then self.AssignBones:SetText(L('bonemap.library.assign_button',{count=istable(fit.missing) and #fit.missing or 0})) end
+ if self.AssignBones:IsVisible()~=show then self.AssignBones:SetVisible(show) self.Actions:SetTall(stackHeight(self.Actions)) self.Right:InvalidateLayout() end
 end
 function PANEL:SelectAsset(id,kind)
  local mode=kind=='static' and 'static' or 'library'
@@ -791,9 +813,12 @@ function PANEL:Think()
   if self.sceneSignature~=signature then self.sceneSignature=signature self:Refresh() end
  end
  local busy=library.job~=nil
+ -- The bone window of an import waiting for the player keeps the banner, with Show.
+ local BM=mmdhl.boneMapper local waiting=not busy and BM~=nil and IsValid(BM.frame) and istable(BM.state) and BM.state.mode=='convert'
  -- A hidden docked panel keeps its space until the parent lays out again.
- if self.ImportBanner:IsVisible()~=busy then self.ImportBanner:SetVisible(busy) self:InvalidateLayout() end
+ if self.ImportBanner:IsVisible()~=(busy or waiting) then self.ImportBanner:SetVisible(busy or waiting) self:InvalidateLayout() end
  self.Import:SetEnabled(not library.job and not library.deleting and not (mmdhl.props and mmdhl.props.library.deleting)) self.Cancel:SetVisible(library.job~=nil)
+ if self.ShowBones:IsVisible()~=waiting then self.ShowBones:SetVisible(waiting) end
  if self.importStatus~=library.status then self.importStatus=library.status if library.status then self:SetStatus(library.status) end end
  if self.imported~=library.lastImported then self.imported=library.lastImported if self.imported then self:SelectAsset(self.imported,library.lastImportedKind) end end
  if self.mode=='static' then self:ThinkProp() return end
@@ -976,11 +1001,13 @@ hook.Add('PopulateToolMenu','MMDHL.Menu',function()
   panel:Help(L'ui.toolmenu.characters_help')
   panel:Button(L'ui.toolmenu.open_library','mmdhl_open')
   panel:Button(L'install.window_title','mmdhl_installation')
+  panel:CheckBox(L'install.update.setting','mmdhl_native_update_reminder')
   mmdhl.BindLanguageChoice(panel:ComboBox(L'ui.toolmenu.language'))
   panel:ControlHelp(L'ui.toolmenu.language_help')
   panel:CheckBox(L'terms.setting_import','mmdhl_terms_warning_import')
   panel:CheckBox(L'terms.setting_export','mmdhl_terms_warning_export')
   panel:ControlHelp(L'terms.setting_help')
+  panel:Button(L'file_access.manage.button','mmdhl_file_access')
   panel:Help(L'ui.toolmenu.settings_help')
   panel:CheckBox(L'ui.toolmenu.spawn_frozen','mmdhl_spawn_frozen')
   panel:NumSlider(L'ui.character.npc_health','mmdhl_npc_health',0,mmdhl.MaxNPCHealth,0)

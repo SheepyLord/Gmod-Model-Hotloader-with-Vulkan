@@ -6,6 +6,7 @@
 #include "sharing.hpp"
 #include "packages.hpp"
 #include "model_notes.hpp"
+#include "humanoid_map.hpp"
 #include "scene_share.hpp"
 #include <fstream>
 #include "bridge.hpp"
@@ -24,13 +25,22 @@
 #include <stdexcept>
 #include "jobs.hpp"
 #include "prop_bindings.hpp"
+#include "physics_profile.hpp"
+#include "import_error.hpp"
+#include "file_access.hpp"
+#include "picked_models.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
-struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;};
+#ifdef MMDHL_SERVER
+constexpr bool ServerRealm=true;
+#else
+constexpr bool ServerRealm=false;
+#endif
+struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;bool picker=false;};
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;std::unique_ptr<PickedModels> picked;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -57,18 +67,26 @@ void retireJob(Job& j){std::error_code error;if(plainDirectory(j.dir))fs::remove
 #ifndef MMDHL_SERVER
 void pruneJobs(){std::vector<uint64_t> done;for(auto& [id,j]:context->jobs)if(!j.process&&!j.result.is_null())done.push_back(id);for(size_t i=0;i+16<done.size();i++)context->jobs.erase(done[i]);}
 #endif
+#ifndef MMDHL_SERVER
+// The files the player chose in the picker (picked_models.hpp), read on first use.
+PickedModels& picked(){if(!context->picked){fs::path store;try{store=pickedModelsStore();}catch(...){}context->picked=std::make_unique<PickedModels>(store);}return *context->picked;}
+#endif
 uint64_t launch(bool picker,const std::string& source,const Json& options){
 #ifdef MMDHL_SERVER
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
     pruneJobs();
-    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
-    writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"progress",0}});
-    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"cache",utf8(context->cache.wstring())},{"options",options}});
+    // On a server this game does not host only a file the player picked, never a network
+    // path; the request and status go into a private folder in %TEMP%\mmdhl-jobs, which
+    // Lua cannot rewrite (picked_models.hpp, tested in file_access_tests.cpp).
+    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.picker=picker;
+    j.dir=prepareImportJob(picked(),localServerRealm(),picker,source,options);
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
-    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker&&options.value("kind",std::string())=="static"?L" static":L"");
+    // The cache folder goes on the command line, not in request.json: any script can rewrite
+    // that file in data/ before the worker reads it (and point the worker at another computer).
+    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker?(options.value("kind",std::string())=="static"?L" static":L""):L" "+quote(context->cache));
     j.group=CreateJobObjectW(nullptr,nullptr);JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;SetInformationJobObject(j.group,JobObjectExtendedLimitInformation,&limits,sizeof(limits));
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESHOWWINDOW;start.wShowWindow=SW_HIDE;PROCESS_INFORMATION process{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,context->bin.c_str(),&start,&process)){CloseHandle(j.group);throw std::runtime_error("Cannot start import worker");}
@@ -82,10 +100,12 @@ static void forgetAssets(const std::vector<std::string>& ids){
   for(auto& [handle,p]:world().instances)if(p->model->id==id)throw std::runtime_error("Remove the model from the map before deleting it");
   if(auto it=context->loading.find(id);it!=context->loading.end()){if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready)throw std::runtime_error("Model is still loading; retry deletion in a moment");context->loading.erase(it);}
   for(auto& [key,future]:context->fitting)if(key.starts_with(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
+  if(context->previews.busy(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
  }
  for(auto& id:ids){
   context->assets.erase(id);
   for(auto it=context->fitted.begin();it!=context->fitted.end();)if(it->first.starts_with(id))it=context->fitted.erase(it);else ++it;
+  context->previews.forget(id);
  }
 }
 FUNCTION(ForgetAssets) {forgetAssets(json(LUA,1).get<std::vector<std::string>>());LUA->PushBool(true);return 1;} END_FUNCTION
@@ -129,7 +149,7 @@ FUNCTION(PollInstallationProbe) {
  if(installationProbe.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"pending",true}});return 1;}
  push(LUA,installationProbe.get());return 1;
 } END_FUNCTION
-FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform","win64"},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}}});return 1;} END_FUNCTION
+FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"rigGeneratorMin",RigGeneratorMinLoadable},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform","win64"},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}},{"characterImport",{{"version",1},{"probeVersion",1},{"requestVersion",1},{"formats",{"fbx","glb","gltf","dae"}}}},{"boneMap",{{"version",1},{"fit",true}}}});return 1;} END_FUNCTION
 FUNCTION(Browse) {auto kind=LUA->IsType(1,GarrysMod::Lua::Type::String)?stringArg(LUA,1):std::string();if(!kind.empty()&&kind!="static")throw std::runtime_error("Unknown import kind");LUA->PushNumber(double(launch(true,"",kind.empty()?Json::object():Json{{"kind",kind}})));return 1;} END_FUNCTION
 // Save a part preset of a cached static prop (materials and/or region cut).
 FUNCTION(PropDerive) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid prop ID");if(!fs::exists(context->cache/L"static"/L"assets"/wide(id+".gmdl")))throw std::runtime_error("The original prop is not in the local cache");auto options=json(LUA,2);options["kind"]="derive";options["parent"]=id;LUA->PushNumber(double(launch(false,"",options)));return 1;} END_FUNCTION
@@ -140,16 +160,57 @@ FUNCTION(PropReload) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtim
     LUA->PushNumber(double(launch(false,registry[id].at("source"),options)));return 1;} END_FUNCTION
 FUNCTION(BeginImport) {LUA->PushNumber(double(launch(false,stringArg(LUA,1),json(LUA,2))));return 1;} END_FUNCTION
 FUNCTION(Reload) {auto id=stringArg(LUA,1);auto registry=readJson(context->cache/L"sources.local.json");if(!registry.contains(id))throw std::runtime_error("Source path unavailable; select the model again");auto entry=registry[id];LUA->PushNumber(double(launch(false,entry.at("source"),entry.value("options",Json::object()))));return 1;} END_FUNCTION
+// The end of the worker's crash log (worker.cpp), read before the job folder goes.
+std::string workerLog(const fs::path& dir){
+ std::ifstream f(ioPath(dir/L"worker.log"),std::ios::binary|std::ios::ate);if(!f)return {};auto size=std::streamoff(f.tellg());auto start=std::max<std::streamoff>(0,size-4096);
+ std::string text(size_t(size-start),'\0');f.seekg(start);f.read(text.data(),std::streamsize(text.size()));text.resize(size_t(f.gcount()));return text;
+}
+// A worker that ended without a final status crashed or was killed: keep the step it
+// had reached and say why from its exit code (import_error.hpp).
+Json finishedJob(Job& j,Json last,const std::string& readError){
+ DWORD code=0;GetExitCodeProcess(j.process,&code);
+ auto result=finishedWorkerStatus(std::move(last),code,workerLog(j.dir),j.source,j.kind,readError);
+ if(result.value("state","")=="failed"&&!result.contains("elapsed_ms"))result["elapsed_ms"]=GetTickCount64()-j.started;
+ return result;
+}
 FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->jobs.end())throw std::runtime_error("Unknown job");auto& j=it->second;if(!j.result.is_null()){push(LUA,j.result);return 1;}
-    bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)result={{"state","failed"},{"error",e.what()}};else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
+    bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;std::string readError;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)readError=e.what();else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
     if(!finished&&GetTickCount64()-j.started>300000)result["warning"]="Import is taking longer than five minutes. You can keep waiting or cancel.";
-    if(finished){if(result.value("state","")=="running")result={{"state","failed"},{"error","Import worker exited before completion"}};j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);}
+    if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);
+#ifndef MMDHL_SERVER
+     // The picker's answer came through the job's private folder: the player chose this file.
+     notePickedSource(picked(),j.picker,result);
+#endif
+    }
     else if(result.value("state","")!="running")result={{"state","running"},{"stage","Committing asset"},{"progress",.99}};
     push(LUA,result);return 1;} END_FUNCTION
 FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);j.group=nullptr;}if(j.process){CloseHandle(j.process);j.process=nullptr;}j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(RequestAsset) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid asset ID");if(!fs::exists(context->cache/L"assets"/wide(id)/L"manifest.json"))throw std::runtime_error("Model was deleted; import it again");if(!context->assets.contains(id)&&!context->loading.contains(id)){auto cache=context->cache;context->loading[id]=std::async(std::launch::async,[cache,id]{return loadAsset(cache,id);});}LUA->PushBool(true);return 1;} END_FUNCTION
 std::shared_ptr<Model> asset(const std::string& id){if(context->assets.contains(id))return context->assets.at(id);auto it=context->loading.find(id);if(it!=context->loading.end()&&it->second.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto pending=std::move(it->second);context->loading.erase(it);auto m=pending.get();for(auto old=context->assets.begin();old!=context->assets.end()&&context->assets.size()>=8;)if(old->second.use_count()==1)old=context->assets.erase(old);else ++old;context->assets[id]=m;return m;}return {};}
 FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}push(LUA,m->info());return 1;} END_FUNCTION
+// The physics editor's exact preview, in both realms: the carrier a build with
+// these options would produce (shapes, masses, overlaps, .phy text), without
+// writing anything. A cached fit answers at once; a refit runs off-thread and
+// reports "pending" until the editor's poll finds it done (PreviewQueue).
+FUNCTION(PreviewCarrierFit) {
+ auto id=stringArg(LUA,1);auto m=asset(id);if(!m){LUA->PushNil();LUA->PushString("Asset not loaded");return 2;}
+ auto options=json(LUA,2);if(!options.is_object())throw std::runtime_error("Invalid preview options");
+ if(options.value("role",std::string("ragdoll"))=="arms")options.erase("physicsOverrides");
+ else if(options.contains("physicsOverrides")){
+  auto canonical=canonicalPhysics(options["physicsOverrides"]);
+  if(!canonical.errors.empty()){Json errors=Json::array();for(auto& e:canonical.errors)errors.push_back({{"code",e.code},{"path",e.path},{"detail",e.detail}});push(LUA,{{"status","error"},{"errors",errors}});return 1;}
+  if(canonical.value.empty())options.erase("physicsOverrides");else options["physicsOverrides"]=canonical.value;
+ }
+ auto run=[m,options]{try{return previewCarrier(fitRig(*m,options));}catch(const std::exception& e){return Json{{"status","error"},{"errors",Json::array({{{"code","fit_failed"},{"path",""},{"detail",e.what()}}})}};}};
+ if(cachedFitApplies(*m,options)){push(LUA,run());return 1;}
+ push(LUA,context->previews.poll(id,carrierFitKey(id,options),run));return 1;
+} END_FUNCTION
+// The bone window: a loaded asset's skeleton (options.include ["skeleton"]), the
+// automatic assignment, and the structural problems of options.values.
+// The fitter's bone choice for a loaded asset with the pins of options.boneMap (both
+// realms: the window and the server's save check). Bad pins are issues, not errors.
+FUNCTION(GetBoneMapProposal) {auto m=asset(stringArg(LUA,1));if(!m)throw std::runtime_error("Load the asset before requesting a bone map");Json options;try{options=json(LUA,2);}catch(const Json::exception&){throw std::runtime_error("Invalid bone map options");}if(!options.is_object())throw std::runtime_error("Invalid bone map options");push(LUA,boneMapProposal(*m,options));return 1;} END_FUNCTION
+FUNCTION(InspectBoneMap) {auto m=asset(stringArg(LUA,1));if(!m)throw std::runtime_error("Load the asset before requesting a bone map");Json options;try{options=json(LUA,2);}catch(const Json::exception&){throw std::runtime_error("Invalid bone map options");}if(!options.is_object())throw std::runtime_error("Invalid bone map options");push(LUA,inspectBoneMap(*m,options));return 1;} END_FUNCTION
 FUNCTION(CreateInstance) {auto id=stringArg(LUA,1);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}LUA->PushNumber(double(world().create(m,json(LUA,2))));return 1;} END_FUNCTION
 FUNCTION(SubmitSourcePose) {requireServer();auto& p=world().get(number(LUA,1));if(!p.sourceRig)throw std::runtime_error("Instance has no Source carrier");
  auto read=[&](int table,size_t count){std::vector<btTransform> out;out.reserve(count);for(size_t i=0;i<count;i++){LUA->PushNumber(double(i*2+1));LUA->GetTable(table);auto pos=vector(LUA,-1);LUA->Pop();LUA->PushNumber(double(i*2+2));LUA->GetTable(table);auto a=LUA->GetAngle(-1);LUA->Pop();if(!std::isfinite(a.x)||!std::isfinite(a.y)||!std::isfinite(a.z))throw std::runtime_error("Invalid Source angle");btQuaternion q;q.setEulerZYX(a.y*SIMD_RADS_PER_DEG,a.x*SIMD_RADS_PER_DEG,a.z*SIMD_RADS_PER_DEG);out.emplace_back(q,pos);}return out;};
@@ -249,7 +310,8 @@ FUNCTION(PollPackageExport) {
  push(LUA,job.result);return 1;
 } END_FUNCTION
 // Readme, licence and embedded terms of a model file the player chose, before importing it.
-FUNCTION(InspectModelNotes) {push(LUA,inspectModelNotes(fs::path(wide(stringArg(LUA,1)))));return 1;} END_FUNCTION
+// On a server this game does not host, only beside a file picked in this session.
+FUNCTION(InspectModelNotes) {push(LUA,inspectModelNotesFor(picked(),localServerRealm(),stringArg(LUA,1)));return 1;} END_FUNCTION
 FUNCTION(CancelPackageExport) {auto it=context->packages.find(number(LUA,1));if(it!=context->packages.end())it->second.progress->cancel=true;LUA->PushBool(true);return 1;} END_FUNCTION
 // Shows an export in Explorer. Only plain file names inside data/mmd_hotloader/exports.
 FUNCTION(RevealPackageExport) {
@@ -314,17 +376,17 @@ FUNCTION(UpdateGrab) {requireServer();world().updateGrab(vector(LUA,1)*Inch);ret
 FUNCTION(EndGrab) {requireServer();world().endGrab();return 0;} END_FUNCTION
 FUNCTION(Clear) {world().clear();return 0;} END_FUNCTION
 #ifdef MMDHL_SERVER
-static std::string fitKey(const std::string& id,const Json& options){Json geometry;for(auto key:{"scaleMultiplier","scale","height","mass","collisionOverrides","collisionOverrideScale","excludedMaterials","role","gender","animationSource","animationReference","armsParts"})if(options.contains(key))geometry[key]=options[key];return id+geometry.dump();}
 FUNCTION(ReadAnimationModel) {auto bytes=stringArg(LUA,1);push(LUA,readAnimationModel(std::span(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size())));return 1;} END_FUNCTION
 FUNCTION(RequestCarrierFit) {
- auto id=stringArg(LUA,1);auto options=json(LUA,2);auto key=fitKey(id,options);if(context->fitted.contains(key)){LUA->PushBool(true);return 1;}
+ // Canonical physics first: equal profiles share one fit, and a stale fit is never reused.
+ auto id=stringArg(LUA,1);auto options=normalizeCarrierOptions(json(LUA,2));auto key=carrierFitKey(id,options);if(context->fitted.contains(key)){LUA->PushBool(true);return 1;}
  auto m=asset(id);if(!m)throw std::runtime_error("Load the asset before requesting a fit");
  if(!context->fitting.contains(key)){context->fitting[key]=std::async(std::launch::async,[m,options]{return fitRig(*m,options);});LUA->PushBool(false);return 1;}
  auto& pending=context->fitting.at(key);if(pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready){LUA->PushBool(false);return 1;}
  auto ready=std::move(pending);context->fitting.erase(key);if(context->fitted.size()>=16)context->fitted.erase(context->fitted.begin());context->fitted.emplace(key,ready.get());LUA->PushBool(true);return 1;
 } END_FUNCTION
 FUNCTION(PrepareCarrier) {
- auto id=stringArg(LUA,1);auto options=json(LUA,2);auto key=fitKey(id,options);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}
+ auto id=stringArg(LUA,1);auto options=normalizeCarrierOptions(json(LUA,2));auto key=carrierFitKey(id,options);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}
  auto rig=context->fitted.contains(key)?context->fitted.at(key):fitRig(*m,options);auto cached=context->cache/L"rigs"/wide(rig.key)/L"carrier.gma";
  if(fs::is_regular_file(cached)){registerShortName(context->cache,"rigs",rig.key);retainCacheFiles(context->cache,{fs::path(L"rigs")/wide(rig.key)});auto result=rig.manifest;result["gma"]="data/mmd_hotloader/rigs/"+rig.key+"/carrier.gma";push(LUA,result);}else push(LUA,packageCarrier(context->cache,rig,carrierPhysics(rig)));return 1;
 } END_FUNCTION
@@ -400,11 +462,23 @@ FUNCTION(SubmitPresentationBatch) {
  LUA->PushBool(true);return 1;
 } END_FUNCTION
 FUNCTION(GetAlignmentProbe) {
- auto& p=world().get(number(LUA,1));p.requireCpuVertices();Json bones=Json::array(),vertices=Json::array();
+ auto& p=world().get(number(LUA,1));p.ensureSnapshot();
+ // The drawn vertex farthest from every presentation bone and the one nearest the world origin.
+ // Partly weighted vertices the samples below skip still show: one left behind at the world
+ // origin (issue #6) lies far beyond the model's height from the skeleton. Read as drawn, under
+ // hardware skinning from the palette, before the samples force a CPU publish.
+ Json farthest=nullptr,nearest=nullptr;const char* skinning=p.snapshot->gpu?"hardware":"cpu";
+ {float spread=-1,closest=BT_LARGE_FLOAT;size_t farAt=0,nearAt=0;btVector3 farPos(0,0,0),nearPos(0,0,0);
+  p.drawnVertices([&](size_t i,const btVector3& v){
+   if(!p.presentationBones.empty()){float d=BT_LARGE_FLOAT;for(auto& bone:p.presentationBones)d=std::min(d,(bone.getOrigin()-v).length2());if(d>spread){spread=d;farAt=i;farPos=v;}}
+   if(v.length2()<closest){closest=v.length2();nearAt=i;nearPos=v;}});
+  if(spread>=0)farthest={{"index",farAt},{"distance",std::sqrt(spread)},{"position",{farPos.x(),farPos.y(),farPos.z()}},{"modelHeight",(p.model->maximum.y()-p.model->minimum.y())*p.scale/Inch}};
+  if(closest<BT_LARGE_FLOAT)nearest={{"index",nearAt},{"distance",std::sqrt(closest)},{"position",{nearPos.x(),nearPos.y(),nearPos.z()}}};}
+ p.requireCpuVertices();Json bones=Json::array(),vertices=Json::array();
  if(p.sourceRig)for(size_t i=0;i<p.sourceRig->bones.size();i++){auto& b=p.sourceRig->bones[i];if(b.mmd<0)continue;auto t=p.placement*convert(p.snapshot->bones[b.mmd],p.scale);auto pos=t.getOrigin()/Inch;Json j={{"source",i},{"mmd",b.mmd},{"meshBone",{pos.x(),pos.y(),pos.z()}}};if(i<p.presentationBones.size()){auto v=p.presentationBones[i].getOrigin();j["sourceBone"]={v.x(),v.y(),v.z()};j["error"]=(pos-v).length();}bones.push_back(j);}
  // Independent rigidly weighted vertices detect skinning/bind errors that a bone-only comparison misses.
  for(size_t i=0;i<p.model->vertices.size();i++){auto& v=p.model->vertices[i];if(v.weights[0]<.9999f||v.bones[0]<0||!p.sourceRig)continue;int b=p.sourceControl[v.bones[0]];if(b<0||size_t(b)>=p.presentationBones.size())continue;if(i%37!=0)continue;auto facing=rigMeshBind(*p.sourceRig);auto expected=p.presentationBones[b]*p.sourceRig->bones[b].rest.inverse()*(facing*(toSource(v.position)*p.sourceRig->scale));auto& d=p.snapshot->vertices[i];auto rendered=btVector3(d.x,d.y,d.z);vertices.push_back({{"index",i},{"sourceBone",b},{"expected",{expected.x(),expected.y(),expected.z()}},{"rendered",{d.x,d.y,d.z}},{"error",(expected-rendered).length()}});if(vertices.size()>=128)break;}
- push(LUA,{{"frame",p.presentationFrame},{"time",p.sourceTimestamp},{"bones",bones},{"vertices",vertices}});return 1;
+ push(LUA,{{"frame",p.presentationFrame},{"time",p.sourceTimestamp},{"bones",bones},{"vertices",vertices},{"farthestVertex",farthest},{"nearestToOrigin",nearest},{"skinning",skinning}});return 1;
 } END_FUNCTION
 FUNCTION(GetModelAnimationDiagnostics) {auto value=modelAnimationDiagnostics(stringArg(LUA,1));LUA->PushString(value.c_str());return 1;} END_FUNCTION
 FUNCTION(CreateEditorPreview) {auto m=asset(stringArg(LUA,1));if(!m)throw std::runtime_error("Asset not loaded");auto host=std::make_unique<World>();host->next=1000000000+context->sequence++;auto rig=json(LUA,2);auto id=host->create(m,{{"backend","source"},{"rigManifest",rig},{"frozen",true}});context->editors[id]=std::move(host);LUA->PushNumber(double(id));return 1;} END_FUNCTION
@@ -501,15 +575,39 @@ FUNCTION(PrepareFrame) {
 FUNCTION(PruneRenderCache) {pruneRenderCache(LUA->GetBool(1));return 0;} END_FUNCTION
 // Diagnostic sampling profiler of the calling (main) thread; see thread_sampler.hpp.
 MainThreadSampler mainThreadSampler;
+// File access for other addons (file_access.hpp, docs/FILE_ACCESS.md), created on first
+// use. A refusal returns nil, the English reason and its code for the Lua to localize.
+FileAccess& files(){
+ // On another server nothing is even set up: no store read, no known folders opened.
+ if(!localServerRealm())throw FileAccessError("unavailable_remote","File access works only in single player and on a server this game hosts");
+ if(!context->files){FileAccessConfig c;c.worker=context->bin/L"mmdhl_worker.exe";c.store=fileAccessStore();c.policy=FilePolicy::system(context->root);context->files=std::make_unique<FileAccess>(std::move(c));}
+ return *context->files;
+}
+#define END_FILE_FUNCTION catch(const FileAccessError& e){LUA->PushNil();LUA->PushString(e.what());LUA->PushString(e.code.c_str());return 3;}catch(const std::exception& e){return failure(LUA,e);} }
+FUNCTION(FileAccessInfo) {if(!localServerRealm()){push(LUA,{{"version",1},{"available",false},{"reason","no_local_server"},{"local",false}});return 1;}push(LUA,files().info());return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPick) {LUA->PushNumber(double(files().pick(json(LUA,1))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRequest) {LUA->PushNumber(double(files().request(json(LUA,1))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPoll) {push(LUA,files().poll(number(LUA,1)));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRead) {LUA->PushNumber(double(files().read(stringArg(LUA,1),json(LUA,2))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPollRead) {auto r=files().pollRead(number(LUA,1));if(!r){LUA->PushBool(false);return 1;}LUA->PushString(r->data.data(),unsigned(r->data.size()));push(LUA,r->info);return 2;} END_FILE_FUNCTION
+FUNCTION(FileAccessList) {LUA->PushNumber(double(files().list(stringArg(LUA,1),json(LUA,2))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPollList) {auto r=files().pollList(number(LUA,1));if(!r){LUA->PushBool(false);return 1;}push(LUA,*r);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRelease) {files().release(stringArg(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessCancel) {files().cancel(number(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessGrants) {push(LUA,files().grants());return 1;} END_FILE_FUNCTION
+// false: revoked until the map changes, but the store could not be saved.
+FUNCTION(FileAccessRevoke) {LUA->PushBool(files().revoke(stringArg(LUA,1)));return 1;} END_FILE_FUNCTION
+// Off at once; on only after the player confirms in a native dialog (arg 2: its language).
+FUNCTION(FileAccessSetEnabled) {if(!LUA->IsType(1,GarrysMod::Lua::Type::Bool))throw std::runtime_error("Expected true or false");push(LUA,files().setEnabled(LUA->GetBool(1),LUA->IsType(2,GarrysMod::Lua::Type::String)?stringArg(LUA,2):std::string("en")));return 1;} END_FILE_FUNCTION
 FUNCTION(StartMainThreadSampling) {double ms=LUA->GetNumber(1);if(!std::isfinite(ms)||ms<100||ms>60000)throw std::runtime_error("Sampling duration must be 100 to 60000 ms");mainThreadSampler.start(ms);LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(ReadMainThreadSamples) {auto report=mainThreadSampler.report(context->bin.wstring());if(report.is_null()){LUA->PushNil();return 1;}push(LUA,report);return 1;} END_FUNCTION
 #endif
 }
 GMOD_MODULE_OPEN(){
-    try {context=std::make_unique<Context>();acquireRuntimeRealm();wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
+    try {context=std::make_unique<Context>();wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
-        sweepJobFolders(context->cache,std::chrono::hours(24));
+        sweepJobFolders(context->cache,std::chrono::hours(24));try{sweepPrivateFolders(L"job-",std::chrono::hours(24),importJobsFolder());}catch(...){}
 #endif
         LUA->CreateTable();
 #define REGISTER(name) LUA->PushCFunction(name);LUA->SetField(-2,#name)
@@ -518,7 +616,7 @@ GMOD_MODULE_OPEN(){
         REGISTER(StartInstallationProbe);REGISTER(PollInstallationProbe);REGISTER(StartPackageExport);REGISTER(PollPackageExport);REGISTER(CancelPackageExport);REGISTER(RevealPackageExport);REGISTER(InspectModelNotes);
 #endif
         REGISTER(GetMountablePackage);REGISTER(StartAddonPackageScan);REGISTER(PollAddonPackageScan);
-        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(AssetInfo);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
+        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(AssetInfo);REGISTER(InspectBoneMap);REGISTER(GetBoneMapProposal);REGISTER(PreviewCarrierFit);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
         REGISTER(RebindSourceEntity);REGISTER(GetBounds);REGISTER(GetBoundsValues);REGISTER(GetState);REGISTER(SetState);REGISTER(SubmitSourcePose);REGISTER(StepSources);REGISTER(SetMorphs);REGISTER(GetMaterialState);
 #ifdef MMDHL_SERVER
         REGISTER(ReadAnimationModel);REGISTER(ProbePhysics);REGISTER(ProbeCarrierCollisions);REGISTER(CapturePhysics);REGISTER(CaptureSecondaryScene);REGISTER(SceneInterest);REGISTER(PrepareCarrier);REGISTER(RequestCarrierFit);
@@ -526,10 +624,14 @@ GMOD_MODULE_OPEN(){
 #ifndef MMDHL_SERVER
         REGISTER(SetSecondaryTuning);REGISTER(SetSpringRelativeDamping);
         REGISTER(GetModelAnimationDiagnostics);REGISTER(DeleteAssets);REGISTER(PropReload);REGISTER(PropDerive);REGISTER(SubmitPresentationPose);REGISTER(SubmitPresentationBatch);REGISTER(SubmitPresentationMatrixBatch);REGISTER(GetAlignmentProbe);REGISTER(Draw);REGISTER(RenderStatus);REGISTER(CheckRenderer);REGISTER(RenderStats);REGISTER(GetLightingState);REGISTER(SetFlashlightOverlapGuard);REGISTER(RenderFrameStats);REGISTER(SetNativeVertexCache);REGISTER(SetCompactVertices);REGISTER(SetGpuSkinning);REGISTER(SetPoseSmoothing);REGISTER(GetDrawAge);REGISTER(SetupSourceLighting);REGISTER(RegisterSourceShadow);REGISTER(RemoveSourceShadow);REGISTER(SetWorkers);REGISTER(GetWorkerCapabilities);REGISTER(SetSecondaryQuality);REGISTER(SetSecondaryWaitBudget);REGISTER(SetSecondaryMidphase);REGISTER(SetSecondarySleep);REGISTER(SetRenderSuspended);REGISTER(SetInstanceMaterials);REGISTER(DrawInstance);REGISTER(SetSecondaryBroadphase);REGISTER(PrepareFrame);REGISTER(PruneRenderCache);REGISTER(StartMainThreadSampling);REGISTER(ReadMainThreadSamples);REGISTER(CreateEditorPreview);REGISTER(DestroyEditorPreview);REGISTER(GetEditorPreviewBounds);REGISTER(DrawEditorPreview);REGISTER(GetMaterialMesh);REGISTER(GetMaterialPositions);REGISTER(CreatePreview);REGISTER(ClearPreview);REGISTER(DrawPreview);
+        REGISTER(FileAccessInfo);REGISTER(FileAccessPick);REGISTER(FileAccessRequest);REGISTER(FileAccessPoll);REGISTER(FileAccessRead);REGISTER(FileAccessPollRead);REGISTER(FileAccessList);REGISTER(FileAccessPollList);REGISTER(FileAccessRelease);REGISTER(FileAccessCancel);REGISTER(FileAccessGrants);REGISTER(FileAccessRevoke);REGISTER(FileAccessSetEnabled);
 #endif
         registerPropFunctions(LUA,context->cache);
+        // Counted only once nothing can fail any more: localServerRealm() decides whether file
+        // access is offered, and nothing would release the count of a module that failed to open.
+        acquireRuntimeRealm(ServerRealm);
         LUA->Push(-1);LUA->SetField(GarrysMod::Lua::INDEX_GLOBAL,"mmdhl_native");return 1;
-    }catch(const std::exception& e){LUA->ThrowError(e.what());return 0;}
+    }catch(const std::exception& e){context.reset();LUA->ThrowError(e.what());return 0;}
 }
 GMOD_MODULE_CLOSE(){
 shutdownProps();
@@ -544,5 +646,5 @@ if(context){
  // goes away (an unscoped world() would create a fresh singleton after shutdown).
  {WorldScope realm(context->runtime.get());clearPhysicsBridge();}
 #endif
- for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();releaseRuntimeRealm();}
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();releaseRuntimeRealm(ServerRealm);}
 return 0;}

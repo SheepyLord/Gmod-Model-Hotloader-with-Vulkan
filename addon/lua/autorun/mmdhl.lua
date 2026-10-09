@@ -38,6 +38,13 @@ if SERVER then
     AddCSLuaFile('mmdhl/terms.lua')
     AddCSLuaFile('mmdhl/workshop.lua')
     AddCSLuaFile('mmdhl/workshop_export.lua')
+    AddCSLuaFile('mmdhl/physics_editor.lua')
+    AddCSLuaFile('mmdhl/physics_profile.lua')
+    AddCSLuaFile('mmdhl/physics_editor_ui.lua')
+    AddCSLuaFile('mmdhl/bone_mapper.lua')
+    AddCSLuaFile('mmdhl/bone_mapper_rules.lua')
+    AddCSLuaFile('mmdhl/bone_mapper_ui.lua')
+    AddCSLuaFile('mmdhl/file_access.lua')
 end
 mmdhl = mmdhl or {}
 if SERVER then
@@ -97,9 +104,12 @@ include('mmdhl/faceposer.lua')
 include('mmdhl/native_tools.lua')
 include('mmdhl/persistence.lua')
 include('mmdhl/collision_editor.lua')
+include('mmdhl/physics_editor.lua')
 if CLIENT then include('mmdhl/names.lua') include('mmdhl/terms.lua') end
 include('mmdhl/workshop.lua')
 if CLIENT then include('mmdhl/workshop_export.lua') end
+include('mmdhl/bone_mapper.lua')
+include('mmdhl/file_access.lua')
 include('mmdhl/debug.lua')
 -- Engine Entity methods take precedence over SENT methods. Dispatch only this
 -- class to its adapter; preserve the original behavior for every other entity.

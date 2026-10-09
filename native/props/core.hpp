@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "network_path.hpp"
 
 namespace props {
 namespace fs = std::filesystem;

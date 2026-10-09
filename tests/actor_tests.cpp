@@ -2,7 +2,9 @@
 #include "rig_geometry.hpp"
 #include "sharing.hpp"
 #include "scene_share.hpp"
+#include <algorithm>
 #include <iostream>
+#include <set>
 using namespace mmd;
 template<class T>T read(const Bytes& b,size_t p){if(p+sizeof(T)>b.size())throw std::runtime_error("Generated offset out of range");T v;std::memcpy(&v,b.data()+p,sizeof(v));return v;}
 btVector3 vectorAt(const Bytes& b,size_t p){return {read<float>(b,p),read<float>(b,p+4),read<float>(b,p+8)};}
@@ -34,18 +36,47 @@ int main(int argc,char** argv){try{
  if(!readJson(longFile).value("replacement",false))throw std::runtime_error("Long shared-cache replacement failed");
  if(!fs::is_regular_file(ioPath(longFile))||fs::file_size(ioPath(longFile))==0)throw std::runtime_error("Long cache metadata query failed");
  if(argc!=2)throw std::runtime_error("Expected PMX fixture");auto model=parse(readFile(argv[1]));auto rag=fitRig(*model,Json::object());auto files=carrierFiles(rag);auto reference=readAnimationModel(files.at(rag.path));
+ // The torso follows the PMX hierarchy (issue #9). Every variant of the fixture's upper
+ // body keeps its pivots, drives each PMX bone once and runs up the body.
  {
-  auto extended=parse(readFile(argv[1]));int upper=rag.bones[2].mmd,head=rag.bones[6].mmd;
-  auto add=[&](const std::string& name,const btVector3& position,int parent){
-   for(size_t i=0;i<extended->bones.size();i++)if(extended->bones[i].name==name){extended->bones[i].position=position;return int(i);}
-   auto b=extended->bones[upper];b.name=name;b.english="";b.position=position;b.parent=parent;b.inherit=-1;
-   extended->bones.push_back(b);return int(extended->bones.size()-1);
+  const int upper=rag.bones[2].mmd,head=rag.bones[6].mmd;
+  auto named=[](const Model& m,const std::string& name){for(size_t i=0;i<m.bones.size();i++)if(m.bones[i].name==name)return int(i);return -1;};
+  // Adds a bone under parent, or moves the bone of that name; hang() reparents bones.
+  auto add=[&](Model& m,const std::string& name,const btVector3& position,int parent){
+   if(int i=named(m,name);i>=0){m.bones[i].position=position;return i;}
+   auto b=m.bones[upper];b.name=name;b.english="";b.position=position;b.parent=parent;b.inherit=-1;
+   m.bones.push_back(b);return int(m.bones.size()-1);
   };
-  auto lo=extended->bones[upper].position,hi=extended->bones[head].position;
-  int middle=add("上半身2",lo.lerp(hi,.35f),upper),chest=add("上半身3",lo.lerp(hi,.65f),middle);
-  auto three=fitRig(*extended,Json::object());
-  if(three.bones[3].mmd!=middle||three.bones[4].mmd!=chest)throw std::runtime_error("Three-segment PMX torso lost a native spine driver");
-  if(three.bodies.size()!=18)throw std::runtime_error("Extended torso changed the native body count");
+  auto hang=[&](Model& m,std::initializer_list<const char*> names,int parent){for(auto n:names)m.bones[named(m,n)].parent=parent;};
+  auto fit=[&](const Model& m,const std::string& what){auto r=fitRig(m,Json::object());
+   if(r.bodies.size()!=18)throw std::runtime_error(what+" changed the native body count");
+   std::multiset<int> used;for(auto& b:r.bones){if(b.mmd>=0)used.insert(b.mmd);used.insert(b.aliases.begin(),b.aliases.end());}
+   for(int b:used)if(used.count(b)>1)throw std::runtime_error(what+" drives a PMX bone from two carrier bones");
+   for(auto& b:r.bones)if(b.physics>=0&&b.mmd>=0&&(b.rest.getOrigin()-toSource(m.bones[b.mmd].position)*r.scale).length()>1e-4f)throw std::runtime_error(what+" moved a carrier pivot off its PMX bone");
+   float z[6];for(int i=0;i<6;i++)z[i]=r.bones[i].rest.getOrigin().z();// Pelvis, Spine, Spine1, Spine2, Spine4, Neck1
+   if(!(z[0]<=z[1]&&z[1]<=z[2]&&z[2]<=z[3]&&z[3]<z[4]&&z[4]<z[5]))throw std::runtime_error(what+" does not run Pelvis <= Spine <= Spine1 <= Spine2 < Spine4 < Neck1");
+   return r;};
+  auto lo=model->bones[upper].position,hi=model->bones[head].position;
+  fit(*model,"The fixture torso");
+  {auto m=parse(readFile(argv[1]));int middle=add(*m,"上半身2",lo.lerp(hi,.35f),upper),chest=add(*m,"上半身3",lo.lerp(hi,.65f),middle);hang(*m,{"neck","left shoulder","right shoulder"},chest);
+   auto three=fit(*m,"A three-segment torso");if(three.bones[3].mmd!=middle||three.bones[4].mmd!=chest)throw std::runtime_error("Three-segment PMX torso lost a native spine driver");}
+  // Built 上半身 > 上半身3 > 上半身2 > neck: the chest is the bone holding the neck and shoulders.
+  {auto m=parse(readFile(argv[1]));int third=add(*m,"上半身3",lo.lerp(hi,.35f),upper),second=add(*m,"上半身2",lo.lerp(hi,.65f),third);hang(*m,{"neck","left shoulder","right shoulder"},second);
+   auto inverted=fit(*m,"An inverted-name torso");if(inverted.bones[3].mmd!=third||inverted.bones[4].mmd!=second)throw std::runtime_error("Inverted torso names put Spine2 above Spine4");}
+  // 右腕捩3 folds to "3" like 上半身3: no loose match may double the chest.
+  {auto m=parse(readFile(argv[1]));int arm=named(*m,"right arm");add(*m,"右腕捩3",m->bones[arm].position,arm);
+   auto loose=fit(*m,"A twist bone named ...3");if(loose.bones[3].mmd!=-1||loose.bones[4].mmd!=named(*m,"upper body2"))throw std::runtime_error("A loosely matched name doubled the chest");}
+  {auto m=parse(readFile(argv[1]));add(*m,"上半身3",lo.lerp(hi,.2f),upper);
+   auto leaf=fit(*m,"A leaf 上半身3");if(leaf.bones[3].mmd!=-1||leaf.bones[4].mmd!=named(*m,"upper body2"))throw std::runtime_error("A leaf 上半身3 became a spine driver");}
+  // A chest above the neck or below Spine1 moves with a synthesized chest; its pivot is not moved.
+  for(float y:{16.5f,9.8f}){auto m=parse(readFile(argv[1]));int chest=named(*m,"upper body2");m->bones[chest].position.setY(y);
+   auto band=fit(*m,"An out-of-band chest");if(band.bones[4].mmd!=-1||band.bones[4].aliases!=std::vector<int>{chest})throw std::runtime_error("An out-of-band chest drives Spine4 from its own pivot");}
+  // A collapsed torso with a hair bone named like a third segment: the chest is synthesized.
+  {auto m=parse(readFile(argv[1]));hang(*m,{"neck","left shoulder","right shoulder"},upper);auto& old=m->bones[named(*m,"upper body2")];old.name=old.english="x";
+   int hair=add(*m,"後髪3",hi+btVector3(0,.5f,-.5f),head);auto collapsed=fit(*m,"A collapsed torso");
+   if(collapsed.bones[4].mmd==hair||std::count(collapsed.bones[4].aliases.begin(),collapsed.bones[4].aliases.end(),hair))throw std::runtime_error("A hair bone became the chest");}
+  {auto m=parse(readFile(argv[1]));hang(*m,{"neck"},upper);
+   auto neck=fit(*m,"A neck on Spine1");if(neck.bones[4].mmd!=named(*m,"upper body2"))throw std::runtime_error("A neck hanging from Spine1 lost the chest that holds the shoulders");}
  }
  auto oldHeader=files.at(rag.path);int legacyVersion=44;std::memcpy(oldHeader.data()+4,&legacyVersion,4);
  auto legacy=readAnimationModel(oldHeader);legacy["sha256"]=reference["sha256"];

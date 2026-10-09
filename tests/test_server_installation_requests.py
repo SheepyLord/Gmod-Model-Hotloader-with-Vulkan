@@ -1,8 +1,8 @@
 """Players on a server are never refused by the status the server reported: the
 client sends the request and the server checks its own installation. A server
-whose native module did not load answers a character or prop spawn at once with
-its problem, worded as the server's ("Server: …"), instead of letting the client
-wait for its timeout; a server whose physics is unavailable words its refusal the
+whose native module did not load answers a character or prop spawn (and the
+physics editor) at once with its problem, worded as the server's ("Server: …"),
+instead of letting the client wait for its timeout; a server whose physics is unavailable words its refusal the
 same way. Runs client.lua's and library.lua's request functions, installation.lua
 as a server without native files, and server.lua's spawn check."""
 from pathlib import Path
@@ -78,11 +78,13 @@ file={Exists=function(path,search) return FILES[search..'/'..path]~=nil end,
  Open=function(path,_,search) local bytes=FILES[search..'/'..path] return {Size=function() return #bytes end,Read=function() return bytes end,Close=function() end} end,
  Read=function(path) if path=='mmd_hotloader/unverified_native.json' and ACCEPTED then return 'accepted' end end,CreateDir=function() end,Write=function() end}
 system={IsWindows=function() return true end} game={IsDedicated=function() return true end}
-util={AddNetworkString=function() end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,
+-- As in GMod: net.Start refuses a name util.AddNetworkString never pooled.
+POOLED={}
+util={AddNetworkString=function(name) POOLED[name]=true end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,
  JSONToTable=function(s) if s=='accepted' then return {server=ACCEPTED} end local n=tostring(s):match('"request":(%d+)') if n then return {request=tonumber(n)} end end}
 HANDLERS={} READ={} SENT={}
 net={Receive=function(name,f) HANDLERS[name]=f end,ReadString=function() return table.remove(READ,1) end,ReadUInt=function() return table.remove(READ,1) end,
- Start=function(name) SENT[#SENT+1]={name=name,values={}} end,WriteString=function(v) table.insert(SENT[#SENT].values,v) end,
+ Start=function(name) if not POOLED[name] then error('Calling net.Start with unpooled message name "'..name..'"',2) end SENT[#SENT+1]={name=name,values={}} end,WriteString=function(v) table.insert(SENT[#SENT].values,v) end,
  WriteUInt=function(v) table.insert(SENT[#SENT].values,v) end,Send=function(p) SENT[#SENT].to=p end,Broadcast=function() SENT[#SENT].broadcast=true end}
 concommand={Add=function() end} hook={Add=function() end,Run=function() end} timer={Create=function() end,Remove=function() end}
 NOW=100 CurTime=function() return NOW end MsgN=function() end
@@ -109,6 +111,12 @@ NOW=106 sent=request('mmdhl_action','remove','',3,'')
 assert(not sent.mmdhl_spawn_status and sent.mmdhl_install_status,'a removal was answered as a spawn, or the status was not sent')
 NOW=107 sent=request('mmdhl_share','spawn')
 assert(next(sent)==nil,'another channel was answered within five seconds')
+-- The physics editor's request is answered for itself, within the five seconds too; closing needs no answer.
+NOW=108 sent=request('mmdhl_physics',1,77,'open',{},0)
+reply=sent.mmdhl_physics_status
+assert(reply and reply.to==PLAYER and reply.values[1]==77 and reply.values[2]=='error' and reply.values[4]==0 and reply.values[5]==0,'the physics editor waited for its timeout')
+assert(mmdhl.Localize(reply.values[3])==mmdhl.Localize(mmdhl.L'physics_editor.error.server_core'),mmdhl.Localize(reply.values[3]))
+NOW=120 sent=request('mmdhl_physics',1,78,'close',{},0) assert(not sent.mmdhl_physics_status,'closing the editor was answered')
 ''')
 
 # A modified server module the administrator accepted, but no runtime: the answer

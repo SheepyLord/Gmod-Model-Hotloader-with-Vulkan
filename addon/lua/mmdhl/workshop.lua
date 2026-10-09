@@ -124,9 +124,23 @@ function W.ItemArms(item)
  local out=mmdhl.CleanArmsParts(item.arms)
  return next(out)~=nil and out or nil
 end
+-- A model's saved fit (fit_overrides/<id>.json): collision corrections (bodies), the bone
+-- window's pins (boneMap) and a physics default (mass, physics). Each part is optional:
+-- pins are often saved alone, and new pins drop the corrections made for the old bones.
+-- A part that is there must have its type, pins must name assignable parts with whole
+-- bone numbers (the bone window's rules), and the fit must hold at least one part.
 function W.ItemFit(item)
  local f=item.kind=='character' and istable(item.fit) and item.fit
- if not f or f.version~=3 or (f.generator~=14 and f.generator~=15 and f.generator~=18) or not istable(f.bodies) or #util.TableToJSON(f)>512*1024 then return nil end
+ if not f or f.version~=3 or (f.generator~=14 and f.generator~=15 and f.generator~=18) or #util.TableToJSON(f)>512*1024 then return nil end
+ for _,key in ipairs({'bodies','excludedMaterials','physics','editor'}) do if f[key]~=nil and not istable(f[key]) then return nil end end
+ if f.mass~=nil and not isnumber(f.mass) then return nil end
+ if f.boneMap~=nil then
+  local BM=mmdhl.boneMapper
+  if not (istable(BM) and isfunction(BM.CleanPins) and BM.CleanPins(f.boneMap)) then return nil end
+  for _,bone in pairs(f.boneMap) do if not isnumber(bone) then return nil end end
+ end
+ local pinned=istable(f.boneMap) and next(f.boneMap)~=nil
+ if not (f.bodies or pinned or f.physics or f.mass or (f.excludedMaterials and next(f.excludedMaterials)~=nil)) then return nil end
  return f
 end
 local function inCache(kind,id)
@@ -288,8 +302,12 @@ local function installed(job)
     if info or err or tries>=60 then timer.Remove(name) refreshLibraries() end
    end)
   end
- -- Only a dedicated server installs in the server realm.
- else remember(job.key,item) end
+ -- Only a dedicated server installs in the server realm; it also needs the
+ -- package's saved collision and physics to use them for its spawns.
+ else
+  remember(job.key,item)
+  local fit=item.kind=='character' and game.IsDedicated() and W.ItemFit(item) if fit then writeIfMissing('mmd_hotloader/fit_overrides/'..item.asset..'.json',fit) end
+ end
  for _,handler in ipairs(installedHandlers) do handler(item,package) end
 end
 local function fail(job,err)

@@ -1,4 +1,5 @@
 #include "packages.hpp"
+#include "props/network_path.hpp"
 #include "sharing.hpp"
 #include "release.hpp"
 #include <windows.h>
@@ -58,6 +59,8 @@ struct Reader{
 // engine.GetAddons() reports GMA paths relative to garrysmod/ (addons/, cache/workshop/)
 // or to steamapps/workshop/ (content/4000/<id>/).
 fs::path resolveAddon(const fs::path& root,const std::string& file){
+ // The list comes from Lua: a path to another computer would make Windows sign in there.
+ if(props::networkPath(file))return {};
  auto path=fs::path(wide(file));std::vector<fs::path> candidates;
  if(path.is_absolute())candidates.push_back(path);
  else{

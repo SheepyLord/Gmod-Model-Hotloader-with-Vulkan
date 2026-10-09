@@ -4,21 +4,46 @@
 namespace mmd {
 // The on-disk formats use 32-bit offsets even in the 64-bit engine.
 constexpr int RigVersion=3;
-constexpr int RigGenerator=30;
+// The generator of every fit made now (new spawns, the fits cache). 31 chose the torso
+// from the PMX hierarchy (issue #9) and added optional manifest fields; the carrier and
+// rig.json format did not change, so rigFromManifest still loads the carriers of
+// RigGeneratorMinLoadable (2.2's 30) and later: saves, dupes, published actors and
+// clients keep such a carrier as it was. GetCapabilities: rigGenerator, rigGeneratorMin.
+constexpr int RigGenerator=31;
+constexpr int RigGeneratorMinLoadable=30;
 struct RigBone { std::string name; int parent=-1,mmd=-1,physics=-1; std::vector<int> aliases; btTransform rest=btTransform::getIdentity(); };
-struct RigBody { int bone=-1,parent=-1; std::vector<btVector3> hull; float confidence=0,massBias=1,rotationDamping=3; btVector3 lower{0,0,0},upper{0,0,0}; };
-struct Rig { std::string key,path; float scale=1,mass=70; std::vector<RigBone> bones; std::vector<RigBody> bodies; Json morphs,manifest; };
+struct RigBody { int bone=-1,parent=-1; std::vector<btVector3> hull; float confidence=0,massBias=1,rotationDamping=3; btVector3 lower{0,0,0},upper{0,0,0};
+                 btVector3 friction{0,0,0};                     // .phy units (QC friction / 5)
+                 float damping=.8f,inertia=12.f,drag=-1.f;      // drag < 0: not written
+                 std::string surfaceprop="flesh",style="fitted"; };
+// physics: the canonical physicsOverrides the rig was built with ({} when unedited).
+struct Rig { std::string key,path; float scale=1,mass=70; std::vector<RigBone> bones; std::vector<RigBody> bodies; Json morphs,manifest; Json physics=Json::object(); };
 // Mesh-to-carrier bind, in Source units. The actor origin is a fixed world
 // unit offset (SCMI $origin), not a multiplier on the PMX skeleton.
 inline btTransform rigMeshBind(const Rig& rig){
  return btTransform(btQuaternion(btVector3(0,0,1),rig.manifest.value("meshYaw",0.f)*SIMD_RADS_PER_DEG),
                     btVector3(0,0,rig.manifest.value("actorOrigin",0.f)));
 }
+// options.boneMap pins carrier bones: {"ValveBiped.Bip01_Spine4" (or "Eye_L"/"Eye_R"): PMX bone index, or -1 for none},
+// over a converted character's own map (Model::conversionBoneMap). Bad pins throw
+// ImportError "fit.bone_map", missing landmarks "fit.landmarks" (details: missing, searched).
 Rig fitRig(const Model&,const Json& options);
+// Whether fitRig rescales a cached fit instead of fitting again: the model's own or,
+// with options.boneMap, the one made for those pins (Model::pinnedFits).
+bool cachedFitApplies(const Model&,const Json& options);
+// native.GetBoneMapProposal: fitRig's bone choice for these options, without bodies:
+// {version, asset, bones:[{name, mmd, aliases, provenance, required}], missing, searched,
+//  issues:[{code, severity, slot, text}], torso:{method, repairs:[{code, bones, text}]}, error?, errorCode?};
+// bones: the 56 reference bones, then Eye_L/Eye_R when the carrier appends them.
+Json boneMapProposal(const Model&,const Json& options);
+// A carrier of RigVersion and a generator from RigGeneratorMinLoadable to RigGenerator;
+// throws "Incompatible carrier fit" for any other.
 Rig rigFromManifest(const Json&);
 // Throws unless every index and transform of the rig is usable with this model.
 void validateRig(const Rig&,const Model&);
-void prepareModelFit(Model&,const fs::path& cache);
+// The import-time fit, cached per asset: {"ok":true}, or {"ok":false,"errorCode",
+// "error","missing":[carrier names]} (the import result's "fit" block).
+Json prepareModelFit(Model&,const fs::path& cache);
 std::map<std::string,Bytes> carrierFiles(const Rig&,const Model* armsModel=nullptr);
 Bytes makeGma(const std::map<std::string,Bytes>&,const std::string& title);
 // A package entry held in memory, or streamed from `file` when that is set.

@@ -25,6 +25,13 @@ int main(int argc,char** argv){try{
  check(matchesEvidence(original,peEvidence(rebased)));check(first!=0);rebased[first]^=1;check(!matchesEvidence(original,peEvidence(rebased)));
  bool rejected=false;try{peEvidence(Bytes(10));}catch(...){rejected=true;}check(rejected);
  rejected=false;try{configureCompatibility({{"schema",1},{"family","other"},{"libraries",Json::array()}});}catch(...){rejected=true;}check(rejected);
+ // installation.lua offers a newer policy again without what a binary rejects: a rejected
+ // policy must leave none configured, and the same policy configures on every later map.
+ auto profile=[](const char* name){return Json{{"name",name},{"sha256",std::string(64,'0')},{"evidence",{{"format",1},{"imageSize",4096},{"sections",Json::array({{{"name",".text"}}})}}}};};
+ rejected=false;try{configureCompatibility({{"schema",1},{"family","source-win64-v1"},{"libraries",Json::array({profile("datacache.dll")})}});}catch(...){rejected=true;}check(rejected);
+ Json none={{"schema",1},{"family","source-win64-v1"},{"libraries",Json::array()}};
+ check(configureCompatibility(none).value("configured",false));check(configureCompatibility(none).value("configured",false));
+ rejected=false;try{configureCompatibility({{"schema",1},{"family","source-win64-v1"},{"libraries",Json::array({profile("client.dll")})}});}catch(const std::exception& e){rejected=std::string(e.what()).find("restart")!=std::string::npos;}check(rejected);
  check(runtimeIdentity()["installApi"]==1);
  if(argc==2)std::cout<<peEvidence(readFile(wide(argv[1]))).dump()<<'\n';
  else {

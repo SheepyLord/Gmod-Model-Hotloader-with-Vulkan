@@ -60,6 +60,9 @@ Json peEvidence(const Bytes& b){
  return result;
 }
 bool matchesEvidence(const Json& expected,const Json& observed){return expected==observed;}
+// Validates the whole policy before taking it: installation.lua offers a newer policy this
+// build rejects (an unknown library, a profile without a required guard) again without one
+// library at a time, then without libraries. Guard names this build does not use are ignored.
 Json configureCompatibility(const Json& input){
  std::lock_guard lock(policyMutex);
  if(input.value("schema",0)!=1||input.value("family","")!="source-win64-v1"||!input.contains("libraries")||!input["libraries"].is_array()||input["libraries"].size()>128)throw std::runtime_error("Unsupported compatibility profile schema or ABI family");

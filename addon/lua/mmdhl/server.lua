@@ -22,7 +22,26 @@ function mmdhl.LoadAsset(id,callback)
   end
  end)
 end
-function mmdhl.Spawn(p,id,options,done,progress)
+-- The model's saved collision corrections; physics_editor.lua replaces this with
+-- the reader that also returns the saved mass and physics profile.
+if not mmdhl.LoadSavedFit then
+ function mmdhl.LoadSavedFit(id)
+  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
+  if not saved then return nil end
+  if saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) then return {bodies=saved.bodies,scale=saved.scale,excludedMaterials=saved.excludedMaterials} end
+  return nil,L'server.notice.old_fit_corrections'
+ end
+end
+-- The bone window's pins for a model are server state in fit_overrides/<id>.json (saved
+-- by admins): every new fit takes them from there, never from options an entity, a dupe
+-- or a save carries. saved: the decoded file when the caller has read it (false: none).
+function mmdhl.SavedBoneMap(id,saved)
+ if not isstring(id) or #id~=64 or id:find('[^a-f0-9]') then return nil end
+ if saved==nil then saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') end
+ if istable(saved) and istable(saved.boneMap) and next(saved.boneMap)~=nil then return saved.boneMap end
+end
+-- flags.replace: the ragdoll replaces an existing one (physics editor), which keeps its creator, undo and cleanup entries.
+function mmdhl.Spawn(p,id,options,done,progress,flags)
  local available,why=mmdhl.FeatureAvailable('physics') if not available then if done then done(nil,mmdhl.ServerIssue('physics',why)) end return end
  options=mmdhl.WithSpawnDefaults(p,options)
  if not options.angles and options.position and IsValid(p) and options.role~='player' then
@@ -35,11 +54,22 @@ function mmdhl.Spawn(p,id,options,done,progress)
  end
  local function cleaned() return mmdhl.cleanupGeneration~=generation end
  if not isstring(id) or #id~=64 or id:find('[^a-f0-9]') then finish(nil,L'server.error.invalid_model_id') return end
- if not options.collisionOverrides then
-  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
-  if saved and saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) then options.collisionOverrides=saved.bodies options.collisionOverrideScale=saved.scale options.excludedMaterials=saved.excludedMaterials
-  elseif saved then notice(p,L'server.notice.old_fit_corrections') end
+ -- The model's saved default (physics editor, collision editor) fills what the request leaves out.
+ local savedPhysics,savedStyles=false,false
+ if options.collisionOverrides==nil or options.physicsOverrides==nil or options.mass==nil then
+  local saved,why=mmdhl.LoadSavedFit(id) if why then notice(p,why) end
+  if saved then
+   if options.collisionOverrides==nil and saved.bodies then
+    options.collisionOverrides=saved.bodies options.collisionOverrideScale=saved.scale options.excludedMaterials=saved.excludedMaterials
+    for _,o in pairs(saved.bodies) do if istable(o) and o.style~=nil and o.style~='fitted' then savedStyles=true end end
+   end
+   if options.physicsOverrides==nil and saved.physics then options.physicsOverrides=saved.physics options.physicsEditor=saved.editor and saved.editor.ui savedPhysics=true end
+   if options.mass==nil and saved.mass then options.mass=saved.mass end
+  end
  end
+ -- Bones assigned in the bone window (fitter pins; natives without them ignore the option),
+ -- always the current ones: a respawn's copied options may carry older pins.
+ options.boneMap=mmdhl.SavedBoneMap(id)
  if mmdhl.CanUseAsset and not mmdhl.CanUseAsset(p,id) then finish(nil,L'server.error.not_approved') return end
  if options.role=='combine' or options.hostile then options=mmdhl.HostileActorOptions(p,options) end
  local actorError options,actorError=mmdhl.ActorOptions(options) if not options then finish(nil,actorError) return end
@@ -49,19 +79,39 @@ function mmdhl.Spawn(p,id,options,done,progress)
   if not IsValid(p) then finish(nil,L'server.error.player_disconnected') return end
   if options.backend=='source' or (options.backend~='legacy' and GetConVar('mmdhl_native_carrier'):GetBool()) then
    if progress then progress(L'server.progress.preparing') end
-   fitSequence=fitSequence+1 local started=SysTime() local timerName='mmdhl_fit_'..fitSequence
-   timer.Create(timerName,.05,0,function()
-    if not IsValid(p) then timer.Remove(timerName) finish(nil,L'server.error.player_disconnected') return end
-    if cleaned() then timer.Remove(timerName) finish(nil,L'server.error.map_cleanup') return end
-    local ready,err=native.RequestCarrierFit(id,util.TableToJSON(options))
-    if ready==false and SysTime()-started<30 then return end
-    timer.Remove(timerName)
-    if not ready then finish(nil,err or L'server.error.fit_timeout') return end
-    local ok,e=xpcall(function() mmdhl.SpawnNative(p,id,options,function(ent,reason)
-     finish(ent,not IsValid(ent) and (reason or L'server.error.native_ragdoll_failed') or nil)
-    end) end,debug.traceback)
-    if not ok then ErrorNoHalt('[Model Hotloader spawn] '..mmdhl.Localize(e)..'\n') finish(nil,L('server.error.create_failed',{reason=e})) end
-   end)
+   local function attempt(opts,retried)
+    fitSequence=fitSequence+1 local started=SysTime() local timerName='mmdhl_fit_'..fitSequence
+    -- A saved profile that no longer builds (an older module, a rejected shape) must not
+    -- block the spawn: it is retried once without what the saved file added, and the player is told.
+    -- fit: the native fitter's (English) reason. Only its verdicts on the skeleton (no bone
+    -- for a body part, no height) reach players inside a token that says what it means; a
+    -- rejected shape, mass or setting is said as it is. The physics editor (any flags,
+    -- every operation) reads the raw reason itself.
+    local function failed(reason,fit)
+     if not retried and (savedPhysics or savedStyles) then
+      local retry=table.Copy(opts)
+      if savedPhysics then retry.physicsOverrides={} retry.physicsEditor=nil end
+      if savedStyles then for _,o in pairs(retry.collisionOverrides or {}) do if istable(o) then o.style=nil end end end
+      notice(p,L('physics_editor.notice.saved_failed',{reason=reason})) attempt(retry,true) return
+     end
+     local verdict=fit and not flags and tostring(reason):lower()
+     verdict=verdict and (verdict:find('no bone',1,true) or verdict:find('landmark',1,true) or verdict:find('no height',1,true))
+     finish(nil,verdict and L('server.error.fit_failed',{reason=reason}) or reason)
+    end
+    timer.Create(timerName,.05,0,function()
+     if not IsValid(p) then timer.Remove(timerName) finish(nil,L'server.error.player_disconnected') return end
+     if cleaned() then timer.Remove(timerName) finish(nil,L'server.error.map_cleanup') return end
+     local ready,err=native.RequestCarrierFit(id,util.TableToJSON(opts))
+     if ready==false and SysTime()-started<30 then return end
+     timer.Remove(timerName)
+     if not ready then if err then failed(err,true) else failed(L'server.error.fit_timeout') end return end
+     local ok,e=xpcall(function() mmdhl.SpawnNative(p,id,opts,function(ent,reason)
+      if IsValid(ent) then finish(ent) else failed(reason or L'server.error.native_ragdoll_failed') end
+     end,flags) end,debug.traceback)
+     if not ok then ErrorNoHalt('[Model Hotloader spawn] '..mmdhl.Localize(e)..'\n') finish(nil,L('server.error.create_failed',{reason=e})) end
+    end)
+   end
+   attempt(options)
 
    return
   end
@@ -94,12 +144,14 @@ net.Receive('mmdhl_action',function(_,p)
   local weapon=mmdhl.NPCWeapon(p,role)
   if role~='player' and gamemode.Call(role=='ragdoll' and 'PlayerSpawnRagdoll' or 'PlayerSpawnNPC',p,role=='ragdoll' and id or mmdhl.ActorClass(role),weapon)==false then reply('error',L'server.error.spawn_forbidden') return end
   p.MMDHLSpawnPending=true reply('loading',L'server.progress.loading')
-  mmdhl.Spawn(p,id,{role=role,weapon=weapon,gender=settings.gender,armsParts=settings.armsParts,bodygroups=mmdhl.CleanBodygroups(settings.bodygroups),position={pos.x,pos.y,pos.z},angles={mmdhl.FacingPlayerAngles(p,pos,role):Unpack()},backend='source',secondaryBackend=mmdhl.ValidSecondaryBackend(settings.secondaryBackend),frozen=settings.frozen==true,collisionFlags=mmdhl.ValidCollisionFlags(settings.collisionFlags) or mmdhl.CollideDefault,mass=math.Clamp(tonumber(settings.mass) or 70,1,500),scaleMultiplier=math.Clamp(tonumber(settings.scaleMultiplier) or 1,.1,4)},function(created,err)
+  mmdhl.Spawn(p,id,{role=role,weapon=weapon,gender=settings.gender,armsParts=settings.armsParts,bodygroups=mmdhl.CleanBodygroups(settings.bodygroups),position={pos.x,pos.y,pos.z},angles={mmdhl.FacingPlayerAngles(p,pos,role):Unpack()},backend='source',secondaryBackend=mmdhl.ValidSecondaryBackend(settings.secondaryBackend),frozen=settings.frozen==true,collisionFlags=mmdhl.ValidCollisionFlags(settings.collisionFlags) or mmdhl.CollideDefault,mass=tonumber(settings.mass) and math.Clamp(tonumber(settings.mass),1,500) or nil,scaleMultiplier=math.Clamp(tonumber(settings.scaleMultiplier) or 1,.1,4)},function(created,err)
    if IsValid(p) then p.MMDHLSpawnPending=nil end
    reply(IsValid(created) and 'ready' or 'error',err or (role=='player' and L'server.spawned.player' or role=='ragdoll' and L'server.spawned.ragdoll' or L'server.spawned.npc'),created)
   end,function(message) reply('loading',message) end)
   return
  end
+ if action=='bonemap' then if mmdhl.boneMapper and mmdhl.boneMapper.HandleSave then mmdhl.boneMapper.HandleSave(p,id,value) end return end
+ if action=='bonemap_pins' then if mmdhl.boneMapper and mmdhl.boneMapper.HandleQuery then mmdhl.boneMapper.HandleQuery(p,id) end return end
  if not mmdhl.CanEdit(p,ent,'bodygroups') then return end
  if IsValid(ent) and ent:GetClass()~='mmdhl_ragdoll' and mmdhl.IsMMD(ent) then
   local h=mmdhl.GetInstance(ent)
@@ -109,15 +161,10 @@ net.Receive('mmdhl_action',function(_,p)
   elseif action=='morph' then local data=util.JSONToTable(value) or {} mmdhl.SetMorphWeight(ent,tonumber(data.index) or 0,tonumber(data.weight) or 0)
   elseif action=='bone' then local data=util.JSONToTable(value) or {} mmdhl.SetManualBonePose(ent,tonumber(data.index) or 0,data)
   elseif action=='fit' and ent:GetClass()=='prop_ragdoll' then
-   local data=util.JSONToTable(value) or {} local options=table.Copy(ent.MMDOptions) options.backend='source'
-   options.collisionOverrides=data.bodies or data options.collisionOverrideScale=mmdhl.GetRig(ent).scale options.excludedMaterials=data.excludedMaterials or {}
-   options.position={ent:GetPos():Unpack()} options.position[2]=options.position[2]+100 options.frozen=true
-   local asset=mmdhl.GetAsset(ent)
-   mmdhl.Spawn(p,asset,options,function(created,err)
-    if not IsValid(created) then notice(p,err) return end
-    file.CreateDir('mmd_hotloader/fit_overrides') file.Write('mmd_hotloader/fit_overrides/'..asset..'.json',util.TableToJSON({version=3,generator=18,bodies=options.collisionOverrides,scale=options.collisionOverrideScale,excludedMaterials=options.excludedMaterials},true))
-    notice(p,L'server.notice.fit_saved')
-   end)
+   -- The collision editor's corrected copy: the physics editor's rules (who may, how often,
+   -- which values, the pins, the saved file) apply to it too.
+   local P=mmdhl.physics
+   if P and P.CollisionFit then P.CollisionFit(p,ent,value,notice) end
   elseif action=='replace' and not ent:IsPlayer() then
    local options=table.Copy(ent.MMDOptions) options.backend='source' options.frozen=true
    mmdhl.Spawn(p,id,options,function(replacement,err) if IsValid(replacement) then ent:Remove() else notice(p,err) end end)
@@ -161,6 +208,8 @@ duplicator.RegisterEntityClass('mmdhl_ragdoll',function(p,data)
  if not mmdhl.CanUseAsset(p,entry.asset) then notice(p,L'persistence.error.model_not_approved') return end
  if GetConVar('mmdhl_native_carrier'):GetBool() and mmdhl.SpawnNative then
   local options=table.Copy(entry.options or {}) options.backend='source' options.frozen=entry.state and entry.state.frozen or options.frozen
+  -- Dupe data comes from the pasting client: bone pins are the server's.
+  options.boneMap=mmdhl.SavedBoneMap(entry.asset)
   local oldCenter=entry.state and entry.state.center or options.position or {0,0,0}
   local offset=data.Pos-Vector(unpack(oldCenter)) options.position={((Vector(unpack(options.position or {0,0,0}))+offset)):Unpack()} options.center=nil
   local ent=mmdhl.SpawnNative(p,entry.asset,options) if not IsValid(ent) then return end

@@ -7,7 +7,7 @@ local function carrierPath(path)
 end
 mmdhl.IsCarrierModel=carrierPath
 local function available(rig)
- if not rig or not mmdhl.IsCurrentRig(rig) then return nil,L'persistence.error.carrier_outdated' end
+ if not rig or not mmdhl.IsLoadableRig(rig) then return nil,L'persistence.error.carrier_outdated' end
  if SERVER and not mmdhl.CanUseAsset(nil,rig.asset) then return nil,L'persistence.error.asset_not_approved' end
  if rig.materialGma and not mmdhl.MountPackage(rig.materialGma) then return nil,L'persistence.error.mount_materials' end
  if not mmdhl.MountPackage('data/mmd_hotloader/rigs/'..rig.key..'/carrier.gma') then return nil,L'persistence.error.mount_carrier' end
@@ -44,9 +44,17 @@ local function rigForClass(rig,class,state)
  local key=rig.key..':'..role..':'..gender
  local converted=variants[key]
  local o=optionsFor(rig,state) o.role=role o.gender=gender o.rigManifest=nil
+ -- A new fit takes the server's current bone pins, not those a save or dupe carries.
+ o.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(rig.asset) or nil
  if not converted then
   local err o,err=mmdhl.ActorOptions(o) if not o then return nil,err end
   local raw,e=native.PrepareCarrier(rig.asset,util.TableToJSON(o))
+  -- A physics profile this server cannot build must not lose the character: keep its shapes, drop the rest.
+  local P=mmdhl.physics
+  if not raw and P and P.HasPhysicsEdits and P.HasPhysicsEdits(o) then
+   o=P.WithoutPhysics(o) raw,e=native.PrepareCarrier(rig.asset,util.TableToJSON(o))
+   if raw then MsgN('[Model Hotloader restore] '..mmdhl.Localize(L'physics_editor.notice.dupe_physics_dropped')) end
+  end
   if not raw then return nil,e end
   converted=util.JSONToTable(raw)
   local mounted,error=available(converted) if not mounted then return nil,error end

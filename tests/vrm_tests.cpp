@@ -51,17 +51,21 @@ const NodeSpec nodes[]={
 constexpr int BoneNodes=26,MeshNode=26,Head=5,Chest=3,Hair0=22;
 Bytes png(){unsigned char px[16]={255,255,255,0, 255,255,255,64, 255,255,255,200, 255,255,255,255};Bytes out;
  stbi_write_png_to_func([](void* c,void* d,int n){auto& b=*static_cast<Bytes*>(c);b.insert(b.end(),static_cast<unsigned char*>(d),static_cast<unsigned char*>(d)+n);},&out,2,2,4,px,8);return out;}
-Bytes synthetic(bool v0,const Json& hairTransform=Json()){
+// upperChest: a third torso segment holding the neck and shoulders, added after the
+// other nodes so every other index stays put.
+Bytes synthetic(bool v0,const Json& hairTransform=Json(),bool upperChest=false){
+ std::vector<NodeSpec> spec(nodes,nodes+BoneNodes);if(upperChest){spec.push_back({"UpperChest",Chest,{0,1.28f,0},"upperChest"});for(int i:{4,6,10})spec[i].parent=BoneNodes;}
+ const int boneNodes=int(spec.size()),meshNode=boneNodes;
  // VRM 0.x avatars were exported turned 180 degrees about +Y (facing -Z).
  auto place=[&](btVector3 p){return v0?btVector3(-p.x(),p.y(),-p.z()):p;};
  Glb g;auto& j=g.j;j["asset"]={{"version","2.0"},{"generator","mmdhl vrm_tests"}};
- for(int i=0;i<BoneNodes;i++){auto& n=nodes[i];auto local=place(n.world)-(n.parent>=0?place(nodes[n.parent].world):btVector3(0,0,0));
-  Json node={{"name",n.name},{"translation",{local.x(),local.y(),local.z()}}};Json children=Json::array();for(int c=0;c<BoneNodes;c++)if(nodes[c].parent==i)children.push_back(c);if(!children.empty())node["children"]=children;j["nodes"].push_back(node);}
+ for(int i=0;i<boneNodes;i++){auto& n=spec[i];auto local=place(n.world)-(n.parent>=0?place(spec[n.parent].world):btVector3(0,0,0));
+  Json node={{"name",n.name},{"translation",{local.x(),local.y(),local.z()}}};Json children=Json::array();for(int c=0;c<boneNodes;c++)if(spec[c].parent==i)children.push_back(c);if(!children.empty())node["children"]=children;j["nodes"].push_back(node);}
  j["nodes"].push_back({{"name","Body"},{"mesh",0},{"skin",0}});
- j["scenes"]=Json::array({{{"nodes",{0,MeshNode}}}});j["scene"]=0;
+ j["scenes"]=Json::array({{{"nodes",{0,meshNode}}}});j["scene"]=0;
  // One 4 cm box per bone; body boxes and hair boxes are two primitives sharing one vertex buffer.
  std::vector<float> position,normal,uv,weight,morph,ibm;std::vector<uint16_t> joint;std::vector<uint32_t> body,hair;
- for(int b=0;b<BoneNodes;b++){auto c=place(nodes[b].world);uint32_t base=uint32_t(position.size()/3);
+ for(int b=0;b<boneNodes;b++){auto c=place(spec[b].world);uint32_t base=uint32_t(position.size()/3);
   for(int k=0;k<8;k++){btVector3 s((k&1)?1.f:-1.f,(k&2)?1.f:-1.f,(k&4)?1.f:-1.f);auto p=c+s*.02f;auto n=s.normalized();
    position.insert(position.end(),{p.x(),p.y(),p.z()});normal.insert(normal.end(),{n.x(),n.y(),n.z()});uv.insert(uv.end(),{(k&1)?1.f:0.f,(k&2)?1.f:0.f});
    joint.insert(joint.end(),{uint16_t(b),0,0,0});weight.insert(weight.end(),{1,0,0,0});
@@ -70,20 +74,20 @@ Bytes synthetic(bool v0,const Json& hairTransform=Json()){
   for(auto& f:faces)for(int t=0;t<2;t++){uint32_t a=f[0],x=f[t+1],y=f[t+2];
    btVector3 pa(position[(base+a)*3],position[(base+a)*3+1],position[(base+a)*3+2]),px(position[(base+x)*3],position[(base+x)*3+1],position[(base+x)*3+2]),py(position[(base+y)*3],position[(base+y)*3+1],position[(base+y)*3+2]);
    btVector3 outward=(pa+px+py)/3-c;if((px-pa).cross(py-pa).dot(outward)<0)std::swap(x,y); // counter-clockwise from outside
-   auto& list=b>=Hair0?hair:body;list.insert(list.end(),{base+a,base+x,base+y});}
+   auto& list=b>=Hair0&&b<BoneNodes?hair:body;list.insert(list.end(),{base+a,base+x,base+y});}
   float m[16]={1,0,0,0, 0,1,0,0, 0,0,1,0, -c.x(),-c.y(),-c.z(),1};ibm.insert(ibm.end(),m,m+16);}
  int P=g.floats(position,"VEC3",3),N=g.floats(normal,"VEC3",3),T=g.floats(uv,"VEC2",2),J=g.shorts(joint),W=g.floats(weight,"VEC4",4),M=g.floats(morph,"VEC3",3),I=g.floats(ibm,"MAT4",16);
  Json attributes={{"POSITION",P},{"NORMAL",N},{"TEXCOORD_0",T},{"JOINTS_0",J},{"WEIGHTS_0",W}};
  j["meshes"]=Json::array({{{"name","Body"},{"extras",{{"targetNames",{"Fcl_MTH_A"}}}},{"primitives",Json::array({
   {{"attributes",attributes},{"indices",g.indices(body)},{"material",0},{"targets",Json::array({{{"POSITION",M}}})}},
   {{"attributes",attributes},{"indices",g.indices(hair)},{"material",1},{"targets",Json::array({{{"POSITION",M}}})}}})}}});
- Json joints=Json::array();for(int b=0;b<BoneNodes;b++)joints.push_back(b);j["skins"]=Json::array({{{"joints",joints},{"inverseBindMatrices",I},{"skeleton",0}}});
+ Json joints=Json::array();for(int b=0;b<boneNodes;b++)joints.push_back(b);j["skins"]=Json::array({{{"joints",joints},{"inverseBindMatrices",I},{"skeleton",0}}});
  auto image=png();int iv=g.view(image.data(),image.size());j["images"]=Json::array({{{"bufferView",iv},{"mimeType","image/png"}}});j["textures"]=Json::array({{{"source",0}}});
  j["materials"]=Json::array({{{"name","Body"},{"alphaMode","MASK"},{"alphaCutoff",.5f},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}},{"baseColorFactor",{1,1,1,1}}}}},
   {{"name","Hair"},{"doubleSided",true},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}}}}}});
  if(!hairTransform.is_null())j["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"]=hairTransform;
  if(v0){
-  Json human=Json::array();for(int b=0;b<BoneNodes;b++)if(nodes[b].human)human.push_back({{"bone",nodes[b].human},{"node",b}});
+  Json human=Json::array();for(int b=0;b<boneNodes;b++)if(spec[b].human)human.push_back({{"bone",spec[b].human},{"node",b}});
   // 0.x spring and collider vectors are Unity axes: +Z is the avatar's front.
   j["extensionsUsed"]={"VRM"};
   j["extensions"]["VRM"]={{"specVersion","0.0"},{"meta",{{"title","Synthetic"},{"author","tests"},{"licenseName","CC0"}}},{"humanoid",{{"humanBones",human}}},
@@ -95,11 +99,11 @@ Bytes synthetic(bool v0,const Json& hairTransform=Json()){
    {"materialProperties",Json::array({{{"name","Body"},{"shader","VRM/MToon"},{"renderQueue",2450},{"floatProperties",{{"_BlendMode",1},{"_Cutoff",.5f},{"_CullMode",2}}},{"vectorProperties",{{"_Color",{1,1,1,1}}}},{"textureProperties",{{"_MainTex",0}}}},
     {{"name","Hair"},{"shader","VRM/MToon"},{"renderQueue",2000},{"floatProperties",{{"_BlendMode",0},{"_CullMode",0}}},{"vectorProperties",{{"_Color",{1,1,1,1}}}},{"textureProperties",{{"_MainTex",0}}}}})}};
  }else{
-  Json human=Json::object();for(int b=0;b<BoneNodes;b++)if(nodes[b].human)human[nodes[b].human]={{"node",b}};
+  Json human=Json::object();for(int b=0;b<boneNodes;b++)if(spec[b].human)human[spec[b].human]={{"node",b}};
   j["extensionsUsed"]={"VRMC_vrm","VRMC_springBone","VRMC_materials_mtoon"};
   j["materials"][0]["extensions"]["VRMC_materials_mtoon"]={{"specVersion","1.0"},{"shadeColorFactor",{.5f,.5f,.5f}}};
   j["extensions"]["VRMC_vrm"]={{"specVersion","1.0"},{"meta",{{"name","Synthetic"},{"version","1"},{"authors",{"tests"}},{"licenseUrl","https://vrm.dev/licenses/1.0/"},{"allowRedistribution",true}}},{"humanoid",{{"humanBones",human}}},
-   {"expressions",{{"preset",{{"aa",{{"morphTargetBinds",{{{"node",MeshNode},{"index",0},{"weight",1}}}}}},{"blink",{{"materialColorBinds",{{{"material",0},{"type","color"},{"targetValue",{1,0,0,1}}}}}}}}},
+   {"expressions",{{"preset",{{"aa",{{"morphTargetBinds",{{{"node",meshNode},{"index",0},{"weight",1}}}}}},{"blink",{{"materialColorBinds",{{{"material",0},{"type","color"},{"targetValue",{1,0,0,1}}}}}}}}},
     {"custom",{{"Shift",{{"textureTransformBinds",{{{"material",1},{"scale",{1,1}},{"offset",{.5f,0}}}}}}}}}}}};
   Json chain=Json::array();for(int b=Hair0;b<BoneNodes;b++){Json k={{"node",b}};if(b+1<BoneNodes)k.update({{"hitRadius",.02f},{"stiffness",1},{"gravityPower",.5f},{"gravityDir",{0,-1,0}},{"dragForce",.4f}});chain.push_back(k);}
   Json sphere={{"node",Head},{"shape",{{"sphere",{{"offset",{0,0,.1f}},{"radius",.08f}}}}}};
@@ -141,7 +145,9 @@ std::vector<btTransform> rigid(size_t n,const btTransform& t){return std::vector
 float degrees(const btQuaternion& q){return q.getAngleShortestPath()*SIMD_DEGS_PER_RAD;}
 }
 
-int main(){try{
+int main(int argc,char** argv){try{
+ // A VRM 1.0 avatar for scripts/test-character-import.py (a VRM saved as .glb imports as before).
+ if(argc==3&&std::string(argv[1])=="--write-fixture"){writeAtomic(fs::path(argv[2]),synthetic(false));return 0;}
  // ---- conversion, both VRM versions ----
  std::shared_ptr<Model> latest;VrmConversion latestConversion;
  for(bool v0:{true,false}){
@@ -181,6 +187,20 @@ int main(){try{
   check(c.vrm["humanoid"]["hips"]==bone(*m,"下半身"),tag+"the humanoid map points at PMX bones");
   if(!v0){latest=m;latestConversion=c;check(sb["colliders"][1]["shape"]=="capsule",tag+"capsule colliders survive");}
  }
+ // ---- identity: the converted PMX and the imported asset stay byte-identical ----
+ // (the PMX writer and humanoid names are shared with the character converter).
+ {auto cache=fs::temp_directory_path()/L"mmdhl_vrm_identity";std::error_code ec;fs::remove_all(cache,ec);
+  for(bool v0:{true,false}){auto file=synthetic(v0);auto source=cache/(v0?L"v0.vrm":L"v1.vrm");writeAtomic(source,file);
+   auto pmx=hash(convertVrm(file,"synthetic").pmx);auto id=importAsset(source,cache/L"cache",Json::object()).at("asset").get<std::string>();
+   std::string tag=v0?"VRM 0.x: ":"VRM 1.0: ";
+   check(pmx==(v0?"88f7a192111dc157aff8184975f52f0ffb12d4977b6d7ee56d486b2aac920978":"0cd5ddcd08e8a99fd381bbb2bebbd2aef7ef49e5563538965d7e46d01b1e8fad"),tag+"the converted PMX is byte-identical to 2.2's");
+   check(id==(v0?"0a2e882b8c66c7719abecabc28c4b5984267d298ad6e85d118f9b72a3748c1a5":"f03bc74c316fbbd22856c589f8c422a3df6af8560a0dbc5e945fe9327568ff52"),tag+"the imported asset keeps its identity");}
+  fs::remove_all(cache,ec);}
+ // ---- the carrier's torso: chest is 上半身2 and upperChest 上半身3 (issue #9) ----
+ for(bool upper:{false,true}){auto m=parse(convertVrm(synthetic(false,Json(),upper),"synthetic").pmx);auto rig=fitRig(*m,Json::object());
+  int middle=rig.bones[3].mmd,chest=rig.bones[4].mmd;bool ordered=rig.bones[3].rest.getOrigin().z()<rig.bones[4].rest.getOrigin().z()&&rig.bones[4].rest.getOrigin().z()<rig.bones[5].rest.getOrigin().z();
+  if(upper)check(middle==bone(*m,"上半身2")&&chest==bone(*m,"上半身3")&&ordered,"fit: with an upperChest, Spine2 follows the chest (上半身2) and Spine4 the upperChest (上半身3)");
+  else check(middle<0&&chest==bone(*m,"上半身2")&&ordered&&rig.manifest["torso"]["repairs"].empty(),"fit: without an upperChest, Spine4 follows the chest (上半身2)");}
  auto& model=*latest;model.springs=SpringSetup::fromManifest(latestConversion.vrm,model);
  // KHR_texture_transform on the hair: scale (2, 0.5), a quarter turn, offset (0.1, 0.2).
  // As the Khronos Sample Renderer and three.js compute it, (u, v) becomes

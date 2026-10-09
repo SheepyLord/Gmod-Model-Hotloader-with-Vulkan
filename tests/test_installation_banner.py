@@ -28,6 +28,8 @@ function panel()
 end
 vgui={Create=function() return panel() end}
 FILES={} file={Read=function(p) return FILES[p] end,Write=function(p,c) FILES[p]=c end,CreateDir=function() end}
+CreateClientConVar=function() return {GetBool=function() return true end} end cvars={AddChangeCallback=function() end}
+util={JSONToTable=function() return nil end,TableToJSON=function() return '{}' end} istable=function(v) return type(v)=='table' end SysTime=function() return 0 end
 mmdhl={serverInstallation=nil}
 ''')
 attach(lua)

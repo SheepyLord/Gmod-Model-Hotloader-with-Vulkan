@@ -54,7 +54,8 @@ kept.
 ## Where the texts come from
 
 `native.InspectModelNotes(path)` (client module, `native/model_notes.cpp`)
-reads, without importing anything:
+reads, without importing anything (on a server the game does not host, only
+beside a model picked in the file picker in this session; see [API.md](API.md)):
 
 - **Embedded texts**: PMX name, English name, comment and English comment
   (UTF-16LE or UTF-8, as the header says); PMD name and comment (Shift-JIS).
@@ -85,7 +86,10 @@ fallback. Line endings are normalized and control characters removed.
 After a successful import the texts are saved to
 `garrysmod/data/mmd_hotloader/terms/<asset id>.json` with the file name, the
 topics found and when the player accepted. A saved prop preset uses its
-original prop's record. Deleting a model deletes its record. The player already
+original prop's record. A reimported prop and a reloaded character (the
+entity editor's **Reload**) whose source's texts cannot be read again (on a
+server the game does not host, for a model picked in an earlier session) keep
+the record of the revision they replace. Deleting a model deletes its record. The player already
 acknowledged the terms at import, so the library shows no banner above the
 preview: **Terms of use** in a model's right-click menu (present when it has a
 record) opens the same tabs read-only. Characters imported before this version

@@ -1,4 +1,5 @@
 #include "spring_bones.hpp"
+#include "import_error.hpp"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -7,9 +8,13 @@
 namespace mmd {
 namespace {
 std::atomic<bool> relativeDampingEnabled{true};
-btVector3 xyz(const Json& j){if(!j.is_array()||j.size()<3)throw std::runtime_error("Invalid spring bone vector");btVector3 v(j[0].get<float>(),j[1].get<float>(),j[2].get<float>());for(int k=0;k<3;k++)if(!std::isfinite(v[k])||std::fabs(v[k])>1e7f)throw std::runtime_error("Invalid spring bone vector");return v;}
+// Failures (code spring.data) name the value; the spring, joint or collider scope around
+// them says which one (spring 2 “Hair” › spring joint 5).
+std::string text(float v){if(!std::isfinite(v))return std::isnan(v)?"NaN":"infinity";char b[32];snprintf(b,sizeof b,"%g",v);return b;}
+btVector3 xyz(const Json& j,const char* what){if(!j.is_array()||j.size()<3)importFail("spring.data",std::string("Invalid spring bone vector: the ")+what+" is not a list of three numbers",{{"field",what}});btVector3 v(j[0].get<float>(),j[1].get<float>(),j[2].get<float>());
+ for(int k=0;k<3;k++)if(!std::isfinite(v[k])||std::fabs(v[k])>1e7f)importFail("spring.data",std::string("Invalid spring bone vector: the ")+what+" has the value "+text(v[k]),{{"field",what},{"value",text(v[k])}});return v;}
 // Spring values scale positions every step: finite and within a sane range.
-float bounded(float v,float limit,const char* what){if(!std::isfinite(v)||std::fabs(v)>limit)throw std::runtime_error(std::string("Invalid spring bone ")+what);return v;}
+float bounded(float v,float limit,const char* what){if(!std::isfinite(v)||std::fabs(v)>limit)importFail("spring.data",std::string("Invalid spring bone ")+what+": "+text(v)+" is outside -"+text(limit)+" to "+text(limit),{{"field",what},{"value",text(v)}});return v;}
 }
 bool slideTail(const btVector3& outside,const btVector3& head,btVector3& tail,const btVector3& point,btVector3 normal,float radius,float length){
  if(normal.length2()<1e-12f)return false;normal.normalize();if(normal.dot(outside-point)<0)normal=-normal;
@@ -30,18 +35,21 @@ bool springRelativeDamping(){return relativeDampingEnabled.load();}
 std::shared_ptr<const SpringSetup> SpringSetup::fromManifest(const Json& vrm,const Model& model){
  if(!vrm.is_object()||!vrm.contains("springBone"))return nullptr;
  auto& j=vrm["springBone"];auto out=std::make_shared<SpringSetup>();size_t bones=model.bones.size();
- auto bone=[&](const Json& v,bool optional){int b=v.is_number_integer()?v.get<int>():-1;if(b<-1||b>=int(bones)||(!optional&&b<0))throw std::runtime_error("Spring bone data refers to a bone outside the model");return b;};
- out->unitsPerMeter=bounded(j.value("unitsPerMeter",12.5f),1e5f,"units");if(!(out->unitsPerMeter>0))throw std::runtime_error("Invalid spring bone units");
- for(auto& c:j.value("colliders",Json::array())){Collider x;x.bone=bone(c.value("bone",Json()),true);x.capsule=c.value("shape",std::string())=="capsule";x.offset=xyz(c.at("offset"));if(x.capsule)x.tail=xyz(c.at("tail"));x.radius=std::max(0.f,bounded(c.value("radius",0.f),1e5f,"collider radius"));out->colliders.push_back(x);}
- std::vector<std::vector<int>> groups;for(auto& g:j.value("colliderGroups",Json::array())){std::vector<int> list;for(auto& k:g){int i=k.get<int>();if(i<0||size_t(i)>=out->colliders.size())throw std::runtime_error("Invalid spring collider reference");list.push_back(i);}groups.push_back(list);}
- for(auto& s:j.value("springs",Json::array())){Spring x;x.name=s.value("name",std::string());x.center=bone(s.value("center",Json(-1)),true);
-  std::set<int> unique;for(auto& g:s.value("colliderGroups",Json::array())){int i=g.get<int>();if(i<0||size_t(i)>=groups.size())throw std::runtime_error("Invalid spring collider group reference");for(int c:groups[i])if(unique.insert(c).second)x.colliders.push_back(c);}
+ auto bone=[&](const Json& v,bool optional){int b=v.is_number_integer()?v.get<int>():-1;if(b<-1||b>=int(bones)||(!optional&&b<0))importFail("spring.data","Spring bone data refers to bone "+std::to_string(b)+", a bone outside the model (it has "+thousands(bones)+")",{{"field","bone"},{"value",b},{"count",bones}});return b;};
+ out->unitsPerMeter=bounded(j.value("unitsPerMeter",12.5f),1e5f,"units");if(!(out->unitsPerMeter>0))importFail("spring.data","Invalid spring bone units: "+text(out->unitsPerMeter)+" units per metre",{{"field","units"},{"value",text(out->unitsPerMeter)}});
+ auto colliderList=j.value("colliders",Json::array());
+ for(size_t ci=0;ci<colliderList.size();ci++){auto& c=colliderList[ci];ImportScope scope("collider",int64_t(ci),{});Collider x;x.bone=bone(c.value("bone",Json()),true);x.capsule=c.value("shape",std::string())=="capsule";x.offset=xyz(c.at("offset"),"offset");if(x.capsule)x.tail=xyz(c.at("tail"),"tail");x.radius=std::max(0.f,bounded(c.value("radius",0.f),1e5f,"collider radius"));out->colliders.push_back(x);}
+ std::vector<std::vector<int>> groups;auto groupList=j.value("colliderGroups",Json::array());
+ for(size_t gi=0;gi<groupList.size();gi++){ImportScope scope("collider_group",int64_t(gi),{});std::vector<int> list;for(auto& k:groupList[gi]){int i=k.get<int>();if(i<0||size_t(i)>=out->colliders.size())importFail("spring.data","Invalid spring collider reference: collider "+std::to_string(i)+" does not exist (there are "+std::to_string(out->colliders.size())+")",{{"field","colliders"},{"value",i}});list.push_back(i);}groups.push_back(list);}
+ auto springList=j.value("springs",Json::array());
+ for(size_t si=0;si<springList.size();si++){auto& s=springList[si];Spring x;x.name=s.value("name",std::string());ImportScope scope("spring",int64_t(si),x.name);x.center=bone(s.value("center",Json(-1)),true);
+  std::set<int> unique;for(auto& g:s.value("colliderGroups",Json::array())){int i=g.get<int>();if(i<0||size_t(i)>=groups.size())importFail("spring.data","Invalid spring collider group reference: group "+std::to_string(i)+" does not exist (there are "+std::to_string(groups.size())+")",{{"field","colliderGroups"},{"value",i}});for(int c:groups[i])if(unique.insert(c).second)x.colliders.push_back(c);}
   out->springs.push_back(std::move(x));}
- out->jointOfBone.assign(bones,-1);
- for(auto& k:j.value("joints",Json::array())){Joint x;x.spring=k.at("spring").get<int>();if(x.spring<0||size_t(x.spring)>=out->springs.size())throw std::runtime_error("Invalid spring reference");
-  x.bone=bone(k.at("bone"),false);x.tail=bone(k.value("tail",Json(-1)),true);auto offset=xyz(k.at("tailOffset"));x.length=offset.length();if(x.length<1e-6f)continue;x.axis=offset/x.length;
-  x.hitRadius=std::max(0.f,bounded(k.value("hitRadius",0.f),1e5f,"hit radius"));x.stiffness=bounded(k.value("stiffness",1.f),1e5f,"stiffness");x.gravityPower=bounded(k.value("gravityPower",0.f),1e5f,"gravity");x.dragForce=std::clamp(bounded(k.value("dragForce",.4f),1e5f,"drag"),0.f,1.f);x.gravityDir=xyz(k.value("gravityDir",Json::array({0,-1,0})));
-  if(!std::isfinite(x.stiffness)||!std::isfinite(x.gravityPower)||!std::isfinite(x.hitRadius))throw std::runtime_error("Invalid spring bone parameters");
+ out->jointOfBone.assign(bones,-1);auto jointList=j.value("joints",Json::array());
+ for(size_t ji=0;ji<jointList.size();ji++){auto& k=jointList[ji];ImportScope scope("spring_joint",int64_t(ji),{});Joint x;x.spring=k.at("spring").get<int>();if(x.spring<0||size_t(x.spring)>=out->springs.size())importFail("spring.data","Invalid spring reference: spring "+std::to_string(x.spring)+" does not exist (there are "+std::to_string(out->springs.size())+")",{{"field","spring"},{"value",x.spring}});
+  x.bone=bone(k.at("bone"),false);x.tail=bone(k.value("tail",Json(-1)),true);auto offset=xyz(k.at("tailOffset"),"tail offset");x.length=offset.length();if(x.length<1e-6f)continue;x.axis=offset/x.length;
+  x.hitRadius=std::max(0.f,bounded(k.value("hitRadius",0.f),1e5f,"hit radius"));x.stiffness=bounded(k.value("stiffness",1.f),1e5f,"stiffness");x.gravityPower=bounded(k.value("gravityPower",0.f),1e5f,"gravity");x.dragForce=std::clamp(bounded(k.value("dragForce",.4f),1e5f,"drag"),0.f,1.f);x.gravityDir=xyz(k.value("gravityDir",Json::array({0,-1,0})),"gravity direction");
+  if(!std::isfinite(x.stiffness)||!std::isfinite(x.gravityPower)||!std::isfinite(x.hitRadius))importFail("spring.data","Invalid spring bone parameters",{{"field","stiffness"}});
   if(out->jointOfBone[x.bone]>=0)continue;out->jointOfBone[x.bone]=int(out->joints.size());out->joints.push_back(x);}
  if(out->joints.empty())return nullptr;
  out->isAffected.assign(bones,0);
@@ -63,7 +71,7 @@ btTransform SpringSystem::centre(const SpringSetup::Spring& s,const std::vector<
 void SpringSystem::place(const std::vector<btTransform>& skin,bool keepBend){
  auto& d=*data;
  for(int b:d.affected){
-  int p=model.bones[b].parent;auto parentAnimated=p>=0?animated(skin,p):btTransform::getIdentity();auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
+  int p=model.bones[b].parent;auto parentAnimated=parentFrame(skin,p);auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
   auto local=parentAnimated.inverseTimes(animated(skin,b));int ji=d.jointOfBone[b];
   if(ji<0){global[b]=parentCurrent*local;continue;}
   auto& j=d.joints[ji];auto head=parentCurrent*local.getOrigin();auto rotation=(parentCurrent.getRotation()*(keepBend?currentLocal[ji]:btQuaternion::getIdentity())).normalized();
@@ -89,7 +97,7 @@ void SpringSystem::step(float dt,const std::vector<btTransform>& skin,float grav
  if(reference>=0&&size_t(reference)<skin.size()){auto now=animated(skin,reference).getOrigin();if(haveReference&&relativeDamping)referenceStep=now-lastReference;lastReference=now;haveReference=true;}
  previousLocal=currentLocal;
  for(int b:d.affected){
-  int p=model.bones[b].parent;auto parentAnimated=p>=0?animated(skin,p):btTransform::getIdentity();auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
+  int p=model.bones[b].parent;auto parentAnimated=parentFrame(skin,p);auto parentCurrent=p>=0&&d.isAffected[p]?global[p]:parentAnimated;
   auto local=parentAnimated.inverseTimes(animated(skin,b));int ji=d.jointOfBone[b];
   if(ji<0){global[b]=parentCurrent*local;continue;}
   auto& j=d.joints[ji];auto& s=state[ji];auto& spring=d.springs[j.spring];

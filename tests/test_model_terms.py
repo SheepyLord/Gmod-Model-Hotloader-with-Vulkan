@@ -254,6 +254,17 @@ G.INSPECTED = to_lua([])
 T.Imported('character', ids[0], source)
 assert list(G.INSPECTED.values()) == [source], 'a reload reads the source again'
 assert record(ids[0])['acknowledged'] == saved['acknowledged'], 'the earlier acknowledgement is kept'
+# On a server the game does not host, the notes beside a model picked in an earlier session
+# are not read again: a reloaded character (library.ReloadCharacter passes the revision it
+# replaces) keeps that revision's record; a new import has none to keep.
+G.native.InspectModelNotes = lua.eval("function() return nil,'On a server you do not host, model terms are read only beside a model just chosen in the file window' end")
+T.bySource = to_lua({})
+T.Imported('character', ids[8], source, ids[0])
+assert record(ids[8])['readmes'][0]['text'] == readme_ja and record(ids[8])['acknowledged'] == saved['acknowledged'], 'a reloaded character lost the record it replaces'
+T.Imported('character', ids[9], source)
+assert f'mmd_hotloader/terms/{ids[9]}.json' not in list(G.FS.keys()), 'an import without readable notes made up a record'
+G.native.InspectModelNotes = reader
+T.bySource = to_lua({})
 print('PASS: reimports, presets and reloads')
 
 # --- Derived props read their original's terms; Forget ignores anything but asset ids.

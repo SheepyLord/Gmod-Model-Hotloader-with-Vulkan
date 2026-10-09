@@ -61,9 +61,13 @@ WorldScope::WorldScope(World* value):previous(boundWorld){boundWorld=value;}
 WorldScope::~WorldScope(){boundWorld=previous;}
 World& world(){if(boundWorld)return *boundWorld;if(!singleton)singleton=std::make_unique<World>();return *singleton;}
 void shutdownWorld(){singleton.reset();}
-static unsigned runtimeRealms=0;
-void acquireRuntimeRealm(){++runtimeRealms;}
-void releaseRuntimeRealm(){if(runtimeRealms&&--runtimeRealms==0){shutdownWorld();publishScene({});shutdownCompute();shutdownJobs();}}
+// Counted per realm: file access asks whether this process also runs the server
+// (single player or listen host), which a remote server's client scripts cannot change.
+static std::atomic<unsigned> clientRealms=0,serverRealms=0;
+void acquireRuntimeRealm(bool server){++(server?serverRealms:clientRealms);}
+void releaseRuntimeRealm(bool server){auto& count=server?serverRealms:clientRealms;unsigned value=count.load();while(value&&!count.compare_exchange_weak(value,value-1)){}
+ if(value&&clientRealms.load()+serverRealms.load()==0){shutdownWorld();publishScene({});shutdownCompute();shutdownJobs();}}
+bool localServerRealm(){return serverRealms.load()>0;}
 uint64_t World::create(std::shared_ptr<Model> m,const Json& options){auto id=next++;auto p=std::make_unique<Instance>(*this,std::move(m),id,options);instances.emplace(id,std::move(p));return id;}
 Instance& World::get(uint64_t id){auto it=instances.find(id);if(it==instances.end())throw std::runtime_error("Expired instance handle");return *it->second;}
 void World::remove(uint64_t id){if(impl->grabInstance==id)endGrab();instances.erase(id);}
@@ -342,7 +346,19 @@ void Instance::reset(){if(secondary){
     sourceTeleport=false;pendingSourceDelta=0;presentationDirty=true;poseDirty=true;return;
 }owner->endGrab();applyPose();lastImpulseWeights=expandedMorphs();for(auto& b:bodies){b->rigid->clearForces();b->rigid->activate(true);}}
 Json Instance::diagnostics(bool detailed) const {
-    if(secondary){auto j=secondary->diagnostics(detailed);j["quality"]=secondary->qualityInfo();j.update({{"id",id},{"asset",model->id},{"sourceObjects",18},{"sourceTimestamp",sourceTimestamp},{"rig",sourceRig->key},{"presentationDriven",presentationDriven},{"presentationSmoothingMs",presentationDelay*1000},{"presentationUpdateIntervalMs",presentationUpdateInterval*1000},{"sourceError",sourceError},{"presentationFrame",presentationFrame},{"sourceUnitsPerPmx",sourceRig->scale},{"deformMs",deformMs}});return j;}
+    if(secondary){auto j=secondary->diagnostics(detailed);j["quality"]=secondary->qualityInfo();j.update({{"id",id},{"asset",model->id},{"sourceObjects",18},{"sourceTimestamp",sourceTimestamp},{"rig",sourceRig->key},{"presentationDriven",presentationDriven},{"presentationSmoothingMs",presentationDelay*1000},{"presentationUpdateIntervalMs",presentationUpdateInterval*1000},{"sourceError",sourceError},{"presentationFrame",presentationFrame},{"sourceUnitsPerPmx",sourceRig->scale},{"deformMs",deformMs}});
+        // Bones with no Source-driven bone at or above them stayed at the world origin before 2.3.0.
+        // floatingRoots: those that ride with the pelvis (MMD control roots such as グルーブ and what
+        // hangs from them); anchoredGoals: the IK goals that ride on a Source-driven bone of their
+        // chain instead (ikAnchors: leg and toe IK goals on the foot) and what hangs from them.
+        if(detailed){auto& m=*model;auto anchor=ikAnchors(m,sourceControl);std::vector<uint8_t> kind(m.bones.size(),0);size_t roots=0,goals=0,bones[3]={},vertices[3]={},attached[3]={};
+            for(auto i:m.order){int parent=m.bones[i].parent;if(sourceControl[i]>=0)continue;
+                kind[i]=!anchor.empty()&&anchor[i]>=0?2:parent<0?1:kind[parent];bones[kind[i]]++;roots+=kind[i]==1&&parent<0;goals+=!anchor.empty()&&anchor[i]>=0;}
+            for(auto& v:m.vertices){bool seen[3]={};for(int k=0;k<4;k++)if(v.weights[k]>0&&v.bones[k]>=0)seen[kind[v.bones[k]]]=true;vertices[1]+=seen[1];vertices[2]+=seen[2];}
+            for(auto b:m.bodies){int bone=boneIndex(nanoemModelRigidBodyGetBoneObject(b));if(bone>=0)attached[kind[bone]]++;}
+            j["floatingRoots"]={{"roots",roots},{"bones",bones[1]},{"vertices",vertices[1]},{"bodies",attached[1]}};
+            j["anchoredGoals"]={{"goals",goals},{"bones",bones[2]},{"vertices",vertices[2]},{"bodies",attached[2]}};}
+        return j;}
     Json j={{"id",id},{"asset",model->id},{"bodies",bodies.size()},{"joints",joints.size()},{"anatomicalJoints",anatomicalJoints.size()},{"softBodies",softBodies.size()},{"frozen",frozen},{"scale",scale},{"warnings",warnings},{"bodyList",Json::array()},{"jointLimits",Json::array()}};
     for(auto& b:bodies){auto p=b->rigid->getWorldTransform().getOrigin()/Inch;j["bodyList"].push_back({{"bone",b->bone},{"mode",b->mode},{"core",b->core},{"generated",b->generated},{"position",array(p)},{"mass",b->mass}});}
     for(auto& a:anatomicalJoints){auto& c=*a.constraint;c.calculateTransforms();j["jointLimits"].push_back({{"bone",a.bone},{"parent",a.parent},{"name",model->bones[a.bone].name},{"lower",array(a.lower*SIMD_DEGS_PER_RAD)},{"upper",array(a.upper*SIMD_DEGS_PER_RAD)},{"angle",array(btVector3(c.getAngle(0),c.getAngle(1),c.getAngle(2))*SIMD_DEGS_PER_RAD)},{"pivotError",(c.getCalculatedTransformA().getOrigin()-c.getCalculatedTransformB().getOrigin()).length()/Inch}});}

@@ -12,7 +12,8 @@ int main(int argc,char** argv){try{
   btTransform motion(btQuaternion(btVector3(0,1,0),scenario==2?SIMD_PI:0.f),scenario?btVector3(30,2,20):btVector3(0,0,0));
   std::vector<btTransform> manual(m->bones.size(),btTransform::getIdentity()),goals,local,global,skin,effective;
   std::vector<float> morphs(m->morphs.size());for(auto& b:m->bones)goals.emplace_back(motion.getBasis(),motion*b.position);
-  evaluatePose(*m,manual,morphs,&controlled,&goals,nullptr,local,global,skin,effective);
+  // As the runtime does: the bones the rig does not reach (MMD control roots) ride with rig bone 0.
+  evaluatePose(*m,manual,morphs,&controlled,&goals,nullptr,local,global,skin,effective,rig.bones.empty()?-1:rig.bones[0].mmd);
   Json bones=Json::array();for(size_t i=0;i<m->bones.size();i++)if(influence[i]>.01){auto& b=m->bones[i];float error=(global[i].getOrigin()-goals[i].getOrigin()).length();auto q=skin[i].getRotation();if(error>.001||btFabs(q.dot(motion.getRotation()))<.99999f)bones.push_back({{"i",i},{"name",b.name},{"parent",b.parent},{"inherit",b.inherit},{"coefficient",b.coefficient},{"localInherit",b.localInherit},{"inheritRotation",b.inheritRotation},{"inheritTranslation",b.inheritTranslation},{"fixedAxis",xyz(b.fixedAxis)},{"controlled",controlled[i]},{"weight",influence[i]},{"positionError",error},{"rotationAgreement",btFabs(q.dot(motion.getRotation()))}});}
   float maximum=0,total=0;size_t worst=0;for(size_t i=0;i<m->vertices.size();i++){auto& v=m->vertices[i];float e=(skinPosition(v,skin)-motion*v.position).length();total+=e;if(e>maximum){maximum=e;worst=i;}}
   out.push_back({{"scenario",scenario},{"maxVertexError",maximum},{"meanVertexError",total/m->vertices.size()},{"worstVertex",worst},{"bones",bones}});

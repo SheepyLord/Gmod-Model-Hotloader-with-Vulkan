@@ -1,5 +1,6 @@
 #include "light_overlaps.hpp"
 #include "runtime.hpp"
+#include "import_error.hpp"
 #include <nanoem_p.h>
 #include "secondary.hpp"
 #include <ext/mbwc.h>
@@ -44,59 +45,114 @@ std::string Model::text(const nanoem_unicode_string_t* s) const {
     std::string result;if(b)result.assign(reinterpret_cast<char*>(b),size);
     nanoemUnicodeStringFactoryDestroyByteArray(factory,b);return result;
 }
-static void finite(const btVector3& v){for(int j=0;j<3;j++)if(!std::isfinite(v[j])||btFabs(v[j])>1e7f)throw std::runtime_error("Invalid model coordinate");}
-static void reference(int i,size_t n){if(i < -1 || (i>=0&&size_t(i)>=n))throw std::runtime_error("Invalid model reference");}
+// Load failures name the element at fault (bone 12 “左足”) and its field, with a code
+// the addon explains in the player's language (import_error.hpp).
+static std::string number(float v){if(std::isnan(v))return "NaN";if(std::isinf(v))return v>0?"infinity":"-infinity";char b[32];snprintf(b,sizeof b,"%g",v);return b;}
+static void finite(const btVector3& v,const char* kind,size_t index,const std::string& name,const char* field){
+    for(int j=0;j<3;j++)if(!std::isfinite(v[j])||btFabs(v[j])>1e7f){auto at=place(kind,int64_t(index),name);
+        importFail("pmx.number","Invalid model data: "+placeText(at)+" has a non-finite or out-of-range value: its "+field+" is "+number(v[j]),{{"where",Json::array({at})},{"field",field},{"value",number(v[j])}});}
+}
+static void reference(int i,size_t n,const char* kind,size_t index,const std::string& name,const char* field,const char* target){
+    if(i < -1 || (i>=0&&size_t(i)>=n)){auto at=place(kind,int64_t(index),name);
+        importFail("pmx.reference","Invalid model data: "+placeText(at)+" has "+field+" "+std::to_string(i)+", but the model has "+thousands(n)+" "+target,{{"where",Json::array({at})},{"field",field},{"value",i},{"count",n}});}
+}
 // Every number that reaches Bullet, nanoem or the GPU must be finite and within a
 // sane range: one NaN orientation or spring poisons the whole world it joins.
 // Only numbers the runtime reads are checked. Exporters write NaN into display
 // data (bone tails, local axes) and unused additional UVs, and such models load.
 static void validateNumbers(const Model& m){
     constexpr float Length=1e7f,Angle=1e4f,Factor=1e6f,Weight=1e3f,Stiffness=1e12f,Mass=1e15f;
-    auto fail=[](const char* what,size_t index){throw std::runtime_error(std::string("Invalid model data: ")+what+" "+std::to_string(index)+" has a non-finite or out-of-range value");};
-    auto ok=[](const float* v,int count,float limit){if(!v)return true;for(int k=0;k<count;k++)if(!std::isfinite(v[k])||std::fabs(v[k])>limit)return false;return true;};
-    auto one=[&](float v,float limit){return ok(&v,1,limit);};
-    auto vec=[&](const btVector3& v,float limit){return one(v.x(),limit)&&one(v.y(),limit)&&one(v.z(),limit);};
-    auto count=[](int v,int limit){return v>=0&&v<=limit;};
+    // The first value out of range names its field in the message.
+    std::string field,value;
+    auto bad=[&](std::string_view name,const std::string& v){if(field.empty()){field=name;value=v;}return false;};
+    auto ok=[&](std::string_view name,const float* v,int count,float limit){if(!v)return true;for(int k=0;k<count;k++)if(!std::isfinite(v[k])||std::fabs(v[k])>limit)return bad(name,number(v[k]));return true;};
+    auto one=[&](std::string_view name,float v,float limit){return ok(name,&v,1,limit);};
+    auto vec=[&](std::string_view name,const btVector3& v,float limit){return one(name,v.x(),limit)&&one(name,v.y(),limit)&&one(name,v.z(),limit);};
+    auto count=[&](std::string_view name,int v,int limit){return (v>=0&&v<=limit)||bad(name,std::to_string(v));};
+    auto fail=[&](const char* kind,size_t index,const std::string& name){auto at=place(kind,int64_t(index),name);
+        importFail("pmx.number","Invalid model data: "+placeText(at)+" has a non-finite or out-of-range value: its "+field+" is "+value,{{"where",Json::array({at})},{"field",field},{"value",value}});};
     for(size_t i=0;i<m.vertices.size();i++){const auto& v=m.vertices[i];
         // UVA1's first two components are the only additional UVs a vertex carries to the GPU.
-        if(!ok(v.uv.data(),2,Factor)||!one(v.edge,Factor)||!vec(v.c,Length)||!vec(v.r0,Length)||!vec(v.r1,Length)||!ok(v.extra[0].data(),2,Factor))fail("vertex",i);}
+        if(!ok("texture coordinate",v.uv.data(),2,Factor)||!one("edge scale",v.edge,Factor)||!vec("SDEF C",v.c,Length)||!vec("SDEF R0",v.r0,Length)||!vec("SDEF R1",v.r1,Length)||!ok("additional UV 1",v.extra[0].data(),2,Factor))fail("vertex",i,{});}
     for(size_t i=0;i<m.bones.size();i++){const auto& b=m.bones[i];auto s=b.source;
-        bool good=one(b.coefficient,Weight)&&vec(b.fixedAxis,Length);
-        if(auto ik=nanoemModelBoneGetConstraintObject(s)){good=good&&one(nanoemModelConstraintGetAngleLimit(ik),Angle)&&count(nanoemModelConstraintGetNumIterations(ik),65535);
-            nanoem_rsize_t n=0;auto links=nanoemModelConstraintGetAllJointObjects(ik,&n);for(size_t k=0;k<n;k++)good=good&&ok(nanoemModelConstraintJointGetLowerLimit(links[k]),3,Angle)&&ok(nanoemModelConstraintJointGetUpperLimit(links[k]),3,Angle);}
-        if(!good)fail("bone",i);}
+        bool good=one("inherit weight",b.coefficient,Weight)&&vec("fixed axis",b.fixedAxis,Length);
+        if(auto ik=nanoemModelBoneGetConstraintObject(s)){good=good&&one("IK angle limit",nanoemModelConstraintGetAngleLimit(ik),Angle)&&count("IK loop count",nanoemModelConstraintGetNumIterations(ik),65535);
+            nanoem_rsize_t n=0;auto links=nanoemModelConstraintGetAllJointObjects(ik,&n);for(size_t k=0;k<n;k++){auto link="IK link "+std::to_string(k);good=good&&ok(link+" lower limit",nanoemModelConstraintJointGetLowerLimit(links[k]),3,Angle)&&ok(link+" upper limit",nanoemModelConstraintJointGetUpperLimit(links[k]),3,Angle);}}
+        if(!good)fail("bone",i,b.name.empty()?b.english:b.name);}
     for(size_t i=0;i<m.materials.size();i++){const auto& v=m.materials[i];
-        if(!vec(v.diffuse,Factor)||!vec(v.ambient,Factor)||!vec(v.specular,Factor)||!vec(v.edgeColor,Factor)||!one(v.alpha,Factor)||!one(v.power,Factor)||!one(v.edgeAlpha,Factor)||!one(v.edgeSize,Factor))fail("material",i);}
+        if(!vec("diffuse colour",v.diffuse,Factor)||!vec("ambient colour",v.ambient,Factor)||!vec("specular colour",v.specular,Factor)||!vec("edge colour",v.edgeColor,Factor)||!one("opacity",v.alpha,Factor)||!one("specular power",v.power,Factor)||!one("edge opacity",v.edgeAlpha,Factor)||!one("edge size",v.edgeSize,Factor))fail("material",i,v.name);}
     for(size_t i=0;i<m.bodies.size();i++){auto s=m.bodies[i];float mass=nanoemModelRigidBodyGetMass(s);
-        if(!ok(nanoemModelRigidBodyGetOrientation(s),3,Angle)||!one(mass,Mass)||mass<0||!one(nanoemModelRigidBodyGetLinearDamping(s),Factor)||!one(nanoemModelRigidBodyGetAngularDamping(s),Factor)
-           ||!one(nanoemModelRigidBodyGetFriction(s),Factor)||!one(nanoemModelRigidBodyGetRestitution(s),Factor))fail("rigid body",i);}
+        if(!ok("rotation",nanoemModelRigidBodyGetOrientation(s),3,Angle)||!one("mass",mass,Mass)||(mass<0&&!bad("mass",number(mass)))||!one("movement damping",nanoemModelRigidBodyGetLinearDamping(s),Factor)||!one("rotation damping",nanoemModelRigidBodyGetAngularDamping(s),Factor)
+           ||!one("friction",nanoemModelRigidBodyGetFriction(s),Factor)||!one("restitution",nanoemModelRigidBodyGetRestitution(s),Factor))fail("rigid_body",i,m.text(nanoemModelRigidBodyGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE)));}
     for(size_t i=0;i<m.joints.size();i++){auto s=m.joints[i];
-        if(!ok(nanoemModelJointGetOrigin(s),3,Length)||!ok(nanoemModelJointGetOrientation(s),3,Angle)||!ok(nanoemModelJointGetLinearLowerLimit(s),3,Length)||!ok(nanoemModelJointGetLinearUpperLimit(s),3,Length)
-           ||!ok(nanoemModelJointGetAngularLowerLimit(s),3,Angle)||!ok(nanoemModelJointGetAngularUpperLimit(s),3,Angle)||!ok(nanoemModelJointGetLinearStiffness(s),3,Stiffness)||!ok(nanoemModelJointGetAngularStiffness(s),3,Stiffness))fail("joint",i);}
-    for(size_t i=0;i<m.softBodies.size();i++){auto s=m.softBodies[i];float mass=nanoemModelSoftBodyGetTotalMass(s);bool good=one(mass,Mass)&&mass>=0&&one(nanoemModelSoftBodyGetCollisionMargin(s),Length);
-        for(float v:{nanoemModelSoftBodyGetVelocityCorrectionFactor(s),nanoemModelSoftBodyGetDampingCoefficient(s),nanoemModelSoftBodyGetDragCoefficient(s),nanoemModelSoftBodyGetLiftCoefficient(s),nanoemModelSoftBodyGetPressureCoefficient(s),
-                     nanoemModelSoftBodyGetVolumeConversationCoefficient(s),nanoemModelSoftBodyGetDynamicFrictionCoefficient(s),nanoemModelSoftBodyGetPoseMatchingCoefficient(s),nanoemModelSoftBodyGetRigidContactHardness(s),
-                     nanoemModelSoftBodyGetKineticContactHardness(s),nanoemModelSoftBodyGetSoftContactHardness(s),nanoemModelSoftBodyGetAnchorHardness(s),nanoemModelSoftBodyGetSoftVSRigidHardness(s),nanoemModelSoftBodyGetSoftVSKineticHardness(s),
-                     nanoemModelSoftBodyGetSoftVSSoftHardness(s),nanoemModelSoftBodyGetSoftVSRigidImpulseSplit(s),nanoemModelSoftBodyGetSoftVSKineticImpulseSplit(s),nanoemModelSoftBodyGetSoftVSSoftImpulseSplit(s),
-                     nanoemModelSoftBodyGetLinearStiffnessCoefficient(s),nanoemModelSoftBodyGetAngularStiffnessCoefficient(s),nanoemModelSoftBodyGetVolumeStiffnessCoefficient(s)})good=good&&one(v,Factor);
-        for(int v:{nanoemModelSoftBodyGetBendingConstraintsDistance(s),nanoemModelSoftBodyGetClusterCount(s),nanoemModelSoftBodyGetVelocitySolverIterations(s),nanoemModelSoftBodyGetPositionsSolverIterations(s),
-                   nanoemModelSoftBodyGetDriftSolverIterations(s),nanoemModelSoftBodyGetClusterSolverIterations(s)})good=good&&count(v,1024);
-        if(!good)fail("soft body",i);}
-    for(size_t i=0;i<m.morphs.size();i++){auto s=m.morphs[i];nanoem_rsize_t n=0;bool good=true;
+        if(!ok("position",nanoemModelJointGetOrigin(s),3,Length)||!ok("rotation",nanoemModelJointGetOrientation(s),3,Angle)||!ok("movement lower limit",nanoemModelJointGetLinearLowerLimit(s),3,Length)||!ok("movement upper limit",nanoemModelJointGetLinearUpperLimit(s),3,Length)
+           ||!ok("rotation lower limit",nanoemModelJointGetAngularLowerLimit(s),3,Angle)||!ok("rotation upper limit",nanoemModelJointGetAngularUpperLimit(s),3,Angle)||!ok("movement spring",nanoemModelJointGetLinearStiffness(s),3,Stiffness)||!ok("rotation spring",nanoemModelJointGetAngularStiffness(s),3,Stiffness))fail("joint",i,m.text(nanoemModelJointGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE)));}
+    for(size_t i=0;i<m.softBodies.size();i++){auto s=m.softBodies[i];float mass=nanoemModelSoftBodyGetTotalMass(s);bool good=one("total mass",mass,Mass)&&(mass>=0||bad("total mass",number(mass)))&&one("collision margin",nanoemModelSoftBodyGetCollisionMargin(s),Length);
+        const std::pair<const char*,float> factors[]={{"velocity correction factor",nanoemModelSoftBodyGetVelocityCorrectionFactor(s)},{"damping coefficient",nanoemModelSoftBodyGetDampingCoefficient(s)},{"drag coefficient",nanoemModelSoftBodyGetDragCoefficient(s)},
+            {"lift coefficient",nanoemModelSoftBodyGetLiftCoefficient(s)},{"pressure coefficient",nanoemModelSoftBodyGetPressureCoefficient(s)},{"volume conservation coefficient",nanoemModelSoftBodyGetVolumeConversationCoefficient(s)},
+            {"dynamic friction coefficient",nanoemModelSoftBodyGetDynamicFrictionCoefficient(s)},{"pose matching coefficient",nanoemModelSoftBodyGetPoseMatchingCoefficient(s)},{"rigid contact hardness",nanoemModelSoftBodyGetRigidContactHardness(s)},
+            {"kinetic contact hardness",nanoemModelSoftBodyGetKineticContactHardness(s)},{"soft contact hardness",nanoemModelSoftBodyGetSoftContactHardness(s)},{"anchor hardness",nanoemModelSoftBodyGetAnchorHardness(s)},
+            {"soft vs rigid hardness",nanoemModelSoftBodyGetSoftVSRigidHardness(s)},{"soft vs kinetic hardness",nanoemModelSoftBodyGetSoftVSKineticHardness(s)},{"soft vs soft hardness",nanoemModelSoftBodyGetSoftVSSoftHardness(s)},
+            {"soft vs rigid impulse split",nanoemModelSoftBodyGetSoftVSRigidImpulseSplit(s)},{"soft vs kinetic impulse split",nanoemModelSoftBodyGetSoftVSKineticImpulseSplit(s)},{"soft vs soft impulse split",nanoemModelSoftBodyGetSoftVSSoftImpulseSplit(s)},
+            {"linear stiffness",nanoemModelSoftBodyGetLinearStiffnessCoefficient(s)},{"angular stiffness",nanoemModelSoftBodyGetAngularStiffnessCoefficient(s)},{"volume stiffness",nanoemModelSoftBodyGetVolumeStiffnessCoefficient(s)}};
+        for(auto& [name,v]:factors)good=good&&one(name,v,Factor);
+        const std::pair<const char*,int> counts[]={{"bending constraint distance",nanoemModelSoftBodyGetBendingConstraintsDistance(s)},{"cluster count",nanoemModelSoftBodyGetClusterCount(s)},{"velocity solver iterations",nanoemModelSoftBodyGetVelocitySolverIterations(s)},
+            {"position solver iterations",nanoemModelSoftBodyGetPositionsSolverIterations(s)},{"drift solver iterations",nanoemModelSoftBodyGetDriftSolverIterations(s)},{"cluster solver iterations",nanoemModelSoftBodyGetClusterSolverIterations(s)}};
+        for(auto& [name,v]:counts)good=good&&count(name,v,1024);
+        if(!good)fail("soft_body",i,m.text(nanoemModelSoftBodyGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE)));}
+    for(size_t i=0;i<m.morphs.size();i++){auto s=m.morphs[i];nanoem_rsize_t n=0;bool good=true;auto offset=[](size_t k){return "offset "+std::to_string(k);};
         switch(nanoemModelMorphGetType(s)){
-        case NANOEM_MODEL_MORPH_TYPE_VERTEX:{auto e=nanoemModelMorphGetAllVertexMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(nanoemModelMorphVertexGetPosition(e[k]),3,Length);break;}
+        case NANOEM_MODEL_MORPH_TYPE_VERTEX:{auto e=nanoemModelMorphGetAllVertexMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(offset(k)+" position",nanoemModelMorphVertexGetPosition(e[k]),3,Length);break;}
         case NANOEM_MODEL_MORPH_TYPE_TEXTURE:case NANOEM_MODEL_MORPH_TYPE_UVA1: // x and y are applied; UVA2-4 offsets are not
-            {auto e=nanoemModelMorphGetAllUVMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(nanoemModelMorphUVGetPosition(e[k]),2,Factor);break;}
-        case NANOEM_MODEL_MORPH_TYPE_BONE:{auto e=nanoemModelMorphGetAllBoneMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(nanoemModelMorphBoneGetTranslation(e[k]),3,Length)&&ok(nanoemModelMorphBoneGetOrientation(e[k]),4,Angle);break;}
-        case NANOEM_MODEL_MORPH_TYPE_MATERIAL:{auto e=nanoemModelMorphGetAllMaterialMorphObjects(s,&n);for(size_t k=0;k<n;k++){auto x=e[k];
-            good=good&&ok(nanoemModelMorphMaterialGetDiffuseColor(x),3,Factor)&&ok(nanoemModelMorphMaterialGetSpecularColor(x),3,Factor)&&ok(nanoemModelMorphMaterialGetAmbientColor(x),3,Factor)&&ok(nanoemModelMorphMaterialGetEdgeColor(x),3,Factor)
-                &&one(nanoemModelMorphMaterialGetDiffuseOpacity(x),Factor)&&one(nanoemModelMorphMaterialGetSpecularPower(x),Factor)&&one(nanoemModelMorphMaterialGetEdgeOpacity(x),Factor)&&one(nanoemModelMorphMaterialGetEdgeSize(x),Factor)
-                &&ok(nanoemModelMorphMaterialGetDiffuseTextureBlend(x),4,Factor)&&ok(nanoemModelMorphMaterialGetSphereMapTextureBlend(x),4,Factor)&&ok(nanoemModelMorphMaterialGetToonTextureBlend(x),4,Factor);}break;}
-        case NANOEM_MODEL_MORPH_TYPE_GROUP:{auto e=nanoemModelMorphGetAllGroupMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&one(nanoemModelMorphGroupGetWeight(e[k]),Weight);break;}
-        case NANOEM_MODEL_MORPH_TYPE_FLIP:{auto e=nanoemModelMorphGetAllFlipMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&one(nanoemModelMorphFlipGetWeight(e[k]),Weight);break;}
-        case NANOEM_MODEL_MORPH_TYPE_IMPULUSE:{auto e=nanoemModelMorphGetAllImpulseMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(nanoemModelMorphImpulseGetVelocity(e[k]),3,Length)&&ok(nanoemModelMorphImpulseGetTorque(e[k]),3,Length);break;}
+            {auto e=nanoemModelMorphGetAllUVMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(offset(k)+" UV",nanoemModelMorphUVGetPosition(e[k]),2,Factor);break;}
+        case NANOEM_MODEL_MORPH_TYPE_BONE:{auto e=nanoemModelMorphGetAllBoneMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(offset(k)+" translation",nanoemModelMorphBoneGetTranslation(e[k]),3,Length)&&ok(offset(k)+" rotation",nanoemModelMorphBoneGetOrientation(e[k]),4,Angle);break;}
+        case NANOEM_MODEL_MORPH_TYPE_MATERIAL:{auto e=nanoemModelMorphGetAllMaterialMorphObjects(s,&n);for(size_t k=0;k<n;k++){auto x=e[k];auto o=offset(k);
+            good=good&&ok(o+" diffuse colour",nanoemModelMorphMaterialGetDiffuseColor(x),3,Factor)&&ok(o+" specular colour",nanoemModelMorphMaterialGetSpecularColor(x),3,Factor)&&ok(o+" ambient colour",nanoemModelMorphMaterialGetAmbientColor(x),3,Factor)&&ok(o+" edge colour",nanoemModelMorphMaterialGetEdgeColor(x),3,Factor)
+                &&one(o+" opacity",nanoemModelMorphMaterialGetDiffuseOpacity(x),Factor)&&one(o+" specular power",nanoemModelMorphMaterialGetSpecularPower(x),Factor)&&one(o+" edge opacity",nanoemModelMorphMaterialGetEdgeOpacity(x),Factor)&&one(o+" edge size",nanoemModelMorphMaterialGetEdgeSize(x),Factor)
+                &&ok(o+" texture blend",nanoemModelMorphMaterialGetDiffuseTextureBlend(x),4,Factor)&&ok(o+" sphere blend",nanoemModelMorphMaterialGetSphereMapTextureBlend(x),4,Factor)&&ok(o+" toon blend",nanoemModelMorphMaterialGetToonTextureBlend(x),4,Factor);}break;}
+        case NANOEM_MODEL_MORPH_TYPE_GROUP:{auto e=nanoemModelMorphGetAllGroupMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&one(offset(k)+" weight",nanoemModelMorphGroupGetWeight(e[k]),Weight);break;}
+        case NANOEM_MODEL_MORPH_TYPE_FLIP:{auto e=nanoemModelMorphGetAllFlipMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&one(offset(k)+" weight",nanoemModelMorphFlipGetWeight(e[k]),Weight);break;}
+        case NANOEM_MODEL_MORPH_TYPE_IMPULUSE:{auto e=nanoemModelMorphGetAllImpulseMorphObjects(s,&n);for(size_t k=0;k<n;k++)good=good&&ok(offset(k)+" velocity",nanoemModelMorphImpulseGetVelocity(e[k]),3,Length)&&ok(offset(k)+" torque",nanoemModelMorphImpulseGetTorque(e[k]),3,Length);break;}
         default:break;}
-        if(!good)fail("morph",i);}
+        if(!good)fail("morph",i,m.morphNames[i]);}
+}
+// nanoem stops at the first damaged element and keeps the ones before it: name the
+// section, that element and the last good one, and the byte where reading stopped.
+[[noreturn]] static void loadFailed(const Model& m,nanoem_status_t status,size_t offset,std::span<const unsigned char> bytes){
+    const std::string format=memcmp(bytes.data(),"Pmd",3)?"PMX":"PMD";const auto* s=m.source;const size_t size=bytes.size();
+    const auto code=" (nanoem status "+std::to_string(int(status))+")";
+    Json details={{"status",int(status)},{"offset",offset},{"size",size}};
+    if(status==NANOEM_STATUS_ERROR_MALLOC_FAILED||status==NANOEM_STATUS_ERROR_REALLOC_FAILED)importFail("memory","The importer ran out of memory while reading the "+format+" file at byte "+thousands(offset)+" of "+thousands(size)+code,details);
+    if(status==NANOEM_STATUS_ERROR_MODEL_VERSION_INCOMPATIBLE){float version=0;if(size>=8)std::memcpy(&version,bytes.data()+4,4);details["version"]=number(version);
+        importFail("pmx.version","Invalid "+format+" file: version "+number(version)+" is not supported; PMX 2.0 and 2.1 are"+code,details);}
+    // The failing element's index is the count nanoem kept; the element before it is intact.
+    const char* kind="header";const char* section="header";int64_t index=-1;std::string previous;
+    auto last=[&](auto* const* list,nanoem_rsize_t n,auto name){index=int64_t(n);if(n&&list)previous=m.text(name(list[n-1]));};
+    auto boneName=[](const nanoem_model_bone_t* x){return nanoemModelBoneGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);};
+    switch(status){
+    case NANOEM_STATUS_ERROR_MODEL_VERTEX_CORRUPTED:kind=section="vertex";index=int64_t(s->num_vertices);break;
+    case NANOEM_STATUS_ERROR_MODEL_FACE_CORRUPTED:kind=section="triangle";index=int64_t(s->num_vertex_indices/3);break;
+    case NANOEM_STATUS_ERROR_MODEL_TEXTURE_CORRUPTED:kind=section="texture";last(s->textures,s->num_textures,[](const nanoem_model_texture_t* x){return nanoemModelTextureGetPath(x);});break;
+    case NANOEM_STATUS_ERROR_MODEL_MATERIAL_CORRUPTED:kind=section="material";last(s->materials,s->num_materials,[](const nanoem_model_material_t* x){return nanoemModelMaterialGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_MODEL_BONE_CORRUPTED:kind=section="bone";last(s->bones,s->num_bones,boneName);break;
+    // PMX keeps IK inside its bone; PMD lists IK separately.
+    case NANOEM_STATUS_ERROR_MODEL_CONSTRAINT_CORRUPTED:section="IK";if(format=="PMD"){kind="ik";index=int64_t(s->num_constraints);}else{kind="bone";last(s->bones,s->num_bones,boneName);}break;
+    case NANOEM_STATUS_ERROR_MODEL_MORPH_CORRUPTED:kind=section="morph";last(s->morphs,s->num_morphs,[](const nanoem_model_morph_t* x){return nanoemModelMorphGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_MODEL_LABEL_CORRUPTED:kind="display_frame";section="display frame";last(s->labels,s->num_labels,[](const nanoem_model_label_t* x){return nanoemModelLabelGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_MODEL_RIGID_BODY_CORRUPTED:kind="rigid_body";section="rigid body";last(s->rigid_bodies,s->num_rigid_bodies,[](const nanoem_model_rigid_body_t* x){return nanoemModelRigidBodyGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_MODEL_JOINT_CORRUPTED:kind=section="joint";last(s->joints,s->num_joints,[](const nanoem_model_joint_t* x){return nanoemModelJointGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_MODEL_SOFT_BODY_CORRUPTED:kind="soft_body";section="soft body";last(s->soft_bodies,s->num_soft_bodies,[](const nanoem_model_soft_body_t* x){return nanoemModelSoftBodyGetName(x,NANOEM_LANGUAGE_TYPE_JAPANESE);});break;
+    case NANOEM_STATUS_ERROR_PMD_ENGLISH_CORRUPTED:kind="text";section="English name";break;
+    case NANOEM_STATUS_ERROR_DECODE_UNICODE_STRING_FAILED:case NANOEM_STATUS_ERROR_ENCODE_UNICODE_STRING_FAILED:kind=section="text";break;
+    default:break;}
+    auto at=place(kind,index);details["section"]=kind;details["where"]=Json::array({at});
+    std::string where=index>=0?placeText(at):std::string("the ")+section+" data";
+    if(!previous.empty()){auto before=place(kind,index-1,previous);details["after"]=before;where+=" (the one after “"+before.value("name",std::string())+"”)";}
+    auto stopped="Reading stopped at byte "+thousands(offset)+" of "+thousands(size);
+    if(kind==std::string("text"))importFail("pmx.text","Invalid "+format+" file: a name or comment is not valid text in the file's encoding. "+stopped+code,details);
+    // A read past the end leaves less than one element: the file was cut off.
+    if(offset<=size&&size-offset<1024)importFail("pmx.truncated","Invalid "+format+" file: it ends early, in "+where+". "+stopped+"; the file is incomplete"+code,details);
+    importFail("pmx.section_corrupt","Invalid "+format+" file: "+where+" is damaged and cannot be read. "+stopped+code,details);
 }
 // Exporters leave NaN, infinite or absurd numbers in models that MMD and PMX
 // Editor still open: a vertex or UV at NaN, BDEF4 weights of (1, 1, 1, -2) on
@@ -222,14 +278,15 @@ static void repairModel(Model& m){
     note(morphs,"morphs with invalid offsets","",morphNames);
 }
 std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
-    if(bytes.size()<8)throw std::runtime_error("Model file size is invalid");
-    if(memcmp(bytes.data(),"PMX ",4)&&memcmp(bytes.data(),"Pmd",3))throw std::runtime_error("Select a PMX or PMD model");
+    if(bytes.size()>=3&&(!memcmp(bytes.data(),"PMX ",std::min<size_t>(4,bytes.size()))||!memcmp(bytes.data(),"Pmd",3))&&bytes.size()<8)
+        importFail("pmx.truncated","Invalid PMX/PMD file: it is only "+std::to_string(bytes.size())+" bytes long; the file is incomplete",{{"offset",0},{"size",bytes.size()}});
+    if(bytes.size()<8||(memcmp(bytes.data(),"PMX ",4)&&memcmp(bytes.data(),"Pmd",3)))notCharacterFile(bytes,{});
     auto m=std::make_shared<Model>();nanoem_status_t status=NANOEM_STATUS_SUCCESS;
     m->factory=nanoemUnicodeStringFactoryCreateMBWC(&status);
     m->source=nanoemModelCreate(m->factory,&status);
     auto b=nanoemBufferCreate(bytes.data(),bytes.size(),&status);
-    bool ok=nanoemModelLoadFromBuffer(m->source,b,&status);nanoemBufferDestroy(b);
-    if(!ok||status!=NANOEM_STATUS_SUCCESS)throw std::runtime_error("Invalid/truncated PMX/PMD model (nanoem status "+std::to_string(status)+")");
+    bool ok=nanoemModelLoadFromBuffer(m->source,b,&status);size_t offset=nanoemBufferGetOffset(b);nanoemBufferDestroy(b);
+    if(!ok||status!=NANOEM_STATUS_SUCCESS)loadFailed(*m,status,offset,bytes);
     repairModel(*m);
     auto advise=[&](size_t count,size_t budget,const char* noun){if(count>budget)m->warnings.push_back("Large model: "+std::to_string(count)+" "+noun+". Import continues with full detail; memory use and frame time may be high.");};
     advise(bytes.size(),256ull<<20,"bytes");
@@ -239,9 +296,9 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     m->bones.reserve(n);
     for(size_t i=0;i<n;i++){
         auto s=bones[i];Bone v;v.source=s;v.name=m->text(nanoemModelBoneGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE));
-        v.english=m->text(nanoemModelBoneGetName(s,NANOEM_LANGUAGE_TYPE_ENGLISH));v.position=vec(nanoemModelBoneGetOrigin(s));finite(v.position);
-        v.parent=boneIndex(nanoemModelBoneGetParentBoneObject(s));reference(v.parent,n);
-        v.inherit=boneIndex(nanoemModelBoneGetInherentParentBoneObject(s));reference(v.inherit,n);
+        v.english=m->text(nanoemModelBoneGetName(s,NANOEM_LANGUAGE_TYPE_ENGLISH));v.position=vec(nanoemModelBoneGetOrigin(s));finite(v.position,"bone",i,v.name,"position");
+        v.parent=boneIndex(nanoemModelBoneGetParentBoneObject(s));reference(v.parent,n,"bone",i,v.name,"parent","bones");
+        v.inherit=boneIndex(nanoemModelBoneGetInherentParentBoneObject(s));reference(v.inherit,n,"bone",i,v.name,"inherit source","bones");
         v.coefficient=nanoemModelBoneGetInherentCoefficient(s);v.stage=nanoemModelBoneGetStageIndex(s);
         v.inheritRotation=nanoemModelBoneHasInherentOrientation(s);v.inheritTranslation=nanoemModelBoneHasInherentTranslation(s);
         v.localInherit=nanoemModelBoneHasLocalInherent(s);v.afterPhysics=nanoemModelBoneIsAffectedByPhysicsSimulation(s);
@@ -274,12 +331,13 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     auto verts=nanoemModelGetAllVertexObjects(m->source,&n);advise(n,2000000,"vertices");
     m->vertices.reserve(n);m->minimum=btVector3(BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT);m->maximum=-m->minimum;
     for(size_t i=0;i<n;i++){
-        auto s=verts[i];Vertex v;v.position=vec(nanoemModelVertexGetOrigin(s));v.normal=vec(nanoemModelVertexGetNormal(s));finite(v.position);finite(v.normal);
+        auto s=verts[i];Vertex v;v.position=vec(nanoemModelVertexGetOrigin(s));v.normal=vec(nanoemModelVertexGetNormal(s));finite(v.position,"vertex",i,{},"position");finite(v.normal,"vertex",i,{},"normal");
         auto uv=nanoemModelVertexGetTexCoord(s);v.uv={uv[0],uv[1]};v.type=nanoemModelVertexGetType(s);v.edge=nanoemModelVertexGetEdgeSize(s);
         v.c=vec(nanoemModelVertexGetSdefC(s));v.r0=vec(nanoemModelVertexGetSdefR0(s));v.r1=vec(nanoemModelVertexGetSdefR1(s));
         float total=0;for(int j=0;j<4;j++){
-            v.bones[j]=boneIndex(nanoemModelVertexGetBoneObject(s,j));reference(v.bones[j],m->bones.size());
-            float w=nanoemModelVertexGetBoneWeight(s,j);if(!std::isfinite(w)||w<0)throw std::runtime_error("Invalid skin weight");
+            v.bones[j]=boneIndex(nanoemModelVertexGetBoneObject(s,j));reference(v.bones[j],m->bones.size(),"vertex",i,{},"bone","bones");
+            float w=nanoemModelVertexGetBoneWeight(s,j);
+            if(!std::isfinite(w)||w<0)importFail("pmx.number","Invalid model data: vertex "+std::to_string(i)+" has a non-finite or negative weight ("+number(w)+") for bone slot "+std::to_string(j+1),{{"where",Json::array({place("vertex",int64_t(i))})},{"field","weight "+std::to_string(j+1)},{"value",number(w)}});
             v.weights[j]=v.bones[j]>=0?w:0;total+=v.weights[j];
             auto extra=nanoemModelVertexGetAdditionalUV(s,j);if(extra)std::copy_n(extra,4,v.extra[j].begin());
         }
@@ -287,15 +345,17 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
         m->minimum.setMin(v.position);m->maximum.setMax(v.position);m->vertices.push_back(v);
     }
     if(!n)m->minimum=m->maximum=btVector3(0,0,0);
-    auto indices=nanoemModelGetAllVertexIndices(m->source,&n);advise(n,6000000,"triangle indices");if(n%3)throw std::runtime_error("Invalid triangle count");
-    m->indices.assign(indices,indices+n);for(auto i:m->indices)if(i>=m->vertices.size())throw std::runtime_error("Triangle vertex outside model");
+    auto indices=nanoemModelGetAllVertexIndices(m->source,&n);advise(n,6000000,"triangle indices");if(n%3)importFail("pmx.materials","Invalid model data: the model has "+thousands(n)+" triangle indices, which is not a multiple of 3",{{"indices",n}});
+    m->indices.assign(indices,indices+n);
+    for(size_t t=0;t<m->indices.size();t++)if(m->indices[t]>=m->vertices.size())importFail("pmx.reference","Invalid model data: triangle "+std::to_string(t/3)+" uses vertex "+thousands(m->indices[t])+", but the model has "+thousands(m->vertices.size())+" vertices",{{"where",Json::array({place("triangle",int64_t(t/3))})},{"value",m->indices[t]},{"count",m->vertices.size()}});
     auto materials=nanoemModelGetAllMaterialObjects(m->source,&n);advise(n,512,"materials");
     size_t cursor=0;
     auto texture=[&](const nanoem_model_texture_t* t){return t?m->text(nanoemModelTextureGetPath(t)):std::string();};
     for(size_t i=0;i<n;i++){
         auto s=materials[i];Material v;v.name=m->text(nanoemModelMaterialGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE));
         v.first=cursor;v.count=nanoemModelMaterialGetNumVertexIndices(s);cursor+=v.count;
-        if(v.count%3||cursor>m->indices.size())throw std::runtime_error("Invalid material triangle range");
+        if(v.count%3)importFail("pmx.materials","Invalid model data: "+placeText(place("material",int64_t(i),v.name))+" uses "+thousands(v.count)+" triangle indices, which is not a multiple of 3",{{"where",Json::array({place("material",int64_t(i),v.name)})},{"first",v.first},{"count",v.count},{"indices",m->indices.size()}});
+        if(cursor>m->indices.size())importFail("pmx.materials","Invalid model data: "+placeText(place("material",int64_t(i),v.name))+" uses triangle indices "+thousands(v.first)+" to "+thousands(cursor-1)+", past the "+thousands(m->indices.size())+" the model has",{{"where",Json::array({place("material",int64_t(i),v.name)})},{"first",v.first},{"count",v.count},{"indices",m->indices.size()}});
         v.base=texture(nanoemModelMaterialGetDiffuseTextureObject(s));v.sphere=texture(nanoemModelMaterialGetSphereMapTextureObject(s));v.toon=texture(nanoemModelMaterialGetToonTextureObject(s));
         v.toonIndex=nanoemModelMaterialIsToonShared(s)?nanoemModelMaterialGetToonTextureIndex(s):-1;
         v.diffuse=vec(nanoemModelMaterialGetDiffuseColor(s));v.ambient=vec(nanoemModelMaterialGetAmbientColor(s));v.specular=vec(nanoemModelMaterialGetSpecularColor(s));
@@ -303,7 +363,7 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
         v.edgeAlpha=nanoemModelMaterialGetEdgeOpacity(s);v.edgeSize=nanoemModelMaterialGetEdgeSize(s);v.sphereMode=nanoemModelMaterialGetSphereMapTextureType(s);
         v.twoSided=nanoemModelMaterialIsCullingDisabled(s);v.edge=nanoemModelMaterialIsEdgeEnabled(s);v.shadow=nanoemModelMaterialIsShadowMapEnabled(s);m->materials.push_back(v);
     }
-    if(cursor!=m->indices.size())throw std::runtime_error("Materials do not cover all triangles");
+    if(cursor!=m->indices.size())importFail("pmx.materials","Invalid model data: the materials cover "+thousands(cursor)+" of the model's "+thousands(m->indices.size())+" triangle indices; the rest belong to no material",{{"covered",cursor},{"indices",m->indices.size()}});
     // Unit normals: a zero one would make its tangent frame NaN. Use the adjacent
     // faces' normal instead, or up for a vertex without area.
     {std::vector<btVector3> faces;for(size_t i=0;i<m->vertices.size();i++){auto& normal=m->vertices[i].normal;float length=normal.length();if(length>1e-6f){normal/=length;continue;}
@@ -313,7 +373,8 @@ std::shared_ptr<Model> parse(std::span<const unsigned char> bytes){
     for(size_t i=0;i<m->indices.size();i+=3){auto ia=m->indices[i],ib=m->indices[i+1],ic=m->indices[i+2];auto& a=m->vertices[ia];auto& b=m->vertices[ib];auto& c=m->vertices[ic];auto e=b.position-a.position,f=c.position-a.position;float u=b.uv[0]-a.uv[0],v=b.uv[1]-a.uv[1],s=c.uv[0]-a.uv[0],t=c.uv[1]-a.uv[1],d=u*t-v*s;if(btFabs(d)<1e-9f)continue;auto x=(e*t-f*v)/d,y=(f*u-e*s)/d;for(auto index:{ia,ib,ic}){m->tangents[index]+=x;bitangents[index]+=y;}}
     for(size_t i=0;i<m->vertices.size();i++){auto n=m->vertices[i].normal;auto& t=m->tangents[i];t-=n*n.dot(t);if(t.length2()<1e-8f)t=n.cross(btFabs(n.y())<.9f?btVector3(0,1,0):btVector3(1,0,0));t.normalize();m->tangentSigns[i]=n.cross(t).dot(bitangents[i])<0?-1.f:1.f;}
     auto bodies=nanoemModelGetAllRigidBodyObjects(m->source,&n);advise(n,8192,"rigid bodies");m->bodies.assign(bodies,bodies+n);
-    for(auto s:m->bodies){reference(boneIndex(nanoemModelRigidBodyGetBoneObject(s)),m->bones.size());finite(vec(nanoemModelRigidBodyGetOrigin(s)));finite(vec(nanoemModelRigidBodyGetShapeSize(s)));}
+    for(size_t i=0;i<m->bodies.size();i++){auto s=m->bodies[i];auto name=m->text(nanoemModelRigidBodyGetName(s,NANOEM_LANGUAGE_TYPE_JAPANESE));
+        reference(boneIndex(nanoemModelRigidBodyGetBoneObject(s)),m->bones.size(),"rigid_body",i,name,"bone","bones");finite(vec(nanoemModelRigidBodyGetOrigin(s)),"rigid_body",i,name,"position");finite(vec(nanoemModelRigidBodyGetShapeSize(s)),"rigid_body",i,name,"size");}
     auto joints=nanoemModelGetAllJointObjects(m->source,&n);advise(n,16384,"joints");m->joints.assign(joints,joints+n);
     for(size_t i=0;i<m->joints.size();i++){
         auto s=m->joints[i];Model::JointReference ref{s->rigid_body_a_index,s->rigid_body_b_index,true,{}};
@@ -406,7 +467,31 @@ const std::vector<float>& Instance::expandedMorphs() const {
     for(size_t i=0;i<weights.size();i++)if(instance.morphWeights[i])expand(int(i),instance.morphWeights[i],0);
     cachedMorphInputs=morphWeights;cachedMorphWeights=std::move(weights);return cachedMorphWeights;
 }
-void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut){
+std::vector<int> ikAnchors(const Model& m,const std::vector<int>& sourceControl){
+    std::vector<int> anchor;const size_t n=m.bones.size();if(!n||sourceControl.size()<n)return anchor;
+    auto controlled=[&](int i){return sourceControl[size_t(i)]>=0;};
+    auto set=[&](int goal,int on){if(anchor.empty())anchor.assign(n,-1);anchor[size_t(goal)]=on;};
+    // Walks the parent chain from `from`; the depth bound only guards a damaged hierarchy.
+    auto ancestor=[&](int from,auto&& match){for(int p=from,depth=0;p>=0&&depth<=int(n);p=m.bones[size_t(p)].parent,depth++)if(match(p))return p;return -1;};
+    // nanoem lists PMD IK on the model and keeps PMX IK on its bones.
+    std::vector<std::pair<int,int>> chains;nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    auto add=[&](const nanoem_model_constraint_t* c){int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(c)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(c));
+        // A goal at or above its own effector would drag the control roots along with the foot.
+        if(goal>=0&&end>=0&&size_t(goal)<n&&size_t(end)<n&&!controlled(goal)&&ancestor(end,[&](int p){return p==goal;})<0)chains.emplace_back(goal,end);};
+    for(size_t k=0;k<count;k++)add(constraints[k]);
+    for(auto& b:m.bones)if(auto c=b.source?nanoemModelBoneGetConstraintObject(b.source):nullptr)add(c);
+    // A goal whose effector Source drives (leg, toe IK) sits on that effector.
+    for(auto [goal,end]:chains)if(controlled(end))set(goal,end);
+    // Any other goal with nothing driven or anchored above it (a high-heel or hair IK hung from
+    // 全ての親) keeps its rest offset from the effector's nearest driven ancestor (the ankle, the
+    // head), not from the pelvis. Parents first: a goal hung below an anchored goal rides on it.
+    std::vector<int> effector(n,-1);for(auto [goal,end]:chains)if(!controlled(end)&&effector[size_t(goal)]<0)effector[size_t(goal)]=end;
+    for(auto goal:m.order){int end=effector[goal];if(end<0||(!anchor.empty()&&anchor[goal]>=0))continue;
+        if(ancestor(m.bones[goal].parent,[&](int p){return controlled(p)||(!anchor.empty()&&anchor[size_t(p)]>=0);})>=0)continue;
+        int on=ancestor(m.bones[size_t(end)].parent,controlled);if(on>=0)set(int(goal),on);}
+    return anchor;
+}
+void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut,int sourceRoot){
     local=manual;global.resize(local.size());skin.resize(local.size());
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){nanoem_rsize_t n=0;auto entries=nanoemModelMorphGetAllBoneMorphObjects(m.morphs[i],&n);for(size_t k=0;k<n;k++){
         int id=boneIndex(nanoemModelMorphBoneGetBoneObject(entries[k]));if(id<0)continue;
@@ -415,18 +500,31 @@ void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const st
     }}
     effectiveOut.assign(local.size(),btTransform::getIdentity());auto& effective=effectiveOut;
     auto controlled=[&](size_t i){return sourceControl&&(*sourceControl)[i]>=0;};
+    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    // Under Source control nothing poses the bones outside the Source skeleton's subtree: MMD
+    // control roots above the pelvis (全ての親, センター, グルーブ, 腰), other roots and the IK
+    // goals below them. Left at rest in the instance frame (the world origin of a client
+    // carrier), they pulled their vertices and follower bodies there (issue #6). Roots ride
+    // with the Source root (rig bone 0, the pelvis) as if attached at rest; IK goals ride on
+    // their chain's Source-driven bone (ikAnchors), so goals hung below them (heel IK) follow
+    // the foot. Frames are skinning transforms (rest model space to pose).
+    btTransform carrier;const btTransform* root=nullptr;std::vector<int> anchor;
+    if(sourceControl&&sourcePose&&sourceRoot>=0&&size_t(sourceRoot)<sourcePose->size()){
+        carrier=(*sourcePose)[sourceRoot]*btTransform(btQuaternion::getIdentity(),-m.bones[sourceRoot].position);root=&carrier;anchor=ikAnchors(m,*sourceControl);
+    }
     auto rebuild=[&](){for(auto i:m.order){auto& b=m.bones[i];auto t=local[i];
         if(b.inherit>=0&&b.inherit!=int(i)){auto inherited=b.localInherit?local[b.inherit]:effective[b.inherit];if(b.inheritRotation)t.setRotation(t.getRotation()*btQuaternion::getIdentity().slerp(inherited.getRotation(),b.coefficient));if(b.inheritTranslation)t.getOrigin()+=inherited.getOrigin()*b.coefficient;}
         if(b.fixedAxis.length2()>1e-8f){auto axis=b.fixedAxis.normalized();auto q=t.getRotation();auto projected=axis*axis.dot(btVector3(q.x(),q.y(),q.z()));btQuaternion twist(projected.x(),projected.y(),projected.z(),q.w());t.setRotation(twist.length2()>1e-8f?twist.normalized():btQuaternion::getIdentity());}
         effective[i]=t;
-        auto rest=b.position-(b.parent>=0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
-        global[i]=b.parent>=0?global[b.parent]*t:t;
+        int on=anchor.empty()?-1:anchor[i];btTransform pinned;const btTransform* frame=b.parent>=0?&global[b.parent]:root;
+        if(on>=0){pinned=(*sourcePose)[on]*btTransform(btQuaternion::getIdentity(),-m.bones[on].position);frame=&pinned;}
+        auto rest=b.position-(b.parent>=0&&on<0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
+        global[i]=frame?*frame*t:t;
         if(controlled(i))global[i]=(*sourcePose)[i];
-        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:nullptr);
-        if(sourceControl){effective[i]=b.parent>=0?global[b.parent].inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
+        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:root); // a root's frame is the pelvis carrier, as in SpringSystem
+        if(sourceControl){effective[i]=frame?frame->inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
         skin[i]=global[i]*btTransform(btQuaternion::getIdentity(),-b.position);
     }};rebuild();
-    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
     auto physicsDriven=[&](int i){return hooks&&hooks->driven&&hooks->driven(size_t(i));};
     for(size_t k=0;k<count;k++){
         auto constraint=constraints[k];int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(constraint)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(constraint));if(goal<0||end<0)continue;
@@ -460,10 +558,24 @@ void Instance::evaluate(bool physics){
         hooks.driven=[&](size_t i){return drivers[i]>=0||(secondary&&secondary->drives(i));};
     }
     // Evaluate in place: feedback reads the live `local` array for mode-2 bodies.
-    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch);
+    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch,sourceRig?sourceRig->bones[0].mmd:-1);
     evaluateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 void Instance::ensureSnapshot(){if(!snapshot||poseDirty)publish(owner->time);}
+void Instance::drawnVertices(const std::function<void(size_t,const btVector3&)>& visit) const {
+    if(!snapshot)return;const auto& s=*snapshot;const auto& m=*model;std::vector<uint8_t> drawn(m.vertices.size(),0);
+    // The renderer skips hidden and fully transparent parts.
+    for(size_t part=0;part<m.materials.size()&&part<s.materials.size();part++){if((part<materialVisible.size()&&!materialVisible[part])||s.materials[part].alpha<=.0001f)continue;
+        const auto& r=m.materials[part];for(size_t i=r.first;i<size_t(r.first)+r.count&&i<m.indices.size();i++)drawn[m.indices[i]]=1;}
+    // A hardware-skinned snapshot deforms only GpuSkin::cpuVertices; the shader skins the rest
+    // with three renormalised weights.
+    auto plan=s.gpu?m.gpuSkin():nullptr;std::unique_lock<std::mutex> lock(gpuRest->mutex,std::defer_lock);if(plan)lock.lock();const auto& rest=gpuRest->positions;
+    for(size_t i=0;i<drawn.size()&&i<s.vertices.size();i++)if(drawn[i]){
+        if(plan&&!plan->cpuVertex[i]&&rest.size()>=i*3+3){btVector3 p(0,0,0);const float* r=&rest[i*3];
+            for(int k=0;k<3;k++){float w=plan->weights[i][k];if(w==0)continue;const float* row=&s.palette[size_t(plan->bones[i][k])*12];for(int a=0;a<3;a++)p[a]+=w*(row[a*4]*r[0]+row[a*4+1]*r[1]+row[a*4+2]*r[2]+row[a*4+3]);}
+            visit(i,p);}
+        else{const auto& d=s.vertices[i];visit(i,btVector3(d.x,d.y,d.z));}}
+}
 namespace {
 constexpr size_t Lanes=8;
 bool avx2FmaAvailable(){static const bool value=[]{int info[4];__cpuid(info,1);bool osxsave=(info[2]&(1<<27))!=0;
@@ -575,8 +687,10 @@ void Instance::publish(double t){
     if(result==backSnapshot)std::atomic_thread_fence(std::memory_order_acquire);result->sequence=snapshot?snapshot->sequence+1:1;result->time=t;result->bones=global;
     const auto& weights=expandedMorphs();
     bool forceAlpha=std::any_of(materialForceOpaque.begin(),materialForceOpaque.end(),[](bool v){return v;});
-    bool anyMaterialMorph=forceAlpha,anyVertexMorph=false,anyUvMorph=false;
-    for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){int type=nanoemModelMorphGetType(model->morphs[i]);anyMaterialMorph|=type==NANOEM_MODEL_MORPH_TYPE_MATERIAL;anyVertexMorph|=type==NANOEM_MODEL_MORPH_TYPE_VERTEX;anyUvMorph|=type>=NANOEM_MODEL_MORPH_TYPE_TEXTURE&&type<=NANOEM_MODEL_MORPH_TYPE_UVA4;}
+    bool anyMaterialMorph=forceAlpha,anyVertexMorph=false;
+    // Only texture and UVA1 morphs write UVs (UVA2-4 reach no shader).
+    auto writesUv=[](int type){return type==NANOEM_MODEL_MORPH_TYPE_TEXTURE||type==NANOEM_MODEL_MORPH_TYPE_UVA1;};std::vector<std::pair<unsigned,float>> uvState;
+    for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){int type=nanoemModelMorphGetType(model->morphs[i]);anyMaterialMorph|=type==NANOEM_MODEL_MORPH_TYPE_MATERIAL;anyVertexMorph|=type==NANOEM_MODEL_MORPH_TYPE_VERTEX;if(writesUv(type))uvState.emplace_back(unsigned(i),weights[i]);}
     // Materials are copied only while a material morph is active or the buffer is stale.
     if(anyMaterialMorph||!result->materialsPristine||result->materials.size()!=model->materials.size()){result->materials=model->materials;result->materialsPristine=!anyMaterialMorph;}
     // Sparse morph state: restore the vertices touched last time, then apply the current weights.
@@ -584,14 +698,16 @@ void Instance::publish(double t){
     if(layoutChanged){morphX=layout.px;morphY=layout.py;morphZ=layout.pz;morphTouched.clear();morphLayout=layoutPtr;}
     bool morphDirty=!morphTouched.empty()||!scalarMorph.empty();
     for(auto k:morphTouched){morphX[k]=layout.px[k];morphY[k]=layout.py[k];morphZ[k]=layout.pz[k];}morphTouched.clear();scalarMorph.clear();
-    if(uvU.size()!=n){uvU.resize(n);uvV.resize(n);uvE0.resize(n);uvE1.resize(n);for(size_t i=0;i<n;i++){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
-    for(auto i:uvTouched){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}
-    bool uvChanged=!uvTouched.empty()||anyUvMorph;uvTouched.clear();
+    // UVs are restored and re-applied only when their morphs' weights change, so a
+    // held UV morph keeps the statics (and the idle publish) of an unmorphed model.
+    bool uvReset=uvU.size()!=n,uvChanged=uvReset||uvState!=uvWeights;
+    if(uvReset){uvU.resize(n);uvV.resize(n);uvE0.resize(n);uvE1.resize(n);for(size_t i=0;i<n;i++){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
+    if(uvChanged){for(auto i:uvTouched){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){auto morph=model->morphs[i];float w=weights[i];nanoem_rsize_t count=0;int type=nanoemModelMorphGetType(morph);
         if(type==NANOEM_MODEL_MORPH_TYPE_VERTEX){auto entries=nanoemModelMorphGetAllVertexMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphVertexGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphVertexGetPosition(entries[k]);int s=layout.sorted[id];
             if(s>=0){morphX[s]+=p[0]*w;morphY[s]+=p[1]*w;morphZ[s]+=p[2]*w;morphTouched.push_back(unsigned(s));}
             else scalarMorph.try_emplace(id,btVector3(0,0,0)).first->second+=btVector3(p[0],p[1],p[2])*w;}}
-        if(type>=NANOEM_MODEL_MORPH_TYPE_TEXTURE&&type<=NANOEM_MODEL_MORPH_TYPE_UVA4){auto entries=nanoemModelMorphGetAllUVMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphUVGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphUVGetPosition(entries[k]);
+        if(uvChanged&&writesUv(type)){auto entries=nanoemModelMorphGetAllUVMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphUVGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphUVGetPosition(entries[k]);
             if(type==NANOEM_MODEL_MORPH_TYPE_TEXTURE){uvU[id]+=p[0]*w;uvV[id]+=p[1]*w;}else if(type==NANOEM_MODEL_MORPH_TYPE_UVA1){uvE0[id]+=p[0]*w;uvE1[id]+=p[1]*w;}uvTouched.push_back(unsigned(id));}}
         if(type==NANOEM_MODEL_MORPH_TYPE_MATERIAL){auto entries=nanoemModelMorphGetAllMaterialMorphObjects(morph,&count);for(size_t k=0;k<count;k++){auto e=entries[k];auto target=nanoemModelMorphMaterialGetMaterialObject(e);int index=target?nanoemModelObjectGetIndex(nanoemModelMaterialGetModelObject(target)):-1;bool multiply=nanoemModelMorphMaterialGetOperationType(e)==NANOEM_MODEL_MORPH_MATERIAL_OPERATION_TYPE_MULTIPLY;
             auto scalar=[&](float& out,float value){out=multiply?out*(1+(value-1)*w):out+value*w;};auto color=[&](btVector3& out,const float* value){for(int c=0;c<3;c++)scalar(out[c],value[c]);};
@@ -600,11 +716,11 @@ void Instance::publish(double t){
     }
     for(size_t i=0;i<materialForceOpaque.size();i++)if(materialForceOpaque[i])result->materials[i].alpha=1;
     morphDirty=morphDirty||!morphTouched.empty()||!scalarMorph.empty();
-    if(uvChanged||!uvTouched.empty())staticsVersion++;
+    if(uvChanged){uvWeights=std::move(uvState);++uvVersion;++staticsVersion;}
     // Static attributes live in the 64-byte Source vertex; refill only when the buffer is new or UV morphs changed.
     bool newBuffer=result->vertices.size()!=n;bool rebuildStatics=newBuffer||result->staticsVersion!=staticsVersion;
     result->vertices.resize(n);
-    if(rebuildStatics){for(size_t i=0;i<n;i++){auto& d=result->vertices[i];const auto& v=model->vertices[i];d.color=0xffffffffu;d.u=uvU[i];d.v=uvV[i];d.edge=v.edge;d.extra0=uvE0[i];d.extra1=uvE1[i];if(sourceRig&&i<model->tangentSigns.size())d.tw=-model->tangentSigns[i];else{d.tx=1;d.ty=0;d.tz=0;d.tw=1;}}result->staticsVersion=staticsVersion;}
+    if(rebuildStatics){for(size_t i=0;i<n;i++){auto& d=result->vertices[i];const auto& v=model->vertices[i];d.color=0xffffffffu;d.u=uvU[i];d.v=uvV[i];d.edge=v.edge;d.extra0=uvE0[i];d.extra1=uvE1[i];if(sourceRig&&i<model->tangentSigns.size())d.tw=-model->tangentSigns[i];else{d.tx=1;d.ty=0;d.tz=0;d.tw=1;}}result->staticsVersion=staticsVersion;result->uvVersion=uvVersion;}
     result->minimum=btVector3(BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT);result->maximum=-result->minimum;
     // Hardware skinning: the renderer draws most vertices from rest data and the
     // palette below; only GpuSkin::cpuVertices are deformed here. Soft bodies,
