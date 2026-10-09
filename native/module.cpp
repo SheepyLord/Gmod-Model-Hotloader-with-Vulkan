@@ -27,13 +27,20 @@
 #include "prop_bindings.hpp"
 #include "physics_profile.hpp"
 #include "import_error.hpp"
+#include "file_access.hpp"
+#include "props/network_path.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
+#ifdef MMDHL_SERVER
+constexpr bool ServerRealm=true;
+#else
+constexpr bool ServerRealm=false;
+#endif
 struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;};
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -65,13 +72,18 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
+    // Sources come from Lua (or registries in data/ that Lua can write): a path to another
+    // computer would make Windows sign in there. Mapped drive letters still work.
+    if(props::networkPath(source))throw std::runtime_error("Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
     pruneJobs();
     Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
     writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"stageCode",picker?"pick":"start"},{"progress",0}});
-    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"cache",utf8(context->cache.wstring())},{"options",options}});
+    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"options",options}});
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
-    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker&&options.value("kind",std::string())=="static"?L" static":L"");
+    // The cache folder goes on the command line, not in request.json: any script can rewrite
+    // that file in data/ before the worker reads it (and point the worker at another computer).
+    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker?(options.value("kind",std::string())=="static"?L" static":L""):L" "+quote(context->cache));
     j.group=CreateJobObjectW(nullptr,nullptr);JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;SetInformationJobObject(j.group,JobObjectExtendedLimitInformation,&limits,sizeof(limits));
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESHOWWINDOW;start.wShowWindow=SW_HIDE;PROCESS_INFORMATION process{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,context->bin.c_str(),&start,&process)){CloseHandle(j.group);throw std::runtime_error("Cannot start import worker");}
@@ -554,12 +566,36 @@ FUNCTION(PrepareFrame) {
 FUNCTION(PruneRenderCache) {pruneRenderCache(LUA->GetBool(1));return 0;} END_FUNCTION
 // Diagnostic sampling profiler of the calling (main) thread; see thread_sampler.hpp.
 MainThreadSampler mainThreadSampler;
+// File access for other addons (file_access.hpp, docs/FILE_ACCESS.md), created on first
+// use. A refusal returns nil, the English reason and its code for the Lua to localize.
+FileAccess& files(){
+ // On another server nothing is even set up: no store read, no known folders opened.
+ if(!localServerRealm())throw FileAccessError("unavailable_remote","File access works only in single player and on a server this game hosts");
+ if(!context->files){FileAccessConfig c;c.worker=context->bin/L"mmdhl_worker.exe";c.store=fileAccessStore();c.policy=FilePolicy::system(context->root);context->files=std::make_unique<FileAccess>(std::move(c));}
+ return *context->files;
+}
+#define END_FILE_FUNCTION catch(const FileAccessError& e){LUA->PushNil();LUA->PushString(e.what());LUA->PushString(e.code.c_str());return 3;}catch(const std::exception& e){return failure(LUA,e);} }
+FUNCTION(FileAccessInfo) {if(!localServerRealm()){push(LUA,{{"version",1},{"available",false},{"reason","no_local_server"},{"local",false}});return 1;}push(LUA,files().info());return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPick) {LUA->PushNumber(double(files().pick(json(LUA,1))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRequest) {LUA->PushNumber(double(files().request(json(LUA,1))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPoll) {push(LUA,files().poll(number(LUA,1)));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRead) {LUA->PushNumber(double(files().read(stringArg(LUA,1),json(LUA,2))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPollRead) {auto r=files().pollRead(number(LUA,1));if(!r){LUA->PushBool(false);return 1;}LUA->PushString(r->data.data(),unsigned(r->data.size()));push(LUA,r->info);return 2;} END_FILE_FUNCTION
+FUNCTION(FileAccessList) {LUA->PushNumber(double(files().list(stringArg(LUA,1),json(LUA,2))));return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessPollList) {auto r=files().pollList(number(LUA,1));if(!r){LUA->PushBool(false);return 1;}push(LUA,*r);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessRelease) {files().release(stringArg(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessCancel) {files().cancel(number(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
+FUNCTION(FileAccessGrants) {push(LUA,files().grants());return 1;} END_FILE_FUNCTION
+// false: revoked until the map changes, but the store could not be saved.
+FUNCTION(FileAccessRevoke) {LUA->PushBool(files().revoke(stringArg(LUA,1)));return 1;} END_FILE_FUNCTION
+// Off at once; on only after the player confirms in a native dialog (arg 2: its language).
+FUNCTION(FileAccessSetEnabled) {if(!LUA->IsType(1,GarrysMod::Lua::Type::Bool))throw std::runtime_error("Expected true or false");push(LUA,files().setEnabled(LUA->GetBool(1),LUA->IsType(2,GarrysMod::Lua::Type::String)?stringArg(LUA,2):std::string("en")));return 1;} END_FILE_FUNCTION
 FUNCTION(StartMainThreadSampling) {double ms=LUA->GetNumber(1);if(!std::isfinite(ms)||ms<100||ms>60000)throw std::runtime_error("Sampling duration must be 100 to 60000 ms");mainThreadSampler.start(ms);LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(ReadMainThreadSamples) {auto report=mainThreadSampler.report(context->bin.wstring());if(report.is_null()){LUA->PushNil();return 1;}push(LUA,report);return 1;} END_FUNCTION
 #endif
 }
 GMOD_MODULE_OPEN(){
-    try {context=std::make_unique<Context>();acquireRuntimeRealm();wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
+    try {context=std::make_unique<Context>();acquireRuntimeRealm(ServerRealm);wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
         sweepJobFolders(context->cache,std::chrono::hours(24));
@@ -579,6 +615,7 @@ GMOD_MODULE_OPEN(){
 #ifndef MMDHL_SERVER
         REGISTER(SetSecondaryTuning);REGISTER(SetSpringRelativeDamping);
         REGISTER(GetModelAnimationDiagnostics);REGISTER(DeleteAssets);REGISTER(PropReload);REGISTER(PropDerive);REGISTER(SubmitPresentationPose);REGISTER(SubmitPresentationBatch);REGISTER(SubmitPresentationMatrixBatch);REGISTER(GetAlignmentProbe);REGISTER(Draw);REGISTER(RenderStatus);REGISTER(CheckRenderer);REGISTER(RenderStats);REGISTER(GetLightingState);REGISTER(SetFlashlightOverlapGuard);REGISTER(RenderFrameStats);REGISTER(SetNativeVertexCache);REGISTER(SetCompactVertices);REGISTER(SetGpuSkinning);REGISTER(SetPoseSmoothing);REGISTER(GetDrawAge);REGISTER(SetupSourceLighting);REGISTER(RegisterSourceShadow);REGISTER(RemoveSourceShadow);REGISTER(SetWorkers);REGISTER(GetWorkerCapabilities);REGISTER(SetSecondaryQuality);REGISTER(SetSecondaryWaitBudget);REGISTER(SetSecondaryMidphase);REGISTER(SetSecondarySleep);REGISTER(SetRenderSuspended);REGISTER(SetInstanceMaterials);REGISTER(DrawInstance);REGISTER(SetSecondaryBroadphase);REGISTER(PrepareFrame);REGISTER(PruneRenderCache);REGISTER(StartMainThreadSampling);REGISTER(ReadMainThreadSamples);REGISTER(CreateEditorPreview);REGISTER(DestroyEditorPreview);REGISTER(GetEditorPreviewBounds);REGISTER(DrawEditorPreview);REGISTER(GetMaterialMesh);REGISTER(GetMaterialPositions);REGISTER(CreatePreview);REGISTER(ClearPreview);REGISTER(DrawPreview);
+        REGISTER(FileAccessInfo);REGISTER(FileAccessPick);REGISTER(FileAccessRequest);REGISTER(FileAccessPoll);REGISTER(FileAccessRead);REGISTER(FileAccessPollRead);REGISTER(FileAccessList);REGISTER(FileAccessPollList);REGISTER(FileAccessRelease);REGISTER(FileAccessCancel);REGISTER(FileAccessGrants);REGISTER(FileAccessRevoke);REGISTER(FileAccessSetEnabled);
 #endif
         registerPropFunctions(LUA,context->cache);
         LUA->Push(-1);LUA->SetField(GarrysMod::Lua::INDEX_GLOBAL,"mmdhl_native");return 1;
@@ -597,5 +634,5 @@ if(context){
  // goes away (an unscoped world() would create a fresh singleton after shutdown).
  {WorldScope realm(context->runtime.get());clearPhysicsBridge();}
 #endif
- for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();releaseRuntimeRealm();}
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();releaseRuntimeRealm(ServerRealm);}
 return 0;}

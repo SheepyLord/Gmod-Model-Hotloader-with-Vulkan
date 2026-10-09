@@ -406,5 +406,7 @@ public:
  ~WorldScope();
 };
 void shutdownWorld();
-void acquireRuntimeRealm();void releaseRuntimeRealm();
+void acquireRuntimeRealm(bool server);void releaseRuntimeRealm(bool server);
+// True while the server realm's module is loaded in this process (single player or listen host).
+bool localServerRealm();
 } // namespace mmd

@@ -22,19 +22,6 @@ std::string utf8(std::wstring_view s) {
     if(!n) throw std::runtime_error("Invalid Unicode string");
     std::string out(n,0);WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,s.data(),int(s.size()),out.data(),n,nullptr,nullptr);return out;
 }
-bool networkPath(std::string_view s) {
-    // Opening \\host, //host, /\host, \\?\UNC\..., \??\..., \\.\... or a URL makes
-    // Windows connect to another computer with the user's credentials. Only a drive
-    // letter may start a rooted path; text that is not UTF-8 is refused as well.
-    if(s.find("://")!=s.npos) return true;
-    auto separator=[](char c){return c=='\\'||c=='/';};
-    if(s.size()>=2&&separator(s[0])&&separator(s[1])) return true;
-    if(s.size()>=4&&separator(s[0])&&s[1]=='?'&&s[2]=='?'&&separator(s[3])) return true;
-    std::wstring text;try{text=wide(s);}catch(...){return true;}
-    for(auto& c:text)if(c==L'/')c=L'\\';
-    auto root=fs::path(text).root_name().wstring();
-    return !(root.empty()||(root.size()==2&&root[1]==L':'));
-}
 Bytes readFile(const fs::path& p,uint64_t maximum) {
     // Status and cached assets are replaced atomically while readers may be open.
     // std::ifstream does not grant FILE_SHARE_DELETE on Windows and can make a

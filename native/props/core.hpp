@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "network_path.hpp"
 
 namespace props {
 namespace fs = std::filesystem;
@@ -73,8 +74,6 @@ struct Progress {
 };
 std::wstring wide(std::string_view utf8);
 std::string utf8(std::wstring_view text);
-// A path written in a model file that would make Windows contact another computer.
-bool networkPath(std::string_view path);
 Bytes readFile(const fs::path& path,uint64_t maxBytes=256ull<<20);
 void writeAtomic(const fs::path& path,std::span<const uint8_t> bytes);
 void writeJson(const fs::path& path,const Json& value);

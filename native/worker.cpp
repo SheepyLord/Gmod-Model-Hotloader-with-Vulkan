@@ -6,6 +6,7 @@
 #include "character_import.hpp"
 #include "humanoid_map.hpp"
 #include "import_error.hpp"
+#include "file_access.hpp"
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
 #include "props/core.hpp"
@@ -219,9 +220,18 @@ int wmain(int argc,wchar_t** argv){
         // Test aid: the crash handlers on a deliberate crash (access, abort or terminate).
         if(argc==4&&std::wstring(argv[1])==L"--crash-test"){watchCrashes(fs::path(argv[2])/L"worker.log");setImportStage("test");std::wstring how=argv[3];
             if(how==L"abort")std::abort();if(how==L"terminate")std::terminate();RaiseException(EXCEPTION_ACCESS_VIOLATION,0,0,nullptr);return 0;}
-        if(argc==3&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";watchCrashes(request.parent_path()/L"worker.log");auto j=readJson(request);auto options=j.value("options",Json::object());
+        // File access for other addons: a picker or a consent window, answered into a private folder.
+        if(argc==3&&(std::wstring(argv[1])==L"--fa-pick"||std::wstring(argv[1])==L"--fa-consent"))return fileAccessDialog(std::wstring(argv[1])==L"--fa-pick",argv[2]);
+        if((argc==3||argc==4)&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";watchCrashes(request.parent_path()/L"worker.log");auto j=readJson(request);auto options=j.value("options",Json::object());
             requestSource=j.value("source",std::string());requestKind=options.value("kind",std::string());
-            auto source=fs::path(wide(j.at("source").get<std::string>())),cache=fs::path(wide(j.at("cache").get<std::string>()));
+            // Before anything opens it (the VRM sniff included): a path to another computer
+            // makes Windows sign in there. The client module refuses these too; job folders are in data/.
+            if(props::networkPath(requestSource))importFail("io.network","Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
+            // The game names its cache folder on the command line (argv[3]), so a request.json
+            // rewritten by a script cannot redirect it; the cache field is for development tools
+            // and, like the source, never a path to another computer.
+            if(argc==3&&props::networkPath(j.at("cache").get<std::string>()))importFail("io.network","The cache folder must be on this computer, not a network path.");
+            auto source=fs::path(wide(j.at("source").get<std::string>())),cache=argc==4?fs::path(argv[3]):fs::path(wide(j.at("cache").get<std::string>()));
             auto kind=options.value("kind",std::string());
             auto filename=utf8(source.filename().wstring());
             auto report=[&](const char* code){return [&,code](const char* stage,float progress){setImportStage(code);writeJson(status,{{"state","running"},{"stage",stage},{"stageCode",code},{"progress",progress},{"filename",filename}});};};
@@ -241,7 +251,7 @@ int wmain(int argc,wchar_t** argv){
             else if(kind=="character")result=importAsset(source,cache,Json::object(),status);
             else result=kind=="derive"?deriveProp(cache,options,status):kind=="blend_scene"?listBlend(source,options,status):kind=="static"?importProp(source,cache,options,status):importAsset(source,cache,options,status);
             if(kind!="derive")result["source"]=requestSource;writeJson(status,result);return 0;}
-        std::cerr<<"mmdhl_worker --inspect model.pmx | --request request.json | --pick job-directory [static]\n";return 2;
+        std::cerr<<"mmdhl_worker --inspect model.pmx | --request request.json [cache-folder] | --pick job-directory [static]\n";return 2;
     }catch(...){
         // Any exception becomes a sentence with a code (import_error.hpp); a structured
         // failure names the part at fault, so the bone window can reopen on it.
