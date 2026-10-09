@@ -3,9 +3,9 @@
 -- context menu entry and console command. The profile model is
 -- physics_profile.lua; the window is physics_editor_ui.lua (client).
 -- Builds happen only on the server; clients download the keyed carrier like any other.
-if SERVER then AddCSLuaFile('mmdhl/physics_profile.lua') AddCSLuaFile('mmdhl/physics_editor_ui.lua') end
+-- autorun sends physics_profile.lua and physics_editor_ui.lua before its installation check.
 include('mmdhl/physics_profile.lua')
-local P=mmdhl.physics
+local P=mmdhl.physics if not P then return end
 local L=mmdhl.L
 local Protocol=1
 local MaxPayload=60000
@@ -77,9 +77,11 @@ if SERVER then
   return out,why
  end
  local function writeSaved(asset,fit)
-  local path=P.SavedPath(asset) local text=util.TableToJSON(fit,true)
-  file.CreateDir('mmd_hotloader/fit_overrides') file.Write(path..'.tmp',text)
-  if not (file.Rename and file.Rename(path..'.tmp',path)) then file.Write(path,text) file.Delete(path..'.tmp') end
+  -- file.Write takes only some extensions (.txt, .json…); the old default stays until the new one is on disk.
+  local path=P.SavedPath(asset) local temp=path:sub(1,-6)..'.new.txt' local text=util.TableToJSON(fit,true)
+  file.CreateDir('mmd_hotloader/fit_overrides') file.Write(temp,text)
+  if file.Read(temp,'DATA')~=text then file.Delete(temp) return false end
+  file.Delete(path) if not (file.Rename and file.Rename(temp,path)) then file.Write(path,text) file.Delete(temp) end
   return file.Read(path,'DATA')==text
  end
  P.WriteSaved=writeSaved P.ReadSaved=readSaved
@@ -90,7 +92,7 @@ if SERVER then
   local fit={version=3,generator=18,bodies=table.Copy(o.collisionOverrides or {}),scale=tonumber(o.collisionOverrideScale) or rig.scale,excludedMaterials=table.Copy(o.excludedMaterials or {}),mass=tonumber(o.mass),
    physics=istable(physics) and next(physics)~=nil and table.Copy(physics) or nil,
    editor={schema=1,ui=P.SanitizeEditor(o.physicsEditor),savedAt=os.time(),savedBy=IsValid(p) and p:SteamID64() or nil,savedByName=IsValid(p) and p:Nick() or nil}}
-  if not writeSaved(asset,fit) then return false,'physics_editor.error.build_failed' end
+  if not writeSaved(asset,fit) then return false,'physics_editor.error.save_failed' end
   return true,fit
  end
  function mmdhl.ClearPhysicsDefault(p,ent)
@@ -206,7 +208,14 @@ if SERVER then
  end
  local function handle(p,request,op,ent,payload)
   local function answer(state,message,target,data) reply(p,request,state,message,target,data) end
-  if op=='close' then removeTestCopy(p) return end
+  -- A test copy still building when the editor closes is removed when it arrives.
+  if op=='close' then p.MMDHLPhysicsSession=(p.MMDHLPhysicsSession or 0)+1 removeTestCopy(p) return end
+  if op=='open' then
+   -- Cheap to ask, not to answer: at most 4 states a second per player.
+   local recent={} for _,t in ipairs(p.MMDHLPhysicsOpens or {}) do if CurTime()-t<1 then recent[#recent+1]=t end end
+   p.MMDHLPhysicsOpens=recent if #recent>=4 then answer('error',L('physics_editor.error.rate_limited',{seconds=1}),ent,{seconds=1}) return end
+   recent[#recent+1]=CurTime()
+  end
   if not mmdhl.native then answer('error',L'physics_editor.error.server_core') return end
   if not (IsValid(ent) and ent:GetClass()=='prop_ragdoll' and mmdhl.IsMMD(ent) and ent:GetPhysicsObjectCount()==18) then answer('error',L'physics_editor.error.not_ragdoll') return end
   if op=='open' then answer('state','',ent,mmdhl.PhysicsState(p,ent)) return end
@@ -217,11 +226,11 @@ if SERVER then
   local asset=mmdhl.GetAsset(ent)
   if op=='save_default' then
    local saved=mmdhl.SavePhysicsDefault(p,ent)
-   if saved then answer('ready',L('physics_editor.notice.saved',{name=asset:sub(1,12)}),ent,{savedAt=os.time()}) else answer('error',L('physics_editor.error.build_failed',{reason='file'})) end
+   if saved then answer('ready',L('physics_editor.notice.saved',{name=asset:sub(1,12)}),ent,{savedAt=os.time()}) else answer('error',L'physics_editor.error.save_failed') end
    return
   end
   if op=='clear_default' then
-   if mmdhl.ClearPhysicsDefault(p,ent) then answer('ready',L('physics_editor.notice.forgotten',{name=asset:sub(1,12)}),ent) else answer('error',L('physics_editor.error.build_failed',{reason='file'})) end
+   if mmdhl.ClearPhysicsDefault(p,ent) then answer('ready',L('physics_editor.notice.forgotten',{name=asset:sub(1,12)}),ent) else answer('error',L'physics_editor.error.save_failed') end
    return
   end
   local wait=P.RateLimited(p) if wait then answer('error',L('physics_editor.error.rate_limited',{seconds=wait}),ent,{seconds=wait}) return end
@@ -239,7 +248,7 @@ if SERVER then
    local right=Angle(0,p:EyeAngles().y,0):Right()
    o.position={(ent:GetPos()+right*(ent:BoundingRadius()*2+24)+Vector(0,0,10)):Unpack()}
   end
-  ent.MMDHLPhysicsBusy=true p.MMDHLPhysicsBusy=true
+  ent.MMDHLPhysicsBusy=true p.MMDHLPhysicsBusy=true local session=p.MMDHLPhysicsSession
   answer('building','',ent)
   local finished=false
   local function finish() finished=true if IsValid(ent) then ent.MMDHLPhysicsBusy=nil end if IsValid(p) then p.MMDHLPhysicsBusy=nil end recordBuild(p) end
@@ -249,6 +258,7 @@ if SERVER then
     local done,problem=xpcall(function()
      if not IsValid(new) then answer('error',P.FailureToken(failure),ent) return end
      if op=='test' then
+      if not IsValid(p) or p.MMDHLPhysicsSession~=session then new:Remove() answer('error','') return end
       removeTestCopy(p) new:SetNW2Bool('MMDHLPhysicsTestCopy',true) p.MMDHLPhysicsTestCopy=new
       answer('ready',L'physics_editor.notice.test_spawned',new,{key=new:GetNW2String('MMDHLRig',''),warnings=warnings}) return
      end
@@ -325,7 +335,8 @@ properties.Add('mmdhl_physics_editor',{
  Filter=function(_,ent,ply) return editable(ent) end,
  Action=function(_,ent) if mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) end end
 })
-concommand.Add('mmdhl_physics_editor',function()
+-- Not "mmdhl_physics_editor": that name is the server's replicated setting, and a command cannot share it.
+concommand.Add('mmdhl_physics_editor_open',function()
  local ent=LocalPlayer():GetEyeTrace().Entity
  if editable(ent) and mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) else notification.AddLegacy(L'physics_editor.error.not_ragdoll',NOTIFY_ERROR,5) end
 end,nil,'Open the ragdoll physics editor for the Model Hotloader ragdoll you are looking at.')

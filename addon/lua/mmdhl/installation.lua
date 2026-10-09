@@ -196,6 +196,11 @@ if SERVER then
     net.Start(spawnReplies[name]) net.WriteUInt(math.Clamp(math.floor(tonumber(settings.request) or 0),0,4294967295),32) net.WriteString('error')
     net.WriteString(M.ServerIssue('core',M.loadError or L'install.unavailable')) net.WriteUInt(0,16) net.Send(p)
    end
+   -- The physics editor's request (protocol 1) waits for its own answer.
+   if name=='mmdhl_physics' and net.ReadUInt(8)==1 then
+    local request=net.ReadUInt(32)
+    if net.ReadString()~='close' then net.Start('mmdhl_physics_status') net.WriteUInt(request,32) net.WriteString('error') net.WriteString(L'physics_editor.error.server_core') net.WriteUInt(0,16) net.WriteUInt(0,16) net.Send(p) end
+   end
    if (p.MMDHLNextFailure or 0)>CurTime() then return end p.MMDHLNextFailure=CurTime()+5
    net.Start('mmdhl_install_status') net.WriteString(util.TableToJSON(publicStatus())) net.Send(p)
   end)

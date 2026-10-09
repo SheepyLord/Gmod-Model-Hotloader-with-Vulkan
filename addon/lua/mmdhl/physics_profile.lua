@@ -531,8 +531,10 @@ function P.Distal(rig,i)
  if len<1e-6 then return 0 end local x=rotate(a.rotation,{1,0,0}) local s=(x[1]*d[1]+x[2]*d[2]+x[3]*d[3])/len
  return s>.5 and 1 or s<-.5 and -1 or 0
 end
+-- Rounded first, then held inside bounds rounded inwards: a clamped value never rounds back out of range.
 local function clampShape(s,u)
- for k=1,3 do s.extent[k]=q(clamp(s.extent[k],.01*u,36*u),4) s.center[k]=q(clamp(s.center[k],-72*u,72*u),4) end return s
+ local lo,hi,c=math.ceil(.01*u*1e4)/1e4,math.floor(36*u*1e4)/1e4,math.floor(72*u*1e4)/1e4
+ for k=1,3 do s.extent[k]=clamp(q(s.extent[k],4),lo,hi) s.center[k]=clamp(q(s.center[k],4),-c,c) end return s
 end
 -- Mirrors a shape onto the other side through the rest frames (§3.3); returns the shape and whether its centre was mirrored.
 function P.MirrorShape(rig,i,shape)
@@ -595,7 +597,8 @@ function P.Check(d,preview,baseline,ctx)
  ctx=ctx or {} local list={} local bodies,model=P.Effective(d)
  local u,m=P.Unit(ctx.rig) local request=P.Resolve(d,ctx.rig)
  for _,e in ipairs(P.CheckPhysics(request.physicsOverrides)) do
-  local i=e.path:match('^bodies%.(.-)%.') i=i and P.INDEX[i]
+  -- Body names contain dots themselves.
+  local i=e.path:match('^bodies%.(ValveBiped%.Bip01_[%w_]+)') i=i and P.INDEX[i]
   local axis=e.path:match('limits%.(%a)$')
   if e.code=='limit_order' then issue(list,'error','limit_order',{},i,axis,{'swap'})
   elseif e.code=='root_joint' then issue(list,'error','root_joint',{},0,nil,{'remove'})

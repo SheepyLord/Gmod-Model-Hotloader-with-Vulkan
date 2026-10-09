@@ -240,6 +240,29 @@ assert not known(to_lua(lua, {'physicsOverrides': {'schema': 1, 'surfaceprop': '
 assert known(to_lua(lua, {'physicsOverrides': {'schema': 1, 'surfaceprop': 'metal'}}))[0]
 print(f'PASS: P.Validate refuses {len(bad)} malformed requests (every native code, shape bounds, mass, material slots) and unknown surface materials')
 
+# ---- L6b: a physics error names its part (bone names contain dots); clamped shapes stay in range ----
+lua.execute(r'''
+local P=mmdhl.physics
+local d=P.NewDraft() P.SetExplicit(d,6,'limits',{50,30,0},'z')
+local order for _,v in ipairs(P.Check(d,nil,nil,{})) do if v.code=='limit_order' then order=v end end
+assert(order and order.body==6 and order.axis=='z' and order.fixes[1]=='swap','a minimum above the maximum lost its part')
+P.ApplyFix(d,order,'swap') local z=P.Effective(d)[6].limits.z assert(z[1]==30 and z[2]==50,'Swap changed nothing')
+d=P.NewDraft() P.SetExplicit(d,10,'limits',{-200,30,0},'x')
+local range for _,v in ipairs(P.Check(d,nil,nil,{})) do if v.code=='range' then range=v end end
+assert(range and range.body==10 and range.axis=='x' and range.fixes[1]=='clamp','a range error lost its part')
+P.ApplyFix(d,range,'clamp') assert(P.Effective(d)[10].limits.x[1]==-180 and not P.HasErrors(P.Check(d,nil,nil,{})),'Clamp changed nothing')
+-- Shapes typed or stepped past a bound land on the nearest value that P.Check and the server accept.
+local rig={scale=3.23656,bones={},bodies={}} for i,n in ipairs(P.BODIES) do rig.bones[i]={name=n,position=({[4]={0,0,68},[15]={0,5,0},[18]={0,-5,0}})[i] or {0,0,0},rotation={0,0,0,1}} rig.bodies[i]={bone=i-1,center={1,0,0},extent={2,1,1}} end
+local u=P.Unit(rig)
+local function inRange(d) for _,v in ipairs(P.Check(d,nil,nil,{rig=rig})) do if v.code=='shape_range' then return false end end return P.Validate(P.Resolve(d,rig),{unit=u}) end
+for _,shape in ipairs({{center={0,0,0},extent={0,1,1}},{center={0,0,0},extent={1e6,1,1}},{center={-1e6,1e6,0},extent={1,1,1}},{center={0,0,0},extent={.0113,.01133,.011334}}}) do
+ d=P.NewDraft() P.SetShape(d,6,shape,rig) assert(inRange(d),'a clamped shape is out of range: '..d.shapes[6].extent[1]..' '..d.shapes[6].center[1])
+end
+d=P.NewDraft() for _=1,80 do P.ShapeAction(d,6,'thinner',rig) P.ShapeAction(d,6,'shorter',rig) end assert(inRange(d),'Thinner and Shorter stepped out of range')
+d=P.NewDraft() for _=1,80 do P.AllThickness(d,1/1.05,rig) end assert(inRange(d),'the thickness buttons stepped out of range')
+''')
+print('PASS: physics errors name their part, so Swap, Clamp and Go to work; shapes clamped at a bound stay valid for Checks and the server')
+
 # Lua helpers of the QC and .phy file checks below.
 ROUNDTRIP = r'''function(seed)
  local P=mmdhl.physics math.randomseed(seed) local failures={}
@@ -416,7 +439,8 @@ GLOBALS={} SetGlobal2Int=function(k,v) GLOBALS[k]=v end
 HOOKS={} hook={Add=function(e,n,f) HOOKS[e]=HOOKS[e] or {} HOOKS[e][n]=f end,Remove=function(e,n) if HOOKS[e] then HOOKS[e][n]=nil end end,
  Run=function(e,...) for _,f in pairs(HOOKS[e] or {}) do local r=f(...) if r~=nil then return r end end end}
 SINGLE=false DEDICATED=true game={SinglePlayer=function() return SINGLE end,IsDedicated=function() return DEDICATED end}
-FILES={} file={Read=function(p) return FILES[p] end,Write=function(p,c) FILES[p]=c end,Delete=function(p) FILES[p]=nil end,Exists=function(p) return FILES[p]~=nil end,CreateDir=function() end,
+-- file.Write takes only some extensions; WRITE_FAIL makes writes to matching paths fail.
+FILES={} REFUSED={} file={Read=function(p) return FILES[p] end,Write=function(p,c) if not (p:match('%.txt$') or p:match('%.json$') or p:match('%.dat$')) then REFUSED[#REFUSED+1]=p return end if WRITE_FAIL and p:find(WRITE_FAIL,1,true) then return end FILES[p]=c end,Delete=function(p) FILES[p]=nil end,Exists=function(p) return FILES[p]~=nil end,CreateDir=function() end,
  Rename=function(a,b) if FILES[b]~=nil or FILES[a]==nil then return false end FILES[b]=FILES[a] FILES[a]=nil return true end}
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end,Simple=function(_,f) f() end}
 function tick(n) for _=1,n or 1 do NOW=NOW+.05 local list={} for name,f in pairs(TIMERS) do list[#list+1]=f end for _,f in ipairs(list) do f() end end end
@@ -484,8 +508,11 @@ SPAWNS={} SPAWN_FAIL=nil
 mmdhl.Spawn=function(p,asset,o,done,progress,flags)
  SPAWNS[#SPAWNS+1]={p=p,asset=asset,options=o,flags=flags}
  if SPAWN_FAIL then done(nil,SPAWN_FAIL) return end
- local key=string.format('%032x',#SPAWNS+4096) RIGS[key]={scale=3.23656,materialCount=4,physicsOverrides=o.physicsOverrides,bones=BONES,bodies={}}
- local e=ragdoll(key,deep(o),p) LAST_SPAWNED=e done(e)
+ local n=#SPAWNS
+ -- DEFER holds the build until DEFERRED() runs.
+ local function made() local key=string.format('%032x',n+4096) RIGS[key]={scale=3.23656,materialCount=4,physicsOverrides=o.physicsOverrides,bones=BONES,bodies={}}
+  local e=ragdoll(key,deep(o),p) LAST_SPAWNED=e done(e) end
+ if DEFER then DEFERRED=made else made() end
 end
 '''
 SERVER_SETUP = r'''
@@ -584,8 +611,18 @@ NOW=NOW+10 request(boss,'test',new,{base=base,request=req}) local copy=ENTS[last
 GAMEMODE.PlayerSpawnRagdoll=function() return false end NOW=NOW+10
 local q=player(false,false,false,'Limited') request(q,'test',new,{base=base,request=req}) assert(says(last(q),'physics_editor.error.spawn_limit'))
 GAMEMODE.PlayerSpawnRagdoll=nil
+-- A test copy that finishes building after its editor closed is removed at once; the next one stays.
+local tester=player(true,true,false,'Tester') DEFER=true request(tester,'test',new,{base=base,request=req}) assert(last(tester).state=='building')
+request(tester,'close',new,{}) DEFER=false DEFERRED()
+assert(LAST_SPAWNED.removed and tester.MMDHLPhysicsTestCopy==nil and not tester.MMDHLPhysicsBusy and not new.MMDHLPhysicsBusy,'a test copy built after closing the editor stayed')
+NOW=NOW+10 request(tester,'test',new,{base=base,request=req}) assert(last(tester).state=='ready' and not ENTS[last(tester).ent].removed,'the next test copy was removed too')
+-- Opening is answered at most four times a second per player.
+local viewer=player(false,false,false,'Viewer')
+for k=1,4 do request(viewer,'open',new,{}) assert(last(viewer).state=='state','open '..k..' was refused') end
+request(viewer,'open',new,{}) assert(says(last(viewer),'physics_editor.error.rate_limited') and last(viewer).data.seconds==1,'a fifth open within a second was answered')
+NOW=NOW+1.01 request(viewer,'open',new,{}) assert(last(viewer).state=='state','opening stayed refused')
 ''')
-print('PASS: stale, busy, held, unknown operations and protocols, payloads over 60000 bytes; 3 s cooldown and 20 builds per 10 minutes (superadmins exempt); one test copy per player')
+print('PASS: stale, busy, held, unknown operations and protocols, payloads over 60000 bytes; 3 s cooldown and 20 builds per 10 minutes (superadmins exempt); one test copy per player, none after its editor closed; at most 4 opens a second')
 
 # L12: an older server module builds shapes only.
 s = server_runtime()
@@ -670,7 +707,12 @@ local fit=util.JSONToTable(FILES[P.SavedPath(ent.asset)])
 assert(fit.version==3 and fit.generator==18 and fit.mass==62 and fit.physics.bodies['ValveBiped.Bip01_L_Forearm'].limits.z[2]==7.5 and fit.physics.massMode==nil,'the saved file is not the ragdoll\'s physics')
 assert(fit.bodies['ValveBiped.Bip01_Head1'].style=='box' and fit.excludedMaterials[1]==2 and fit.scale==3.23656)
 assert(fit.editor.ui.feel.preset=='less_floppy' and fit.editor.savedByName=='Admin' and fit.editor.savedBy=='76561198000000001' and fit.editor.savedAt)
-assert(FILES[P.SavedPath(ent.asset)..'.tmp']==nil,'the temporary file stayed')
+assert(#REFUSED==0,'file.Write was given an extension GMod refuses: '..tostring(REFUSED[1]))
+assert(FILES['mmd_hotloader/fit_overrides/'..ent.asset..'.new.txt']==nil,'the temporary file stayed')
+-- A failed write keeps the previous default and says so.
+local before=FILES[P.SavedPath(ent.asset)] WRITE_FAIL='.new.txt'
+request(admin,'save_default',ent,{base=KEY}) assert(last(admin).state=='error' and says(last(admin),'physics_editor.error.save_failed') and FILES[P.SavedPath(ent.asset)]==before,'a failed save lost the previous default')
+WRITE_FAIL=nil
 -- LoadSavedFit gives a spawn what it can use.
 local saved,why=mmdhl.LoadSavedFit(ent.asset) assert(saved.mass==62 and saved.physics and saved.editor and saved.bodies and not why)
 fit.physics={schema=1,bodies={['ValveBiped.Bip01_L_Forearm']={damping=50}}} fit.mass=900 FILES[P.SavedPath(ent.asset)]=util.TableToJSON(fit)
@@ -844,7 +886,7 @@ local loose={'^Set','^Dock','^Make','^SizeTo','^Center','^Invalidate','^Request'
 Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
 function Panel:Add(class) return panel(class,self) end function Panel:SetParent(p) self.parent=p end function Panel:GetChildren() return self.children end
 function Panel:SetTall(h) self.h=h end function Panel:GetTall() return self.h end function Panel:SetWide(w) self.w=w end function Panel:GetWide() return self.w end
-function Panel:SetSize(w,h) self.w,self.h=w,h end function Panel:GetSize() return self.w,self.h end
+function Panel:SetSize(w,h) self.w,self.h=w,h end function Panel:GetSize() return self.w,self.h end function Panel:SetPos(x,y) self.x,self.y=x,y end function Panel:GetPos() return self.x or 0,self.y or 0 end
 function Panel:SetVisible(v) self.visible=v end function Panel:IsVisible() return self.visible end function Panel:SetEnabled(v) self.enabled=v end function Panel:IsEnabled() return self.enabled end
 function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end function Panel:SetValue(v) self.text=v end
 function Panel:SetFont(f) self.font=f end function Panel:GetFont() return self.font end function Panel:Remove() self.removed=true end function Panel:Clear() for _,c in ipairs(self.children) do c.removed=true end self.children={} end
@@ -931,11 +973,28 @@ def client_runtime(native_lua):
     return c
 
 
+# autorun sends the editor's files before its installation check: a client whose server has no
+# working module still runs physics_editor.lua, and that stops quietly without the profile.
+autorun = read('addon/lua/autorun/mmdhl.lua')
+gate = autorun.index('if not mmdhl.CheckInstallation()')
+for f in ('physics_editor.lua', 'physics_profile.lua', 'physics_editor_ui.lua'):
+    assert 0 <= autorun.find(f"AddCSLuaFile('mmdhl/{f}')") < gate, f
+bare = lua51.LuaRuntime(unpack_returned_tuples=True)
+json_bridge(bare)
+bare.globals().mmdhl_body_names = bare.table_from(names)
+bare.execute(CLIENT_MOCKS)
+attach(bare)
+bare.execute('mmdhl.native=nil AddCSLuaFile=function() end include=function() end')
+bare.execute(EDITOR)
+assert bare.eval('mmdhl.PhysicsRequest==nil and #ERRORS==0')
+print('PASS: autorun sends the editor\'s files before its installation check, and physics_editor.lua stops quietly without its profile')
+
 # An older module (no PreviewCarrierFit), then none at all: approximate previews, nothing breaks.
 for label, native_lua in (('older module', 'mmdhl.native={GetCapabilities=function() return "{}" end}'), ('no module', 'mmdhl.native=nil')):
     c = client_runtime(native_lua)
     c.execute(r'''
 assert(PROPERTIES.mmdhl_physics_editor.Filter(nil,RAGDOLL) and PHRASES['mmdhl.physics_editor.menu']=='Ragdoll physics…')
+assert(COMMANDS.mmdhl_physics_editor_open and COMMANDS.mmdhl_physics_editor==nil and CONVARS.mmdhl_physics_editor,'the console command shares the server setting\'s name')
 local e=openEditor()
 assert(e:Banner()=='client_approximate','the older client is not told')
 local noted=false for _,n in ipairs(NOTES) do noted=noted or n==mmdhl.L'physics_editor.banner.client_approximate' end assert(noted,'the update reminder fallback was not shown')
@@ -953,6 +1012,7 @@ mmdhl.native={GetCapabilities=function() return py_encode({physicsEditor=1,versi
 PREVIEWS=0
 function mmdhl.native.PreviewCarrierFit(asset,json)
  PREVIEWS=PREVIEWS+1 local o=util.JSONToTable(json) LAST_PREVIEW=o
+ if PENDING then return py_encode({status='pending'}) end
  local bodies={} for i=0,17 do local b=RIG.bodies[i+1] bodies[i+1]={index=i,name=b.name,parent=b.parent,bone=b.bone,center=b.center,extent=b.extent,hull=b.hull,faces=b.faces,style='fitted',volume=16,mass=70/18,massBias=1,damping=.8,rotdamping=3,inertia=12,surfaceprop='flesh',lower={0,0,0},upper={0,0,0},friction={0,0,0},confidence=.9,needsReview=false} end
  local c=o.physicsOverrides and o.physicsOverrides.collisions local on=not c or c.mode=='all'
  if c and c.mode=='custom' then for _,pair in ipairs(c.pairs) do on=on or (pair[1]==3 and pair[2]==4) end end
@@ -961,6 +1021,12 @@ function mmdhl.native.PreviewCarrierFit(asset,json)
 end
 ''')
 c.execute(r'''
+-- Until the server's state arrives (or when it never does) the overlay draws nothing and raises nothing.
+SENT={} mmdhl.OpenPhysicsEditor(RAGDOLL) local waiting=mmdhl.GetPhysicsEditor()
+fire('PostDrawTranslucentRenderables',false,false) fire('HUDPaint') fire('Think')
+REQ_ID=lastSent().fields[2] answer('error',mmdhl.I18n.Token('physics_editor.error.not_ragdoll'),0)
+fire('PostDrawTranslucentRenderables',false,false) fire('HUDPaint') walk()
+assert(#ERRORS==0,table.concat(ERRORS,'\n')) waiting:Close(true)
 local e=openEditor()
 assert(e:Banner()==nil and e.preview.status=='ready' and e.baseline,'no exact preview')
 assert(LAST_PREVIEW.scaleMultiplier==1 and LAST_PREVIEW.physicsEditor==nil,'the preview did not use the ragdoll\'s fit options')
@@ -980,8 +1046,40 @@ local state=table.Copy(STATE) state.base=NEWRIG.key state.applied.physicsOverrid
 SENT={} e:Apply() local m=lastSent() REQ_ID=m.fields[2]
 answer('ready',mmdhl.I18n.Token('physics_editor.notice.applied'),44,state) tick()
 assert(e.ent==new and not e.building and e.state.base==NEWRIG.key and e.appliedAt,'the editor did not rebind to the new ragdoll')
+assert(#e.undo>0,'Apply dropped the undo history')
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+-- Reset (and Previous version, Restore saved): the editor shows what the ragdoll has now, clean.
+e:Edit(function(d) d.mass=90 d.feel.stiffness=2 end) assert(e:Dirty())
+NEWRIG={key=string.rep('8',32),scale=3.23656,bodies=RIG.bodies,bones=RIG.bones,materialCount=3}
+local reset=setmetatable({key=NEWRIG.key,index=45},getmetatable(RAGDOLL)) ENTS[45]=reset
+local factory=table.Copy(STATE) factory.base=NEWRIG.key factory.applied={collisionOverrides={},collisionOverrideScale=3.23656,excludedMaterials={},mass=70,physicsOverrides={}}
+SENT={} e:Send('reset',{}) REQ_ID=lastSent().fields[2] answer('ready',mmdhl.I18n.Token('physics_editor.notice.applied'),45,factory) tick() walk()
+assert(e.ent==reset and not e:Dirty() and e.draft.mass==70 and e.draft.feel.stiffness==0 and next(e.draft.explicit)==nil and #e.undo==0,'Reset left the old draft as unsaved changes')
+assert(not find(mmdhl.L('physics_editor.apply_count',{count=1}),'DButton') and e:Status()==mmdhl.L('physics_editor.status.applied',{time=os.date('%H:%M',e.appliedAt)}),'the footer still offers to apply the old draft')
+-- A refit that is still running: Checks wait for it, Apply and Test copy too, and the editor says so.
+PENDING=true e:Edit(function(d) d.excludedMaterials={1} d.shapes[3]={center={0,0,1},extent={6,6,6},style='fitted'} end) tick() walk()
+local label=find(mmdhl.L'physics_editor.fit_parts.pending','DLabel')
+assert(e.pending and label and label.visible and not find(mmdhl.L('physics_editor.apply_count',{count=2}),'DButton').enabled,'a pending refit did not show or did not hold Apply')
+for _,v in ipairs(e.issues) do assert(v.code~='penetration' and v.code~='penetration_severe','a pending refit reported the previous preview\'s overlaps') end
+fire('HUDPaint') SENT={} e:Apply() assert(#SENT==0,'Apply sent a draft whose refit is pending')
+PENDING=false tick() walk() assert(not e.pending and not label.visible,'the refit never finished')
+local overlapping=false for _,v in ipairs(e.issues) do overlapping=overlapping or v.code=='penetration_severe' end assert(overlapping,'the finished refit\'s overlaps did not come back')
+e:Edit(function(d) d.excludedMaterials={} d.shapes[3]=nil end) tick()
+-- "Pick from world" in the template dialog: Esc, the right button, the pause menu and a miss all cancel it.
+e:TemplateDialog() walk() local world=find(mmdhl.L'physics_editor.template.world','DButton')
+world:DoClick() assert(e.pickingTemplate and HOOKS.OnPauseMenuShow['MMDHL.PhysicsTemplatePick']) e:Key(KEY_ESCAPE)
+assert(not e.pickingTemplate and mmdhl.GetPhysicsEditor()==e and not HOOKS.OnPauseMenuShow['MMDHL.PhysicsTemplatePick'],'Esc closed the editor instead of cancelling the pick')
+world:DoClick() e.world:OnMousePressed(MOUSE_RIGHT) assert(not e.pickingTemplate and not e.world.orbit,'the right button did not cancel the pick')
+world:DoClick() assert(HOOKS.OnPauseMenuShow['MMDHL.PhysicsTemplatePick']()==false and not e.pickingTemplate,'the pause menu did not cancel the pick')
+world:DoClick() e:Pick(1,1) assert(not e.pickingTemplate,'a click beside any ragdoll kept picking')
+local trace=util.TraceLine util.TraceLine=function() return {Entity=RAGDOLL} end world:DoClick() e:Pick(1,1) util.TraceLine=trace assert(not e.pickingTemplate)
+-- Save and Forget name the model as the window does, not by its hash; a failed write is not a failed build.
+e.name='Miku' SENT={} e:Send('save_default',{}) REQ_ID=lastSent().fields[2] answer('ready',mmdhl.I18n.Token('physics_editor.notice.saved',{name='eeeeeeeeeeee'}),33)
+assert(NOTES[#NOTES]==mmdhl.L('physics_editor.notice.saved',{name='Miku'}),NOTES[#NOTES])
+SENT={} e:Send('clear_default',{}) REQ_ID=lastSent().fields[2] answer('ready',mmdhl.I18n.Token('physics_editor.notice.forgotten',{name='eeeeeeeeeeee'}),33)
+assert(NOTES[#NOTES]==mmdhl.L('physics_editor.notice.forgotten',{name='Miku'}),NOTES[#NOTES])
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 -- Closing with unapplied edits asks first.
 e:Edit(function(d) d.mass=90 end) e:Close() assert(#QUERIES==1 and mmdhl.GetPhysicsEditor()==e) QUERIES[1].args[2]() assert(mmdhl.GetPhysicsEditor()==nil)
 ''')
-print('PASS: with a current module the exact preview drives overlap checks, fixes and the .phy view, and Apply rebinds the editor to the new ragdoll')
+print('PASS: with a current module the exact preview drives overlap checks, fixes and the .phy view; Apply rebinds and keeps the draft, Reset shows the factory physics clean; pending refits hold Checks and Apply; picking from the world cancels; notices name the model')

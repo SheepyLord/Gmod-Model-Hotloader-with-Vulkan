@@ -39,6 +39,8 @@ if SERVER then
     AddCSLuaFile('mmdhl/workshop.lua')
     AddCSLuaFile('mmdhl/workshop_export.lua')
     AddCSLuaFile('mmdhl/physics_editor.lua')
+    AddCSLuaFile('mmdhl/physics_profile.lua')
+    AddCSLuaFile('mmdhl/physics_editor_ui.lua')
     AddCSLuaFile('mmdhl/bone_mapper.lua')
     AddCSLuaFile('mmdhl/file_access.lua')
 end

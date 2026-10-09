@@ -17,7 +17,8 @@ Native details (the `physicsOverrides` option, the manifest and
 * Or open **Edit character** on the ragdoll and press **Ragdoll physics…**
   (NPCs and player models show the button disabled: spawn the character as a
   ragdoll to edit it; physics saved for new spawns also apply to them).
-* Or look at the ragdoll and run `mmdhl_physics_editor` in the console.
+* Or look at the ragdoll and run `mmdhl_physics_editor_open` in the console
+  (`mmdhl_physics_editor` is the server setting below).
 
 The window docks on the right. The ragdoll's collision parts are drawn in the
 world; click a part to select it. Hold the right mouse button to look around
@@ -29,7 +30,11 @@ changes).
 ## How changes are applied
 
 Nothing in the world changes while you edit: you edit a draft, and the preview
-and the **Checks** strip update as you go.
+and the **Checks** strip update as you go. When the collision has to be fitted
+to the model again (after changing *Fit to model parts*, or on a ragdoll with
+parts left out of the fit), the editor shows *Re-fitting collision to the
+model…* for a few seconds; overlap checks, **Apply** and **Test copy** wait for
+it.
 
 * **Apply** builds a new ragdoll with the draft's physics and swaps it in for the
   old one. Pose, velocity, frozen state, skin, colour, material, bodygroups,
@@ -41,6 +46,9 @@ and the **Checks** strip update as you go.
 * **Previous version** goes back one step (up to 10 steps per ragdoll).
 * **Reset** rebuilds the ragdoll with the automatic (factory) settings, or with
   the model's saved settings when there are some.
+* After Previous version or Reset the editor shows what the ragdoll has now;
+  unapplied changes are dropped. After Apply it keeps your draft, including
+  edits made while the ragdoll was building.
 * **Discard changes** throws the draft away.
 
 Each distinct set of physics is its own carrier (about 350 KB, cached): equal
@@ -124,7 +132,8 @@ part.
 
 *From another model* (Feel tab) or **Copy physics from another model…** reads
 the physics of an installed model: player models, Half-Life 2 characters, a
-ragdoll picked in the world, or a model path. It reads the model's `.phy` file
+ragdoll picked in the world (click it; **Esc**, the right mouse button or a
+click beside it cancels), or a model path. It reads the model's `.phy` file
 from the game's mounted content (or the text section the game reports for it),
 maps its parts to the 18 carrier parts by bone name and says what it copied. A
 model whose spine has fewer parts gives one part's range to two carrier parts
@@ -159,7 +168,8 @@ New ragdolls, NPCs and player models of that model then spawn with it; ragdolls
 already in the world do not change. The save goes to
 `data/mmd_hotloader/fit_overrides/<asset>.json` (version 3, generator 18) next to
 the collision corrections from the collision editor, with the fields `physics`,
-`mass` and `editor` (who saved it and when). The collision editor's *Save fit*
+`mass` and `editor` (who saved it and when). It is written to a temporary
+`<asset>.new.txt` first, so a failed write keeps the previous default. The collision editor's *Save fit*
 keeps these fields. Workshop packages carry the file without the saver's name
 and SteamID; on dedicated servers it is installed from the package when there is
 no local one.
@@ -192,7 +202,9 @@ Each build creates one carrier (about 350 KB), one mount and one approved rig;
 the cooldown and the budget bound how fast that grows. Requests are compressed
 JSON of at most 60 000 bytes on the `mmdhl_physics` message; values are checked
 again on the server, which also refuses ragdolls that are held, busy, removed or
-changed since the editor opened.
+changed since the editor opened. Opening the editor is answered at most four
+times a second per player. A test copy that finishes building after its editor
+closed is removed at once.
 
 Client convars (saved): `mmdhl_physics_editor_advanced` (show Numbers and
 Model), `mmdhl_physics_editor_mirror` (same change on the other side),

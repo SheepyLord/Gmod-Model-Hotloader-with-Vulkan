@@ -81,7 +81,8 @@ end
 function Editor:Sync() if self.syncing then return end self.syncing=true for _,f in ipairs(self.syncs) do local ok,err=pcall(f) if not ok then ErrorNoHalt('[Model Hotloader physics editor] '..tostring(err)..'\n') end end self.syncing=false end
 function Editor:OnSync(f) self.syncs[#self.syncs+1]=f return f end
 function Editor:RunChecks()
- self.issues=P.Check(self.draft,self.preview and self.preview.status=='ready' and self.preview or nil,self.baseline,{rig=self.rig,level=self.level,surfaceKnown=function(name) return util.GetSurfaceIndex(name)>=0 end,
+ -- While a refit is pending the last preview belongs to an older draft: its masses and overlaps wait.
+ self.issues=P.Check(self.draft,not self.pending and self.preview and self.preview.status=='ready' and self.preview or nil,self.baseline,{rig=self.rig,level=self.level,surfaceKnown=function(name) return util.GetSurfaceIndex(name)>=0 end,
   approximate=not P.ClientPreview(),base=not self.state.approximateKey and self.state.base or nil,mirrorSkipped=self.mirrorSkipped})
  if self.previewError then table.insert(self.issues,1,{severity='error',code='preview_failed',params={reason=self.previewError},fixes={}}) end
  local size=#(util.Compress(util.TableToJSON({base=self.state.base,request=self.request})) or '')
@@ -90,7 +91,7 @@ end
 function Editor:HasErrors() return P.HasErrors(self.issues) end
 function Editor:BodyIssue(i) for _,v in ipairs(self.issues or {}) do if v.body==i and v.severity~='note' then return true end end end
 function Editor:BodyModified(i)
- if self.draft.shapes[i] or self.draft.explicit[i] or self.draft.joints[i] then return true end
+ local d=self.draft if d and (d.shapes[i] or d.explicit[i] or d.joints[i]) then return true end
  for _,d in ipairs(self.diff or {}) do if d.body==i then return true end end
 end
 function Editor:Body(i) local p=self.preview and self.preview.bodies and self.preview.bodies[i+1] return p or self.rig.bodies[i+1] end
@@ -102,13 +103,15 @@ function Editor:RunPreview()
  if not result then
   -- The asset is not loaded on this computer yet: ask for it and approximate meanwhile.
   if mmdhl.native.RequestAsset then mmdhl.native.RequestAsset(self.asset) end
-  self.preview=approximatePreview(self.rig,request,self.draft) self.previewAt=RealTime()+1
+  self.preview=approximatePreview(self.rig,request,self.draft) self.previewAt=RealTime()+1 self.pending=false
  elseif result.status=='pending' then self.pollAt=RealTime()+.1 self.pending=true
  elseif result.status=='error' then local e=result.errors and result.errors[1] or {} self.previewError=(e.detail and e.detail~='' and e.detail or e.code or tostring(err)) self.pending=false
  else
   self.preview=result self.previewError=nil self.pending=false
-  -- Overlaps the fit already had when the editor opened do not warn (§10 "baseline").
-  if not self.baseline then local base=self:NativePreview(self.level<1 and P.ShapesOnly(self.appliedRequest) or self.appliedRequest) self.baseline=base and base.status=='ready' and base or result end
+  -- Overlaps the fit already had when the editor opened do not warn (§10 "baseline"). While its
+  -- own refit runs, this preview's overlaps stand in and the poll asks again.
+  if not self.baseline or self.baseline.standIn then local base=self:NativePreview(self.level<1 and P.ShapesOnly(self.appliedRequest) or self.appliedRequest)
+   if base and base.status=='pending' then self.baseline={standIn=true,penetrations=result.penetrations} self.pollAt=RealTime()+.1 else self.baseline=base and base.status=='ready' and base or result end end
  end
  self:RunChecks() self:Sync()
  if self.shrinking and result and result.status=='ready' then local step=self.shrinking self.shrinking=nil step() end
@@ -131,6 +134,8 @@ function Editor:Load(state)
  self.state=state self.level=tonumber(state.level) or 0 self.stale=false
  self.rig=mmdhl.GetRig(self.ent) or self.rig
  self.applied=P.DraftFromState(state,self.rig) self.appliedRequest=P.Resolve(self.applied,self.rig)
+ -- Dirty against the state just loaded, not the one before it.
+ self.diff=self.draft and P.Diff(self.appliedRequest,self:Request()) or nil
  if not self.draft or not self:Dirty() then self.draft=P.Copy(self.applied) self.undo={} self.redo={} end
  self.baseline=nil self.preview=nil self:Changed() self:RunPreview()
  if not P.ClientPreview() then P.NoteOldBinary() end
@@ -157,13 +162,15 @@ function Editor:Send(op,payload,after)
   self.building=false
   if state=='error' then self:Toast(message,NOTIFY_ERROR) self:Sync() if after then after(false) end return end
   if op=='test' then self:Toast(message,NOTIFY_GENERIC) for _,w in ipairs(data and data.warnings or {}) do self:Toast(mmdhl.Localize(w),NOTIFY_HINT) end
-  elseif replaces and istable(data) then self:Rebind(index,data,message,after) return
-  else self:Toast(message,NOTIFY_GENERIC) if op=='save_default' or op=='clear_default' then self:Reopen() end end
+  elseif replaces and istable(data) then self:Rebind(op,index,data,message,after) return
+  -- The server knows the model by its hash only; the notice names it as this window does.
+  elseif op=='save_default' or op=='clear_default' then self:Toast(L(op=='save_default' and 'physics_editor.notice.saved' or 'physics_editor.notice.forgotten',{name=self.name}),NOTIFY_GENERIC) self:Reopen()
+  else self:Toast(message,NOTIFY_GENERIC) end
   self:Sync() if after then after(true) end
  end)
 end
 -- After a replace: wait for the new ragdoll and its carrier on this client, then edit it.
-function Editor:Rebind(index,state,message,after)
+function Editor:Rebind(op,index,state,message,after)
  local started=RealTime() self.building=true self:Sync()
  local name='MMDHL.PhysicsEditorRebind'
  timer.Create(name,.1,0,function()
@@ -176,7 +183,9 @@ function Editor:Rebind(index,state,message,after)
     if IsValid(self.ent) then self.ent.MMDHLFitOverlay=self.overlayBefore end
     self.ent=ent self.overlayBefore=ent.MMDHLFitOverlay ent.MMDHLFitOverlay=false ent.MMDHLActualCollision=nil
     self.rig=rig or self.rig self.appliedAt=os.time() self.removed=false
-    local keep=self.draft self:Load(state) self.draft=keep self:Changed()
+    -- Apply keeps the draft, with edits made while it built; Previous version, Reset and Restore show what the ragdoll has now.
+    local draft,undo,redo=self.draft,self.undo,self.redo if op~='apply' then self.draft=nil end
+    self:Load(state) if op=='apply' then self.draft,self.undo,self.redo=draft,undo,redo self:Changed() end
     self:Toast(message,NOTIFY_GENERIC) for _,w in ipairs(state.warnings or {}) do self:Toast(mmdhl.Localize(w),NOTIFY_HINT) end
     if after then after(true) end
    else self.removed=true self:Sync() end
@@ -185,12 +194,12 @@ function Editor:Rebind(index,state,message,after)
 end
 function Editor:Reopen() mmdhl.PhysicsRequest('open',self.ent,{},function(state,message,_,data) if not self:Valid() then return end if state=='state' and istable(data) then self:Load(data) else self:Toast(message,NOTIFY_ERROR) end end) end
 function Editor:Toast(text,kind) if text and text~='' then notification.AddLegacy(text,kind or NOTIFY_GENERIC,6) end end
-function Editor:Apply() if self:CanEdit() and self:Dirty() and not self:HasErrors() then self:Send('apply',{request=self.request}) end end
+function Editor:Apply() if self:CanEdit() and self:Dirty() and not self:HasErrors() and not self.pending then self:Send('apply',{request=self.request}) end end
 function Editor:Close(force)
  if not force and self:Dirty() then Derma_Query(L'physics_editor.confirm.close',L'physics_editor.title_short',L'physics_editor.button.discard',function() self:Close(true) end,L'physics_editor.button.keep_editing',function() end) return end
  if IsValid(self.ent) then self.ent.MMDHLFitOverlay=self.overlayBefore end
  if self.ent then mmdhl.PhysicsRequest('close',self.ent,{}) end
- hook.Remove('Think','MMDHL.PhysicsEditor') hook.Remove('PostDrawTranslucentRenderables','MMDHL.PhysicsEditor') hook.Remove('CalcView','MMDHL.PhysicsEditorCamera') hook.Remove('HUDPaint','MMDHL.PhysicsEditor')
+ hook.Remove('Think','MMDHL.PhysicsEditor') hook.Remove('PostDrawTranslucentRenderables','MMDHL.PhysicsEditor') hook.Remove('CalcView','MMDHL.PhysicsEditorCamera') hook.Remove('HUDPaint','MMDHL.PhysicsEditor') hook.Remove('OnPauseMenuShow','MMDHL.PhysicsTemplatePick')
  timer.Remove('MMDHL.PhysicsEditorRebind')
  for _,p in ipairs({self.world,self.frame,self.dialog}) do if IsValid(p) then p:Remove() end end
  if E==self then E=nil end
@@ -452,6 +461,7 @@ function Tabs.collisions(e,page,s,f)
  local fix=UI.button(overlaps,L'physics_editor.fix_overlaps',function() e:FixOverlaps() end,s(28),f.Small) fix:Dock(RIGHT) fix:SetWide(s(130))
  local holder,content=UI.expander(page,L'physics_editor.fit_parts.title',s,f)
  wrapLabel(content,L'physics_editor.fit_parts.help',f.Small,s(32),muted)
+ local pending=UI.label(content,L'physics_editor.fit_parts.pending',f.Small,s(20)) pending:Dock(TOP) pending:SetTextColor(colors.warning)
  local excluded={} for _,v in ipairs(e.draft.excludedMaterials) do excluded[v]=true end
  local list=mmdhl.MaterialRegionList(content,e.ent,excluded,function(sorted) e:Edit(function(d) d.excludedMaterials=sorted end) end) list:SetTall(s(160))
  holder:Resize()
@@ -462,7 +472,8 @@ function Tabs.collisions(e,page,s,f)
   local _,set=mode() for i,c in pairs(checks) do c:SetChecked(set and set[i]==true) c:SetEnabled(on) end
   thicker:SetEnabled(e:CanEdit()) thinner:SetEnabled(e:CanEdit())
   local n=0 for _,v in ipairs(e.issues or {}) do if v.code=='penetration' or v.code=='penetration_severe' then n=n+1 end end
-  overlapText:SetText(L'physics_editor.overlaps.title'..' '..(n>0 and L('physics_editor.overlaps.count',{count=n}) or L'physics_editor.overlaps.none')) fix:SetEnabled(e:CanEdit() and n>0 and P.ClientPreview())
+  overlapText:SetText(L'physics_editor.overlaps.title'..' '..(e.pending and L'physics_editor.fit_parts.pending' or n>0 and L('physics_editor.overlaps.count',{count=n}) or L'physics_editor.overlaps.none')) fix:SetEnabled(e:CanEdit() and n>0 and P.ClientPreview() and not e.pending)
+  pending:SetVisible(e.pending==true)
   page:InvalidateLayout()
  end)
 end
@@ -731,8 +742,9 @@ function Editor:TemplateDialog()
  for n,id in ipairs({'players','hl2','world'}) do -- i18n-keys: physics_editor.template.players physics_editor.template.hl2 physics_editor.template.world
   local b=UI.button(tabs,L('physics_editor.template.'..id),function()
    if id=='world' then
-    -- The next click on a ragdoll in the world picks its model (Esc cancels).
-    self.pickingTemplate=function(model) if IsValid(d) then d:Show() d:MakePopup() load(model) end end
+    -- The next click picks the model of the ragdoll under it; Esc, the right button or a click beside one cancels.
+    self.pickingTemplate=function(model) if IsValid(d) then d:Show() d:MakePopup() if model then load(model) end end end
+    hook.Add('OnPauseMenuShow','MMDHL.PhysicsTemplatePick',function() if E and E.pickingTemplate then E:EndPick() return false end end)
     d:Hide() notification.AddLegacy(L'physics_editor.template.world_hint',NOTIFY_HINT,5) return
    end
    current=id show(id)
@@ -808,8 +820,8 @@ function Editor:SaveDialog()
  local buttons=row(d,s(32),s) buttons:Dock(BOTTOM)
  local save=UI.button(buttons,L'physics_editor.save.save',function() d:Close() self:Send('save_default',{}) end,s(32),f.Body,not self:Dirty()) save:Dock(RIGHT) save:SetWide(s(110))
  if self:Dirty() then
-  local both=UI.button(buttons,L'physics_editor.save.apply_and_save',function() d:Close() if not self:HasErrors() then self:Send('apply',{request=self.request},function(ok) if ok then self:Send('save_default',{}) end end) end end,s(32),f.Body,true)
-  both:Dock(RIGHT) both:SetWide(s(160)) both:DockMargin(0,0,s(8),0) both:SetEnabled(not self:HasErrors())
+  local both=UI.button(buttons,L'physics_editor.save.apply_and_save',function() d:Close() if not self:HasErrors() and not self.pending then self:Send('apply',{request=self.request},function(ok) if ok then self:Send('save_default',{}) end end) end end,s(32),f.Body,true)
+  both:Dock(RIGHT) both:SetWide(s(160)) both:DockMargin(0,0,s(8),0) both:SetEnabled(not self:HasErrors() and not self.pending)
  end
  local cancel=UI.button(buttons,L'physics_editor.button.cancel',function() d:Close() end,s(32),f.Body) cancel:Dock(LEFT) cancel:SetWide(s(110))
  UI.ownScale(d)
@@ -848,7 +860,7 @@ end
 
 -- The world: overlay, camera and picking ----------------------------------------------
 function Editor:DrawWorld()
- local ent=self.ent if not IsValid(ent) or not self.rig then return end
+ local ent=self.ent if not IsValid(ent) or not self.rig or not self.draft then return end
  ent:InvalidateBoneCache() ent:SetupBones() render.SetColorMaterial()
  local m=(tonumber(self.rig.scale) or 3.23656)/3.23656
  local actual=GetConVar('mmdhl_physics_editor_actual'):GetBool() and ent.MMDHLActualCollision
@@ -862,7 +874,7 @@ function Editor:DrawWorld()
     if self.selected==i then render.DrawBeam(a,b,.12*m,0,1,color_white) else render.DrawLine(a,b,color,true) end end end
    local engine=actual and actual[i+1]
    if engine then local pts={} for k,v in ipairs(engine.vertices) do pts[k]=LocalToWorld(Vector(v[1],v[2],v[3]),angle_zero,pos,ang) end
-    for n,edge in ipairs(engine.edges) do if n%2==1 and pts[edge[1]] and pts[edge[2]] then render.DrawLine(pts[edge[1]],pts[edge[2]],colors.actual,true) end end end
+    for _,edge in ipairs(engine.edges) do if pts[edge[1]] and pts[edge[2]] then render.DrawLine(pts[edge[1]],pts[edge[2]],colors.actual,true) end end end
   end
  end
  local i=self.selected
@@ -889,6 +901,7 @@ function Editor:DrawLabels()
   if ends[2] then local p=ends[2]:ToScreen() if p.visible then draw.SimpleTextOutlined(axis:upper()..' +'..fmt(upper,1),'DermaDefault',p.x,p.y,color,TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,1,color_black) end end
  end
  for _,l in ipairs(self.overlapLabels or {}) do local p=l.pos:ToScreen() if p.visible then draw.SimpleTextOutlined(l.text,'DermaDefault',p.x,p.y,colors.penetration,TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,1,color_black) end end
+ if self.pending then local left=IsValid(self.frame) and self.frame:GetPos() or ScrW() draw.SimpleTextOutlined(L'physics_editor.fit_parts.pending','DermaLarge',left/2,self.s(60),colors.hullModified,TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,color_black) end
 end
 function Editor:View()
  if not GetConVar('mmdhl_physics_editor_camera'):GetBool() or not IsValid(self.ent) then return end
@@ -906,13 +919,18 @@ function Editor:Focus()
  self.camera.target=LocalToWorld(vec(b.center),angle_zero,matrix:GetTranslation(),matrix:GetAngles())
  self.camera.distance=math.Clamp(6*math.max(b.extent[1],b.extent[2],b.extent[3]),20,200)
 end
+-- Ends "pick from world" and shows the template dialog again, with the picked model if any.
+function Editor:EndPick(model)
+ local pick=self.pickingTemplate self.pickingTemplate=nil hook.Remove('OnPauseMenuShow','MMDHL.PhysicsTemplatePick')
+ if pick then pick(model) end
+end
 -- The body under the cursor: ray against each body's oriented box; clicking the selected one again cycles.
 function Editor:Pick(x,y)
  local origin,ang=self:View() local dir
  if origin then dir=util.AimVector(ang,self.fov or LocalPlayer():GetFOV(),x,y,ScrW(),ScrH()) else origin=EyePos() dir=gui.ScreenToVector(x,y) end
  if self.pickingTemplate then
-  local tr=util.TraceLine({start=origin,endpos=origin+dir*10000,filter=LocalPlayer()}) local pick=self.pickingTemplate
-  if IsValid(tr.Entity) and tr.Entity:GetClass()=='prop_ragdoll' then self.pickingTemplate=nil pick(tr.Entity:GetModel()) end return
+  local tr=util.TraceLine({start=origin,endpos=origin+dir*10000,filter=LocalPlayer()})
+  self:EndPick(IsValid(tr.Entity) and tr.Entity:GetClass()=='prop_ragdoll' and tr.Entity:GetModel() or nil) return
  end
  local hits={}
  for i=0,17 do local rb=self.rig.bodies[i+1] local b=self:Body(i) local matrix=rb and self.ent:GetBoneMatrix(rb.bone)
@@ -983,7 +1001,7 @@ end
 function Editor:BuildFooter(parent)
  local UI=mmdhl.UI local s,f=self.s,self.f
  local r1=row(parent,s(40),s)
- local test=UI.button(r1,L'physics_editor.test_copy',function() if not self:HasErrors() then self:Send('test',{request=self.request}) end end,s(40),f.Body) test:Dock(LEFT) test:SetWide(s(140))
+ local test=UI.button(r1,L'physics_editor.test_copy',function() if not self:HasErrors() and not self.pending then self:Send('test',{request=self.request}) end end,s(40),f.Body) test:Dock(LEFT) test:SetWide(s(140))
  local apply=UI.button(r1,L'physics_editor.apply',function() self:Apply() end,s(40),f.Strong,true) apply:Dock(RIGHT) apply:SetWide(s(200))
  local r2=row(parent,s(32),s)
  local previous=UI.button(r2,L'physics_editor.previous',function()
@@ -1004,7 +1022,7 @@ function Editor:BuildFooter(parent)
  local status=UI.label(r3,'',f.Small,s(28)) status:Dock(FILL) status:SetContentAlignment(6)
  self:OnSync(function()
   local edit=self:CanEdit() local errors=self:HasErrors()
-  test:SetEnabled(edit and not errors) apply:SetEnabled(edit and self:Dirty() and not errors)
+  test:SetEnabled(edit and not errors and not self.pending) apply:SetEnabled(edit and self:Dirty() and not errors and not self.pending)
   apply:SetText(self.building and L'physics_editor.status.building' or (self:Dirty() and L('physics_editor.apply_count',{count=#self.diff}) or L'physics_editor.apply'))
   previous:SetEnabled(edit and self.state.hasPrevious==true) discard:SetEnabled(not self.building and self:Dirty()) reset:SetEnabled(edit)
   save:SetVisible(self.state.canSave==true) save:SetEnabled(not self.building)
@@ -1032,7 +1050,7 @@ function mmdhl.OpenPhysicsEditor(ent)
  local world=vgui.Create('EditablePanel') e.world=world world:SetPos(0,0) world:SetSize(ScrW(),ScrH()) world:MakePopup() world:SetKeyboardInputEnabled(false) world.Paint=function() end
  world.OnMousePressed=function(self,code)
   local x,y=self:CursorPos()
-  if code==MOUSE_LEFT then e:Pick(x,y) elseif code==MOUSE_RIGHT then self.orbit={x,y} self:MouseCapture(true) end
+  if code==MOUSE_RIGHT and e.pickingTemplate then e:EndPick() elseif code==MOUSE_LEFT then e:Pick(x,y) elseif code==MOUSE_RIGHT then self.orbit={x,y} self:MouseCapture(true) end
   if IsValid(e.frame) then e.frame:MoveToFront() end
  end
  world.OnCursorMoved=function(self,x,y) if self.orbit then local c=e.camera c.yaw=c.yaw-(x-self.orbit[1])*.3 c.pitch=math.Clamp(c.pitch+(y-self.orbit[2])*.3,-80,80) self.orbit={x,y} end end
@@ -1070,7 +1088,7 @@ function Editor:Key(code)
  elseif ctrl and code==KEY_TAB then local order={'feel','parts','collisions','numbers','model'} local at=1 for n,id in ipairs(order) do if id==self.tab then at=n end end
   local step=input.IsShiftDown() and -1 or 1 repeat at=(at-1+step)%#order+1 until advanced() or at<=3 self:ShowTab(order[at])
  elseif code==KEY_F then self:Focus() elseif code==KEY_HOME then self:ResetCamera()
- elseif code==KEY_ESCAPE then self:Close() end
+ elseif code==KEY_ESCAPE then if self.pickingTemplate then self:EndPick() else self:Close() end end
 end
 function Editor:Build()
  local UI=mmdhl.UI local s,f=self.s,self.f local frame=self.frame
