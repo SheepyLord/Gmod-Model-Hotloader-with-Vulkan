@@ -21,13 +21,19 @@ There are two packages:
 - `…-win64-vulkan.zip` (default): the native modules plus DXVK (`bin\win64\d3d9.dll`), which runs Garry's Mod's Direct3D 9 renderer on Vulkan. It lowers GPU load and lets the Vulkan physics processor share the renderer's device.
 - `…-win64-opengl-remix.zip`: the native modules only; the game keeps its own Direct3D 9 renderer. Use it if DXVK does not work on your PC, or if you use RTX Remix, ReShade or another `d3d9.dll`, which the `-vulkan` package would replace. Deleting `bin\win64\d3d9.dll` also returns the game to Direct3D 9.
 
-The installation banner (Q > External Models) shows which renderer is active. The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. 
+The installation banner (Q > External Models) shows which renderer is active. When the Workshop addon recommends a newer binary module than the one installed, a window offers the download (it can be skipped for that version or turned off for good); older binary modules keep working, and features that need the update say so. The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. 
 
 If cloned with locally built binary modules, run:
 
 ```powershell
 ./scripts/install.ps1 -GameRoot 'H:\SteamLibrary\steamapps\common\GarrysMod'
 ```
+
+## Characters, physics and other formats
+
+- **Import Character Models** reads PMX, PMD and VRM, and FBX, glTF/GLB and DAE characters with a skeleton. For those, and for any character whose bones the importer cannot match, the bone assignment window shows what was found and lets you assign the rest. [Guide](docs/CHARACTER_IMPORT.md).
+- **Ragdoll physics…** (right-click a character ragdoll) edits its Source physics model: presets, collision shapes, joint limits, masses, damping, self-collision and every other `$collisionjoints` value, or copies them from an installed model. [Guide](docs/PHYSICS_EDITOR.md).
+- Addon authors can let players hand files to their addon through `hook.Run('MMDHL.RequestUserFile', …)`, with the player's consent each time. [File access for other addons](docs/FILE_ACCESS.md).
 
 ## Model terms of use
 
