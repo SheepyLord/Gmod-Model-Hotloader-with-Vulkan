@@ -17,6 +17,7 @@
 #include "mesh_topology.hpp"
 #include "vertex_upload.hpp"
 #include "light_overlaps.hpp"
+#include "cutout.hpp"
 #include "gpu_topology.hpp"
 #include "jobs.hpp"
 #include <algorithm>
@@ -99,6 +100,8 @@ static std::map<VertexFormat_t,VertexFormat_t> observedFormats;
 static Json observedLayouts=Json::object();
 struct Measure {std::atomic<double>& result;bool enabled=true;std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();~Measure(){if(enabled)result.fetch_add(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count(),std::memory_order_relaxed);}};
 static std::atomic<unsigned> frameSkinBatches{0},frameBoneLoads{0};
+// RTX Remix UV cuts: recomputed on the main thread only when an instance's UVs change.
+static std::atomic<uint64_t> remixCutRecomputes{0},remixCutRevision{0};static std::atomic<double> remixCutMs{0};
 static uint64_t renderFrame=1;
 uint64_t renderFrameNumber(){return renderFrame;}
 // Draw counters of one render frame, taken from the live atomics by the thread
@@ -129,13 +132,15 @@ std::string renderFrameStats(){
     return out.dump();
 }
 static std::string shadowError;
-struct Topology: BatchedTopology {std::weak_ptr<Model> model;std::vector<std::vector<std::vector<unsigned>>> spanBones;};
-static std::map<std::pair<const Model*,unsigned>,Topology> topology;
+// cut: under RTX Remix, the revision of the instance UV cut (RemixCutout) whose
+// triangles the index lists hold; the key then names that instance (0: shared).
+struct Topology: BatchedTopology {std::weak_ptr<Model> model;std::vector<std::vector<std::vector<unsigned>>> spanBones;uint64_t cut=0;std::weak_ptr<const RemixCutout> cutOwner;};
+static std::map<std::tuple<const Model*,unsigned,uint64_t>,Topology> topology;
 // Three buffers keep the CPU from modifying the geometry submitted in the
 // preceding frames. Index data is immutable; only dirty vertex data is uploaded.
 struct VertexSlot {uint64_t sequence=0;std::vector<IMesh*> meshes;size_t bytes=0;std::vector<std::vector<uint64_t>> spanUploaded;};
 // layout: 0 builder writes, 1 common 64-byte vertex streamed, 2 compressed 32-byte vertex streamed.
-struct LiveMesh {std::array<VertexSlot,3> slots;uint64_t lastSequence=0;int layout=0;};
+struct LiveMesh {std::array<VertexSlot,3> slots;uint64_t lastSequence=0;int layout=0;uint64_t cut=0;};
 static std::map<std::tuple<uint64_t,unsigned,bool,VertexFormat_t>,LiveMesh> liveMeshes;
 static std::atomic<bool> nativeVertexCache{false};
 // Shared buffers use Source's compressed vertex (normal+tangent packed into 4 bytes,
@@ -204,7 +209,7 @@ void pruneRenderCache(bool all){
         for(auto it=cache.begin();it!=cache.end();)if(all||it->second.snapshot.expired()){
             for(auto mesh:it->second.meshes)context->DestroyStaticMesh(mesh);it=cache.erase(it);
         }else ++it;
-        for(auto it=topology.begin();it!=topology.end();)if(all||it->second.model.expired())it=topology.erase(it);else ++it;
+        for(auto it=topology.begin();it!=topology.end();)if(all||it->second.model.expired()||(it->second.cut&&it->second.cutOwner.expired()))it=topology.erase(it);else ++it;
         for(auto it=liveMeshes.begin();it!=liveMeshes.end();){
             if(all||!vertexCache||stale(std::get<0>(it->first),it->second.lastSequence)){for(auto& slot:it->second.slots)for(auto mesh:slot.meshes)context->DestroyStaticMesh(mesh);it=liveMeshes.erase(it);}else ++it;
         }
@@ -224,10 +229,19 @@ static Json skinningStats(){
     for(auto& [name,capable]:skinShaders)shaders[name]=capable;
     return {{"enabled",gpuSkinning.load()},{"skinnedInstances",skinned},{"blocked",blocked},{"shaders",shaders},{"models",models},{"bytes",bytes},{"buffers",buffers},{"builds",skinBuilds.load()},{"updates",skinUpdates.load()},{"draws",skinDraws.load()}};
 }
+// Per instance with a UV-morphed alpha-tested part: its current cut under RTX
+// Remix, and per such part the triangles drawn now (kept) of all it has.
+static Json remixCutoutStats(){
+    Json instances=Json::array();size_t parts=0;
+    for(auto& [id,p]:world().instances){if(!p->remixCutout)continue;const auto& cut=*p->remixCutout;const auto& model=*p->model;Json list=Json::array();
+        for(size_t k=0;k<model.materials.size()&&k<cut.kept.size();k++)if(model.materials[k].dynamicCutout){parts++;list.push_back({{"part",k},{"kept",cut.kept[k]},{"triangles",model.materials[k].count/3}});}
+        instances.push_back({{"instance",id},{"uvVersion",p->remixCutoutVersion},{"revision",cut.revision},{"kept",cut.keptTriangles},{"dropped",cut.droppedTriangles},{"parts",list}});}
+    return {{"dynamicParts",parts},{"recomputes",remixCutRecomputes.load()},{"recomputeMs",remixCutMs.load()},{"instances",instances}};
+}
 static Json queueStats();
 std::string rendererStats(){
     std::lock_guard lock(renderMutex);size_t bytes=0,buffers=0,indices=0;for(auto& [key,item]:cache){bytes+=item.bytes;buffers+=item.meshes.size();}for(auto& [key,item]:liveMeshes)for(auto& slot:item.slots){bytes+=slot.bytes;buffers+=slot.meshes.size();}for(auto& [key,item]:topology)for(auto& chunk:item.chunks)indices+=chunk.indices.size()*2;
-    return Json({{"gpuSkinning",skinningStats()},{"fixedFunctionRemix",remixFixedFunction},{"overlapLayerMode",remixFixedFunction?"geometry":"projection"},{"cachedBytes",bytes},{"cachedBuffers",buffers},{"builds",cacheBuilds.load()},{"draws",cacheDraws.load()},{"streamDrawsTotal",streamDraws.load()},{"uploadedBytesTotal",uploadedBytes.load()},{"topologyIndexBytes",indices},{"sourceShadowDraws",shadowDraws.load()},{"sourceShadowError",shadowError},{"nativeVertexCache",nativeVertexCache.load()},{"compactVertices",compactVertices&&compactFailure.empty()},{"compactFailure",compactFailure},{"vertexFormats",observedFormats},{"vertexLayouts",observedLayouts},{"liveUpdates",liveUpdates.load()},{"liveDraws",liveDraws.load()},{"renderQueue",queueStats()}}).dump();
+    return Json({{"gpuSkinning",skinningStats()},{"fixedFunctionRemix",remixFixedFunction},{"overlapLayerMode",remixFixedFunction?"geometry":"projection"},{"cachedBytes",bytes},{"cachedBuffers",buffers},{"builds",cacheBuilds.load()},{"draws",cacheDraws.load()},{"streamDrawsTotal",streamDraws.load()},{"uploadedBytesTotal",uploadedBytes.load()},{"topologyIndexBytes",indices},{"sourceShadowDraws",shadowDraws.load()},{"sourceShadowError",shadowError},{"nativeVertexCache",nativeVertexCache.load()},{"compactVertices",compactVertices&&compactFailure.empty()},{"compactFailure",compactFailure},{"vertexFormats",observedFormats},{"vertexLayouts",observedLayouts},{"liveUpdates",liveUpdates.load()},{"liveDraws",liveDraws.load()},{"renderQueue",queueStats()},{"remixCutout",remixCutoutStats()}}).dump();
 }
 static void initialize(){
     static ValidationOnce validation;validation.check([]{
@@ -368,11 +382,12 @@ namespace {
 // (multicore) mode it runs later on the render thread while the main thread
 // already prepares the next frame, so it reads only this: the immutable model
 // and snapshot, the rest data (under its lock) and copied instance state.
-// cutout: RTX Remix draws only the triangles the alpha test leaves (Model::cutoutTriangles).
+// cutout: RTX Remix draws only the triangles the alpha test leaves (Model::cutoutTriangles,
+// and remixCut for parts a UV morph moves).
 struct DrawItem {std::vector<unsigned> parts;IMaterial* material=nullptr;std::string name;bool perPartColor=true,cutout=false;};
 struct DrawJob {
     uint64_t instance=0;std::shared_ptr<Model> model;std::shared_ptr<const Snapshot> snapshot;
-    std::shared_ptr<GpuRest> rest;std::shared_ptr<const std::vector<uint8_t>> firstPerson;
+    std::shared_ptr<GpuRest> rest;std::shared_ptr<const std::vector<uint8_t>> firstPerson;std::shared_ptr<const RemixCutout> remixCut;
     unsigned renderView=0;bool sourceRig=false,frozen=false,edges=false,shadow=false;
     float rigScale=1,alphaScale=1;btVector3 center{0,0,0};RenderTint tint;std::vector<DrawItem> items;
 };
@@ -558,6 +573,17 @@ static bool prepareDraw(Instance& instance,DrawJob& job,bool edges,RenderTint ti
         job.firstPerson=instance.firstPersonMask;
     }
     job.center=instance.presentationBones.empty()?(instance.snapshot->minimum+instance.snapshot->maximum)*.5f:instance.presentationBones[0].getOrigin();
+    // RTX Remix: triangles a UV morph moves are cut at this instance's current UVs,
+    // again only when they change. An unchanged cut keeps its revision, so the
+    // render thread keeps the index lists it built from it.
+    if(remixFixedFunction&&!instance.model->uvCutoutTriangles.empty()){
+        if(!instance.remixCutout||instance.remixCutoutVersion!=instance.snapshot->uvVersion){
+            Measure time{remixCutMs};auto cut=cutRemixTriangles(*instance.model,instance.snapshot->vertices);
+            if(!instance.remixCutout||cut.keep!=instance.remixCutout->keep){cut.revision=++remixCutRevision;instance.remixCutout=std::make_shared<const RemixCutout>(std::move(cut));}
+            instance.remixCutoutVersion=instance.snapshot->uvVersion;remixCutRecomputes++;
+        }
+        job.remixCut=instance.remixCutout;
+    }
     return true;
 }
 // Main thread: one material bind over the requested parts that are visible and
@@ -572,18 +598,24 @@ static bool prepareDraw(Instance& instance,DrawJob& job,bool edges,RenderTint ti
 // left with none is skipped; one whose remaining triangles are mostly cut away
 // is blended instead, which Remix renders without shadows and which matches the
 // test for the binary alpha of such layers. Mostly opaque parts keep the test.
+// Parts a UV morph moves (Material::dynamicCutout) are cut per instance at their
+// current UVs instead and skipped only while nothing of them is left. Whether one
+// blends stays decided by its rest coverage, as before: the engine material is
+// shared by every instance, so no instance's UVs may change it. One hidden at
+// rest (nothing to judge) keeps the test.
 static bool generatedMaterial(const Instance& instance,unsigned part,const std::string& name){
     return (part<instance.colorNames.size()&&instance.colorNames[part]==name)||(part<instance.depthNames.size()&&instance.depthNames[part]==name);
 }
 static void addDrawItem(Instance& instance,DrawJob& job,std::span<const unsigned> requested,const std::string& name,bool perPartColor){
     auto& model=*job.model;DrawItem item;item.name=name;item.perPartColor=perPartColor;item.parts.reserve(requested.size());
     for(auto candidate:requested){if(candidate>=model.materials.size())throw std::runtime_error("Invalid material index");if(candidate<instance.materialVisible.size()&&!instance.materialVisible[candidate])continue;auto& m=job.snapshot->materials[candidate];if((job.edges&&!m.edge)||m.alpha<=.0001f)continue;
-        if(remixFixedFunction&&model.materials[candidate].alphaTexture&&model.materials[candidate].alphaCoverage<=0&&generatedMaterial(instance,candidate,name))continue;
+        const auto& base=model.materials[candidate];const bool hidden=base.dynamicCutout?job.remixCut&&candidate<job.remixCut->kept.size()&&job.remixCut->kept[candidate]==0:base.alphaCoverage<=0;
+        if(remixFixedFunction&&base.alphaTexture&&hidden&&generatedMaterial(instance,candidate,name))continue;
         item.parts.push_back(candidate);}
     if(item.parts.empty())return;
     item.material=findMaterial(name);
     if(remixFixedFunction&&!item.material->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT)){
-        bool cutAway=false;for(auto part:item.parts){const auto& m=model.materials[part];cutAway|=m.alphaTexture&&m.alphaCoverage<.5f&&generatedMaterial(instance,part,name);}
+        bool cutAway=false;for(auto part:item.parts){const auto& m=model.materials[part];cutAway|=m.alphaTexture&&m.alphaCoverage<.5f&&(!m.dynamicCutout||m.alphaCoverage>0)&&generatedMaterial(instance,part,name);}
         if(cutAway){item.material->SetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT,true);item.material->RecomputeStateSnapshots();}
     }
     // Triangles the test removes entirely are not drawn under Remix: a near-empty
@@ -830,7 +862,12 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         // failing every frame; this draw skips the part.
         std::lock_guard lock(asyncMutex);if(gpuFailures.size()<256)gpuFailures.emplace_back(job.instance,std::string("hardware path failed: ")+error.what());return;
     }
-    if(job.frozen&&!job.renderView){for(auto frozenPart:parts){auto& frozenMaterial=snapshot->materials[frozenPart];unsigned frozenEnd=frozenMaterial.first+frozenMaterial.count;
+    // RTX Remix: a part a UV morph moves draws index lists of this instance's cut
+    // (prepareDraw), rebuilt when it changes, so every chunk stays one draw call
+    // (splitting the shared lists into index ranges made hundreds of Ruan Mei's
+    // stockings). Frozen instances draw such a part through the live buffers.
+    const RemixCutout* dynamicCut=remixFixedFunction&&draw.cutout&&job.remixCut&&parts.size()==1&&model.materials[part].dynamicCutout&&job.remixCut->keep.size()*3==model.indices.size()?job.remixCut.get():nullptr;
+    if(job.frozen&&!job.renderView&&!dynamicCut){for(auto frozenPart:parts){auto& frozenMaterial=snapshot->materials[frozenPart];unsigned frozenEnd=frozenMaterial.first+frozenMaterial.count;
         auto format=engineMaterial->GetVertexFormat()&~VERTEX_FORMAT_COMPRESSED;
         auto key=std::make_tuple(snapshot.get(),frozenPart|(layerSeparation>0?0x20000000u:0u),edges,format);auto it=cache.find(key);
         // Snapshot buffers are reused for later poses: the address alone does not identify the geometry.
@@ -864,15 +901,16 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
     // Remix: the triangles the alpha test removes entirely stay out of the index lists.
     const bool cutout=draw.cutout&&!batched&&model.cutoutTriangles.size()*3==model.indices.size();
     if(cutout)cachePart^=0x08000000u;
-    auto topologyKey=std::make_pair(&model,cachePart);auto ti=topology.find(topologyKey);
-    if(ti!=topology.end()&&ti->second.model.expired()){topology.erase(ti);ti=topology.end();}
+    const auto& keep=dynamicCut?dynamicCut->keep:model.cutoutTriangles;
+    auto topologyKey=std::make_tuple(&model,cachePart,dynamicCut?job.instance:0);auto ti=topology.find(topologyKey);
+    if(ti!=topology.end()&&(ti->second.model.expired()||ti->second.cut!=(dynamicCut?dynamicCut->revision:0))){topology.erase(ti);ti=topology.end();}
     if(ti==topology.end()){
-        Topology item;item.model=job.model;
+        Topology item;item.model=job.model;if(dynamicCut){item.cut=dynamicCut->revision;item.cutOwner=job.remixCut;}
         std::vector<uint8_t> remainder;
         if(cpuRemainder){remainder=model.gpuSkin()->cpuTriangle;if(job.renderView&&!firstPerson.empty())for(size_t t=0;t<remainder.size();t++)remainder[t]&=firstPerson[t];}
         if(batched)static_cast<BatchedTopology&>(item)=batchTopology(model,cpuRemainder?std::span<const uint8_t>(remainder):job.renderView?firstPerson:std::span<const uint8_t>{});
         else for(unsigned first=material.first;first<end;first+=18000){DrawChunk chunk;std::unordered_map<unsigned,unsigned short> remap;unsigned count=std::min(18000u,end-first);
-            for(unsigned k=0;k<count;k++){if(job.renderView&&!firstPerson.empty()&&!firstPerson[(first+k)/3])continue;if(cutout&&!model.cutoutTriangles[(first+k)/3])continue;if(k%3==0)chunk.triangles.push_back((first+k)/3);auto index=model.indices[first+k];auto [entry,inserted]=remap.emplace(index,static_cast<unsigned short>(chunk.vertices.size()));if(inserted)chunk.vertices.push_back(index);chunk.indices.push_back(entry->second);}if(!chunk.indices.empty())item.chunks.push_back(std::move(chunk));
+            for(unsigned k=0;k<count;k++){if(job.renderView&&!firstPerson.empty()&&!firstPerson[(first+k)/3])continue;if(cutout&&!keep[(first+k)/3])continue;if(k%3==0)chunk.triangles.push_back((first+k)/3);auto index=model.indices[first+k];auto [entry,inserted]=remap.emplace(index,static_cast<unsigned short>(chunk.vertices.size()));if(inserted)chunk.vertices.push_back(index);chunk.indices.push_back(entry->second);}if(!chunk.indices.empty())item.chunks.push_back(std::move(chunk));
         }
         // Bones influencing each 8192-vertex span of a chunk, for partial uploads.
         for(auto& chunk:item.chunks){std::vector<std::vector<unsigned>> spans;
@@ -941,6 +979,8 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
             }else for(auto index:chunk.vertices)write(builder,index);
         };
         auto& item=liveMeshes[{job.instance,cachePart,edges,format}];item.lastSequence=snapshot->sequence;
+        // A new UV cut has new index lists: the buffers built from the old ones go.
+        if(item.cut!=ti->second.cut){for(auto& old:item.slots){for(auto mesh:old.meshes)context->DestroyStaticMesh(mesh);old=VertexSlot{};}item.cut=ti->second.cut;}
         auto& slot=item.slots[snapshot->sequence%item.slots.size()];
         if(slot.meshes.empty()){
             Measure time{uploadMs};

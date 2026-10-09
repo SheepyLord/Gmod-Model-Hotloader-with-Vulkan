@@ -50,14 +50,20 @@ struct Material {
     btVector3 diffuse{1,1,1},ambient{.2f,.2f,.2f},specular{0,0,0},edgeColor{0,0,0};
     float alpha=1,power=1,edgeAlpha=1,edgeSize=1;
     // Share of the part's surface whose base texels pass the 0.5 alpha test,
-    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha).
+    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha). At rest
+    // UVs: for a dynamicCutout part it decides only RTX Remix blending, once.
     float alphaCoverage=1;
     std::array<std::array<float,4>,3> textureBlend{{{1,1,1,1},{1,1,1,1},{1,1,1,1}}};
     int sphereMode=0,toonIndex=-1;
     bool twoSided=false,edge=false,shadow=true,alphaTexture=false,translucentTexture=false;
+    // RTX Remix: a UV morph moves some of its alpha-tested triangles, so what the
+    // test removes is decided per instance at its current UVs (cutout.hpp).
+    bool dynamicCutout=false;
 };
 struct Rig;
 struct SpringSetup;
+struct AlphaPassMask;
+struct RemixCutout;
 struct OverlapTriangle {unsigned primitive;std::array<unsigned,3> vertices;unsigned material;};
 // Source hardware skinning (the path studio models use): three bones per
 // vertex, 53 bone matrices per draw. Built once per model. Vertices the shaders
@@ -92,6 +98,11 @@ struct Model {
     // Per triangle, 0 when the 0.5 alpha test removes every sampled texel of it
     // (loadAsset; empty: nothing measured). Only RTX Remix draws skip those.
     std::vector<uint8_t> cutoutTriangles;
+    // Alpha-tested triangles a texture (UV) morph moves, ascending: they stay 1 in
+    // cutoutTriangles and are cut at an instance's current UVs with the pass mask
+    // of their part's texture (cutoutMasks, set only for Material::dynamicCutout parts).
+    std::vector<unsigned> uvCutoutTriangles;
+    std::vector<std::shared_ptr<const AlphaPassMask>> cutoutMasks;
     std::vector<Bone> bones;
     std::vector<unsigned> order;
     std::vector<Material> materials;
@@ -286,6 +297,9 @@ struct Instance {
     // renderView marks the first-person colour view; its triangle mask is built
     // once and shared with queued draws.
     unsigned renderView=0;std::shared_ptr<const std::vector<uint8_t>> firstPersonMask;
+    // RTX Remix: the cut at the UVs of remixCutoutVersion (a uvVersion), made on
+    // the main thread and shared with queued draws (renderer.cpp).
+    uint64_t remixCutoutVersion=0;std::shared_ptr<const RemixCutout> remixCutout;
     void setMaterialState(std::vector<bool> visible,std::vector<bool> forceOpaque);
     std::vector<float> morphWeights,lastImpulseWeights;
     const std::vector<float>& expandedMorphs() const;

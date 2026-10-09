@@ -4,6 +4,7 @@
 #include "vrm.hpp"
 #include "assets.hpp"
 #include "humanoid_slots.hpp"
+#include "cutout.hpp"
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincodec.h>
@@ -224,28 +225,40 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     // share of the part's remaining triangles, 0 when none remains. Near-empty
     // shells (a body copy that keeps only the gloves) then lose their empty
     // triangles instead of being drawn blended over the whole body.
+    // A texture (UV) morph slides UVs across an atlas: Ruan Mei's stockings change
+    // style by moving to another column, transparent at rest over the legs. Rest
+    // UVs cannot decide for triangles a UV morph moves; they stay in, and the
+    // renderer cuts them at each instance's current UVs with their texture's pass
+    // mask (kept only for such parts) by the same rule (cutout.hpp). Coverage is
+    // still measured at rest, over every triangle, exactly as before.
     for(size_t i=0;i<model->materials.size();i++){auto& m=model->materials[i];if(m.alphaTexture&&!m.base.empty())alphaParts[m.base].push_back(i);}
     if(!alphaParts.empty())model->cutoutTriangles.assign(model->indices.size()/3,1);
+    std::vector<uint8_t> uvMoved;
+    if(!alphaParts.empty())for(auto morph:model->morphs)if(nanoemModelMorphGetType(morph)==NANOEM_MODEL_MORPH_TYPE_TEXTURE){nanoem_rsize_t n=0;auto entries=nanoemModelMorphGetAllUVMorphObjects(morph,&n);
+        for(size_t k=0;k<n;k++){int v=vertexIndex(nanoemModelMorphUVGetVertexObject(entries[k]));auto p=nanoemModelMorphUVGetPosition(entries[k]);
+            if(v>=0&&size_t(v)<model->vertices.size()&&(p[0]!=0||p[1]!=0)){if(uvMoved.empty())uvMoved.assign(model->vertices.size(),0);uvMoved[size_t(v)]=1;}}}
     for(auto& [base,parts]:alphaParts){
         auto png=readFile(cache/L"textures"/wide(base+".png"));int w=0,h=0,c=0;
         std::unique_ptr<unsigned char,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(png.data(),int(png.size()),&w,&h,&c,4),stbi_image_free);
         if(!pixels||w<1||h<1)throw std::runtime_error("Cannot inspect cached texture alpha");
         size_t visible=0,soft=0;for(size_t k=3;k<size_t(w)*h*4;k+=4){auto a=pixels.get()[k];visible+=a>8;soft+=a>8&&a<247;}
-        auto passes=[&](float u,float v){u-=std::floor(u);v-=std::floor(v);int x=std::min(w-1,int(u*float(w))),y=std::min(h-1,int(v*float(h)));return pixels.get()[(size_t(y)*size_t(w)+size_t(x))*4+3]>=128;};
+        auto mask=std::make_shared<const AlphaPassMask>(pixels.get(),w,h);pixels.reset();
         for(auto index:parts){
             auto& material=model->materials[index];material.translucentTexture=visible>0&&soft>visible/10;
-            double passing=0,total=0;size_t triangles=0;
+            double passing=0,total=0;size_t triangles=0;bool dynamic=false;
             for(size_t t=material.first;t+2<size_t(material.first)+material.count&&t+2<model->indices.size();t+=3){
                 const auto& a=model->vertices[model->indices[t]];const auto& b=model->vertices[model->indices[t+1]];const auto& d=model->vertices[model->indices[t+2]];
-                double weight=std::max(double((b.position-a.position).cross(d.position-a.position).length())*.5,1e-12);int hits=0;triangles++;
-                for(auto [s,r,q]:{std::array<float,3>{1,0,0},{0,1,0},{0,0,1},{.5f,.5f,0},{0,.5f,.5f},{.5f,0,.5f},{1/3.f,1/3.f,1/3.f}})
-                    hits+=passes(a.uv[0]*s+b.uv[0]*r+d.uv[0]*q,a.uv[1]*s+b.uv[1]*r+d.uv[1]*q);
-                if(!hits){model->cutoutTriangles[t/3]=0;continue;}
+                double weight=std::max(double((b.position-a.position).cross(d.position-a.position).length())*.5,1e-12);int hits=cutoutHits(*mask,a.uv,b.uv,d.uv);triangles++;
+                bool moved=!uvMoved.empty()&&(uvMoved[model->indices[t]]||uvMoved[model->indices[t+1]]||uvMoved[model->indices[t+2]]);
+                if(moved){model->uvCutoutTriangles.push_back(unsigned(t/3));dynamic=true;}
+                if(!hits){if(!moved)model->cutoutTriangles[t/3]=0;continue;}
                 passing+=weight*hits/7;total+=weight;
             }
             material.alphaCoverage=total>0?float(passing/total):triangles?0.f:1.f;
+            if(dynamic){material.dynamicCutout=true;model->cutoutMasks.resize(model->materials.size());model->cutoutMasks[index]=mask;}
         }
     }
+    std::sort(model->uvCutoutTriangles.begin(),model->uvCutoutTriangles.end());
     prepareSourceMaterials(cache,id);prepareModelFit(*model,cache);return model;
 }
 static bool plainDirectory(const fs::path& path){auto attributes=GetFileAttributesW(path.c_str());return attributes!=INVALID_FILE_ATTRIBUTES&&(attributes&FILE_ATTRIBUTE_DIRECTORY)&&!(attributes&FILE_ATTRIBUTE_REPARSE_POINT);}
