@@ -491,13 +491,15 @@ end
 -- After a character import whose ragdoll fit failed (status.fit, 2.3.0 natives). The bone
 -- window's rescue prompt explains missing parts when it can assign them; otherwise this
 -- window lists them (or says why the fit failed), so the player learns it before spawning.
-function mmdhl.ExplainFit(status)
+-- unchecked: the rescue prompt's own check (the cached model, the server's pins) failed,
+-- so this window explains it after all.
+function mmdhl.ExplainFit(status,unchecked)
  local fit=istable(status) and status.fit
  if not istable(fit) or fit.ok~=false or not isstring(status.asset) then return false end
  -- A model that does not look like a character gets the static-prop question instead.
  local found,bones=mmdhl.HumanoidLandmarks(status.info or {}) if found<6 or bones<15 then return false end
  local BM=mmdhl.boneMapper
- if fit.errorCode=='fit.landmarks' and BM and BM.AfterImport and BM.Available and BM.Available('fit') and isfunction(mmdhl.OpenBoneMapper) then return false end
+ if not unchecked and fit.errorCode=='fit.landmarks' and BM and BM.AfterImport and BM.Available and BM.Available('fit') and isfunction(mmdhl.OpenBoneMapper) then return false end
  mmdhl.ShowFitFailure(status) return true
 end
 function mmdhl.ShowFitFailure(status)
@@ -507,8 +509,9 @@ function mmdhl.ShowFitFailure(status)
  local name=tostring((status.info or {}).name or status.filename or L'library.prompt.this_model')
  local BM=mmdhl.boneMapper local parts={}
  for i,key in ipairs(missing) do parts[i]=BM and BM.PartLabel and BM.PartLabel(key) or tostring(key):gsub('^ValveBiped%.Bip01_','') end
- -- Assigning bones fixes missing parts only, and needs the bone window (feature-detected).
- local assign=#missing>0 and isfunction(mmdhl.OpenBoneMapper)
+ -- Assigning bones fixes missing parts only, and needs the bone window (feature-detected)
+ -- with this binary's fit functions; without them it would only ask for an update.
+ local assign=#missing>0 and isfunction(mmdhl.OpenBoneMapper) and (not BM or not BM.Available or BM.Available('fit'))
  local lines={{L'library.fit_failed.title',f.Title,UI.colors.ink},
   {#missing>0 and L('library.fit_failed.missing',{name=name,parts=table.concat(parts,', ')}) or L('library.fit_failed.reason',{name=name,reason=tostring(fit.error or L'library.import.unknown_error')}),f.Body,UI.colors.ink},
   {assign and L'library.fit_failed.assign_hint' or #missing>0 and L'library.fit_failed.rename_hint' or L'library.fit_failed.other_hint',f.Body,UI.colors.muted}}
@@ -701,7 +704,11 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   if #warnings>0 then library.status=L('library.import.with_warnings',{message=library.status,count=#warnings}) end
   notification.AddLegacy(library.status,#warnings>0 and NOTIFY_HINT or NOTIFY_GENERIC,8)
   hook.Run('MMDHL.Imported',status.asset)
-  timer.Simple(0,function() promptStaticInstead(status) if mmdhl.boneMapper and mmdhl.boneMapper.AfterImport then mmdhl.boneMapper.AfterImport(status) end if mmdhl.ExplainFit then mmdhl.ExplainFit(status) end end)
+  -- A failed ragdoll fit: the bone window's rescue prompt once its check is done, or, when
+  -- that check fails, ExplainFit's window after all.
+  timer.Simple(0,function() promptStaticInstead(status)
+   if mmdhl.boneMapper and mmdhl.boneMapper.AfterImport then mmdhl.boneMapper.AfterImport(status,function() if mmdhl.ExplainFit then mmdhl.ExplainFit(status,true) end end) end
+   if mmdhl.ExplainFit then mmdhl.ExplainFit(status) end end)
  elseif status.state=='failed' or status.state=='cancelled' then
   library.job=nil library.reimportOf=nil notification.AddLegacy(library.status,status.state=='failed' and NOTIFY_ERROR or NOTIFY_HINT,8)
   local kind=(status.kind=='static' or library.jobKind=='static') and 'static' or 'library'

@@ -277,10 +277,11 @@ local function flag(id,name,missing)
  setFit(id,{ok=false,missing=missing})
  if BM.Available('fit') then BM.ShowRescuePrompt(id,name,missing) end
 end
-function BM.CheckRescue(id,name,info)
+-- failed(): the check itself failed (the model did not load, the server did not answer).
+function BM.CheckRescue(id,name,info,failed)
  if not BM.Available('fit') then return false end
  BM.CheckFit(id,function(missing,_,loaded)
-  if not missing then return end
+  if not missing then if failed then failed() end return end
   if #missing==0 then setFit(id,{ok=true}) return end
   if not looksHumanoid(loaded or info) then return end
   local entry=mmdhl.library.entries[id]
@@ -289,8 +290,9 @@ function BM.CheckRescue(id,name,info)
  return true
 end
 -- status: a character import's complete status, with the import-time fit when the
--- worker reports it ({ok=false, errorCode='fit.landmarks', missing={keys}}).
-function BM.AfterImport(status)
+-- worker reports it ({ok=false, errorCode='fit.landmarks', missing={keys}}). failed() runs
+-- when the rescue check for such a fit cannot be made, so the caller can explain it instead.
+function BM.AfterImport(status,failed)
  local info=status.info or {}
  if not isstring(status.asset) or not looksHumanoid(info) then return end
  local name=tostring(info.name or status.filename or '')
@@ -299,7 +301,7 @@ function BM.AfterImport(status)
   if fit.ok~=false then setFit(status.asset,{ok=true}) return end
   if fit.errorCode~='fit.landmarks' then return end
   -- Saved pins may already fix it; without the fitter's pins only the badge is set.
-  if BM.Available('fit') then BM.CheckRescue(status.asset,name,info)
+  if BM.Available('fit') then BM.CheckRescue(status.asset,name,info,failed)
   elseif istable(fit.missing) and #fit.missing>0 then flag(status.asset,name,fit.missing) end
   return
  end

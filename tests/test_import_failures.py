@@ -228,8 +228,12 @@ assert(not FIND(frame,L'library.fit_failed.assign') and FIND(frame,L'library.fit
 mmdhl.OpenBoneMapper=function() end
 mmdhl.boneMapper={AfterImport=function() end,Available=function() return true end,PartLabel=function(k) return 'part:'..k end}
 FRAMES={} assert(mmdhl.ExplainFit(status)==false and #FRAMES==0,'two windows for one problem')
+-- The rescue check could not be made (the model did not load, the server did not answer): this window says it.
+FRAMES={} assert(mmdhl.ExplainFit(status,true)) assert(FIND(FRAMES[#FRAMES],L'library.fit_failed.assign'),'the deferred explanation was lost')
 mmdhl.boneMapper.Available=function() return false end
 assert(mmdhl.ExplainFit(status)) assert(HAS(FRAMES[#FRAMES],'part:'..VB..'L_Thigh, part:'..VB..'L_Calf'),'the parts are named in plain words')
+-- This binary lacks the fit functions: Assign bones… would only ask for an update, so the renaming advice shows.
+assert(not FIND(FRAMES[#FRAMES],L'library.fit_failed.assign') and HAS(FRAMES[#FRAMES],L'library.fit_failed.rename_hint'),'a dead-end Assign bones…')
 -- Other fit failures say why; assigning bones cannot fix them.
 FRAMES={} local other=table.Copy(status) other.fit={ok=false,errorCode='fit.error',error='Model has no height'}
 assert(mmdhl.ExplainFit(other)) frame=FRAMES[#FRAMES]
@@ -238,6 +242,14 @@ assert(HAS(frame,L('library.fit_failed.reason',{name='Hero',reason='Model has no
 FRAMES={} local fine=table.Copy(status) fine.fit={ok=true} assert(not mmdhl.ExplainFit(fine))
 local old=table.Copy(status) old.fit=nil assert(not mmdhl.ExplainFit(old))
 local box=table.Copy(status) box.info={name='Box',boneList={{name='root'}}} assert(not mmdhl.ExplainFit(box) and #FRAMES==0)
+-- After an import the rescue prompt's check goes first; when that check fails, this window explains the fit after all.
+local AFTER
+mmdhl.boneMapper={OnJobStatus=function() return false end,AfterImport=function(s,failed) AFTER={s,failed} end,Available=function() return true end,PartLabel=function(k) return 'part:'..k end}
+mmdhl.OpenBoneMapper=function() end library.Refresh=function() end
+FRAMES={} TIMERS={} library.job=8 library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode(status) end
+HOOKS['Think/MMDHL.LibraryImport']() RUN_TIMERS()
+assert(AFTER and AFTER[1].asset==status.asset and isfunction(AFTER[2]) and #FRAMES==0,'the rescue prompt decides first')
+AFTER[2]() assert(#FRAMES==1 and HAS(FRAMES[1],L'library.fit_failed.title') and FIND(FRAMES[1],L'library.fit_failed.assign'),'a failed rescue check left the player without an explanation')
 mmdhl.boneMapper=nil mmdhl.OpenBoneMapper=nil
 ''')
 print('PASS: a character imported without a ragdoll lists the missing parts; Assign bones… only with the bone window; other reasons are said; nothing for older natives')
@@ -270,7 +282,13 @@ local id=string.rep('d',64) local got
 mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end)
 assert(got:find('server.error.fit_failed',1,true),'the fit error is not a token: '..tostring(got))
 assert(mmdhl.Localize(got)=='This character cannot become a ragdoll: No bone found for: left thigh, left lower leg',mmdhl.Localize(got))
--- The physics editor (flags.replace) reads the fitter's own words.
+-- The physics editor reads the fitter's own words for every operation, its test builds included.
 mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end,nil,{replace=true}) assert(got==FIT_ERROR)
+mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end,nil,{replace=false}) assert(got==FIT_ERROR,'a physics editor test build got the ragdoll token')
+-- A rejected shape or setting (the collision editor's Fit) is not "cannot become a ragdoll".
+for _,reason in ipairs({'Invalid collision correction','Invalid physics settings: range bodies.3.mass too large','Invalid carrier scale/mass'}) do
+ FIT_ERROR=reason mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end) assert(got==reason,tostring(got))
+end
+FIT_ERROR='Model has no height' mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end) assert(got:find('server.error.fit_failed',1,true),'no height is a ragdoll problem')
 ''')
 print('PASS: spawn-time fit errors reach players as a translated token around the fitter\'s reason')
