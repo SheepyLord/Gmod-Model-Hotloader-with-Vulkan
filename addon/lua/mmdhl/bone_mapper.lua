@@ -82,8 +82,7 @@ if SERVER then
    local saved=util.JSONToTable(file.Read(path,'DATA') or '') or {}
    if not istable(saved) then saved={} end
    -- Collision corrections were made for the old bones: the server compares them itself.
-   local drop=payload.dropCollision==true local before=istable(saved.boneMap) and saved.boneMap or {}
-   for _,slot in ipairs(BM.Slots) do if slot.physical and tonumber(before[slot.key])~=pins[slot.key] then drop=true end end
+   local drop=payload.dropCollision==true or not BM.SamePhysicalPins(saved.boneMap,pins)
    saved.version=saved.version or 3 saved.generator=saved.generator or 18
    if next(pins) then saved.boneMap=pins saved.boneMapVersion=1 saved.boneMapSavedAt=os.time()
    else saved.boneMap=nil saved.boneMapVersion=nil saved.boneMapSavedAt=nil end

@@ -174,6 +174,24 @@ keeps these fields. Workshop packages carry the file without the saver's name
 and SteamID; on dedicated servers it is installed from the package when there is
 no local one.
 
+The same file holds the bone window's pins (`boneMap`, `boneMapVersion`,
+`boneMapSavedAt`, see [CHARACTER_IMPORT.md](CHARACTER_IMPORT.md)). Saving and
+**Forget** change only the physics fields: the pins stay, and a file with only
+pins counts as no saved physics. Every build is fitted with the saved pins, and
+so is the editor's preview. Shapes were made for the bones a ragdoll was fitted
+with: after the pins of its 18 body parts changed, **Test copy**, **Apply** and
+**Save for new spawns** are refused (*use Reset to rebuild it*), and a version
+made with the old pins is not offered as **Previous version**; **Reset** and
+**Restore saved** rebuild it with the current pins. Other pins (fingers, toes,
+neck, middle spine) leave the shapes valid, as they leave the saved corrections
+(`mmdhl.boneMapper.SamePhysicalPins`).
+
+The collision editor's *Save fit and spawn corrected copy* is a build under the
+same rules as a test copy: `mmdhl_physics_editor`, prop protection and
+`MMDHLCanEditPhysics` (operation `test`), the value checks, the ragdoll limit,
+the cooldown and the budget. Like every editor build it is a ragdoll, also from
+an NPC's corpse.
+
 If a saved profile cannot be built (for example on an older server module), the
 model spawns with automatic physics and the player is told. A saved profile from
 a newer addon is ignored with a notice, never half applied.
@@ -218,7 +236,7 @@ Hooks (server):
 
 * `MMDHLCanEditPhysics(ply, ent, op)`: return `false` to deny an operation
   (`test`, `apply`, `previous`, `reset`, `restore_saved`, `save_default`,
-  `clear_default`).
+  `clear_default`). The collision editor's corrected copy asks with `test`.
 * `MMDHLCanSavePhysicsDefault(ply, asset)`: return `true` or `false` to override
   who may save and forget a model's default.
 * `MMDHLPhysicsApplied(ply, oldEnt, newEnt)`: called after a rebuilt ragdoll

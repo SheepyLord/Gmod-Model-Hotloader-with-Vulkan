@@ -34,17 +34,18 @@ function mmdhl.CollisionEditor(panel,ent)
 end
 -- The material slots a collision fit may use, as a scroll list docked in parent
 -- (also the physics editor's "Fit to model parts"). excluded is a set of 0-based
--- slots, updated in place; onChange receives the sorted excluded list.
+-- slots, updated in place; onChange receives the sorted excluded list. Returns the scroll
+-- list and its checkboxes by 0-based slot.
 function mmdhl.MaterialRegionList(parent,ent,excluded,onChange)
  local regions=parent:Add('DScrollPanel') regions:Dock(TOP) regions:SetTall(145)
- local metadata=mmdhl.GetMetadata(ent)
+ local metadata=mmdhl.GetMetadata(ent) local boxes={}
  for i,material in ipairs(metadata.model and metadata.model.materials or {}) do
   local function label(name) return material.alpha<.01 and L('collision_editor.region_hidden',{index=i-1,name=name}) or (i-1)..'  '..name end
-  local check=regions:Add('DCheckBoxLabel') check:Dock(TOP) check:SetTall(24) check:SetText(label(material.name)) check:SetValue(not excluded[i-1])
+  local check=regions:Add('DCheckBoxLabel') check:Dock(TOP) check:SetTall(24) check:SetText(label(material.name)) check:SetValue(not excluded[i-1]) boxes[i-1]=check
   if mmdhl.names and isstring(material.name) then mmdhl.names.Bind(check,function(p) mmdhl.names.SetCheckboxText(p,label(mmdhl.names.Both(material.name,mmdhl.GetAsset(ent)))) end) end
   check.OnChange=function(_,include) excluded[i-1]=not include local list={} for index,value in pairs(excluded) do if value then list[#list+1]=index end end table.sort(list) if onChange then onChange(list) end end
  end
- return regions
+ return regions,boxes
 end
 local function hullEdges(body)
  if body.edges then return body.edges end local edges={} local seen={}

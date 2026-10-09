@@ -399,6 +399,12 @@ print('PASS: ReadPhyFile skips the binary solids of a .phy and returns its text 
 
 # ---- The server: permissions, limits, operations, saved defaults, replace in place ----
 EDITOR = read('addon/lua/mmdhl/physics_editor.lua')
+SERVER_LUA = read('addon/lua/mmdhl/server.lua')
+CHECK = LuaRuntime()  # definition() compiles with the newer load(string)
+# server.lua's saved pins and the bone window's rules (which pins the shapes depend on),
+# which the editor uses.
+RULES = read('addon/lua/mmdhl/bone_mapper_rules.lua')
+PINS = definition(CHECK, SERVER_LUA, 'function mmdhl.SavedBoneMap') + chr(10) + RULES
 
 
 def json_bridge(rt):
@@ -426,7 +432,8 @@ def json_bridge(rt):
 
 SERVER_MOCKS = r'''
 SERVER=true CLIENT=false NOW=100 CurTime=function() return NOW end SysTime=CurTime
-IsValid=function(v) return type(v)=='table' and not v.removed end
+-- As in GMod: a table is valid only through its own IsValid method.
+IsValid=function(v) if type(v)~='table' then return false end local f=v.IsValid if not f then return false end return f(v) end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
 -- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
@@ -469,17 +476,18 @@ constraint={GetTable=function(e) return e.constraints or {} end}
 MADE={} duplicator={CreateConstraintFromTable=function(c,map,p) if c.fail then error('constraint failed') end MADE[#MADE+1]={c=c,map=map} return {} end}
 UNDO={} undo={ReplaceEntity=function(a,b) UNDO[#UNDO+1]={a,b} end} CLEAN={} cleanup={ReplaceEntity=function(a,b) CLEAN[#CLEAN+1]={a,b} end}
 GAMEMODE={} CALLED={} gamemode={Call=function(name,...) CALLED[#CALLED+1]=name local f=GAMEMODE[name] if f then return f(...) end end}
-ENTS={} Entity=function(i) return ENTS[i] end NULL={removed=true}
+ENTS={} Entity=function(i) return ENTS[i] or NULL end NULL={removed=true,IsValid=function() return false end}
 local nextIndex=10
 function physobj(i)
  local o={pos=Vector(i,0,0),ang=Angle(0,i,0),motion=true,vel=Vector(0,0,i),angvel=Vector(i,0,0),asleep=false}
+ function o:IsValid() return true end
  function o:GetPos() return self.pos end function o:GetAngles() return self.ang end function o:SetPos(v) self.pos=v end function o:SetAngles(a) self.ang=a end
  function o:IsMotionEnabled() return self.motion end function o:EnableMotion(v) self.motion=v end function o:GetVelocity() return self.vel end function o:SetVelocity(v) self.vel=v end
  function o:GetAngleVelocity() return self.angvel end function o:AddAngleVelocity(v) self.angvel=self.angvel+v end function o:IsAsleep() return self.asleep end function o:Sleep() self.asleep=true end function o:Wake() self.asleep=false end
  return o
 end
 local E={} E.__index=function(t,k) local f=rawget(E,k) if f then return f end if type(k)=='string' and k:match('^%u') and not k:match('^MMD') then return function(self,...) self.calls=self.calls or {} self.calls[#self.calls+1]=k end end end
-function E:GetClass() return self.class end function E:GetPhysicsObjectCount() return 18 end function E:GetPhysicsObjectNum(i) return self.objs[i] end
+function E:IsValid() return not self.removed end function E:GetClass() return self.class end function E:GetPhysicsObjectCount() return 18 end function E:GetPhysicsObjectNum(i) return self.objs[i] end
 function E:GetNW2String(k,d) local v=self.nw[k] if v==nil then return d end return v end E.SetNW2String=function(self,k,v) self.nw[k]=v end
 E.GetNW2Bool=E.GetNW2String E.SetNW2Bool=E.SetNW2String
 function E:GetPos() return self.pos end function E:GetAngles() return self.ang end function E:BoundingRadius() return 40 end function E:EntIndex() return self.index end
@@ -493,7 +501,7 @@ function ragdoll(key,options,owner)
 end
 function player(admin,super,host,name)
  local p={admin=admin,super=super,host=host,name=name or 'P'}
- function p:IsAdmin() return self.admin==true or self.super==true end function p:IsSuperAdmin() return self.super==true end function p:IsListenServerHost() return self.host==true end
+ function p:IsValid() return not self.removed end function p:IsAdmin() return self.admin==true or self.super==true end function p:IsSuperAdmin() return self.super==true end function p:IsListenServerHost() return self.host==true end
  function p:SteamID64() return '7656119800000000'..(self.name=='Admin' and '1' or '2') end function p:Nick() return self.name end function p:EyeAngles() return Angle(10,90,0) end
  return p
 end
@@ -507,6 +515,8 @@ EDITABLE=function() return true end mmdhl.CanEdit=function(p,e,prop) return EDIT
 BOUND={} mmdhl.CaptureNativeState=function(e) return {asset=e.asset,from=e.index} end mmdhl.BindEntity=function(e,s) BOUND[#BOUND+1]={e,s} return true end mmdhl.StoreNativeState=function() end
 SPAWNS={} SPAWN_FAIL=nil
 mmdhl.Spawn=function(p,asset,o,done,progress,flags)
+ -- As server.lua's: every fit takes the saved pins, whatever the options carry.
+ o.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(asset) or nil
  SPAWNS[#SPAWNS+1]={p=p,asset=asset,options=o,flags=flags}
  if SPAWN_FAIL then done(nil,SPAWN_FAIL) return end
  local n=#SPAWNS
@@ -536,6 +546,7 @@ def server_runtime():
     rt.execute(SERVER_MOCKS)
     attach(rt)
     rt.execute('AddCSLuaFile=function() end include=function() end')
+    rt.execute(PINS)
     rt.execute(PROFILE)
     rt.execute(EDITOR)
     rt.execute(SERVER_SETUP)
@@ -735,6 +746,90 @@ request(admin,'clear_default',ent,{}) assert(last(admin).state=='ready' and FILE
 ''')
 print('PASS: Save for new spawns writes the ragdoll\'s own options and canonical physics (not the client\'s), with who and when; saved files are validated; Forget deletes them')
 
+# L13b: the bone window's pins share the saved file; the editor keeps them, previews and builds with them.
+s = server_runtime()
+s.execute(r'''
+local P=mmdhl.physics CONVARS.mmdhl_physics_editor.value='2'
+local admin=player(true,true,false,'Admin')
+local calf,chest='ValveBiped.Bip01_L_Calf','ValveBiped.Bip01_Spine4'
+local pins={[calf]=7}
+local ent=ragdoll(KEY,{boneMap=pins,mass=62,collisionOverrides={}},admin)
+local path=P.SavedPath(ent.asset)
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=pins,boneMapVersion=1,boneMapSavedAt=5})
+-- A file with only pins is no saved physics: nothing to forget or restore. The preview fits with the pins.
+request(admin,'open',ent,{}) local st=last(admin).data
+assert(st.savedDefault.exists==false,'a file with only the bone window\'s pins is offered as saved physics')
+assert(st.fitOptions.boneMap and st.fitOptions.boneMap[calf]==7,'the preview is fitted without the pins every build uses')
+request(admin,'restore_saved',ent,{base=KEY}) assert(says(last(admin),'physics_editor.error.no_saved') and #SPAWNS==0,'Restore saved rebuilt from a file with only pins')
+-- Save for new spawns replaces the default and keeps the pins.
+request(admin,'save_default',ent,{base=KEY}) assert(last(admin).state=='ready')
+local fit=util.JSONToTable(FILES[path])
+assert(fit.boneMap and fit.boneMap[calf]==7 and fit.boneMapVersion==1 and fit.boneMapSavedAt==5,'Save for new spawns deleted the bone window\'s pins')
+assert(fit.version==3 and fit.generator==18 and fit.mass==62 and fit.editor.savedByName=='Admin' and mmdhl.SavedBoneMap(ent.asset)[calf]==7)
+NOW=NOW+1 request(admin,'open',ent,{}) assert(last(admin).data.savedDefault.exists==true)
+-- Saving again replaces the whole default (a profile the ragdoll no longer has goes), still with the pins.
+fit.physics={schema=1,massMode='volume'} FILES[path]=util.TableToJSON(fit)
+request(admin,'save_default',ent,{base=KEY}) fit=util.JSONToTable(FILES[path]) assert(fit.physics==nil and fit.boneMap[calf]==7)
+-- Forget removes the default and keeps the pins.
+request(admin,'clear_default',ent,{}) fit=util.JSONToTable(FILES[path])
+assert(last(admin).state=='ready' and fit,'Forget deleted the file with the pins')
+assert(fit.boneMap[calf]==7 and fit.boneMapSavedAt==5 and fit.bodies==nil and fit.scale==nil and fit.excludedMaterials==nil and fit.mass==nil and fit.physics==nil and fit.editor==nil,'Forget kept the default or lost the pins')
+-- An older file's corrections no longer load and are replaced; its pins stay.
+FILES[path]=util.TableToJSON({version=2,generator=9,bodies={old=1},mass=10,boneMap=pins})
+request(admin,'save_default',ent,{base=KEY}) fit=util.JSONToTable(FILES[path])
+assert(fit.version==3 and fit.generator==18 and fit.boneMap[calf]==7 and fit.bodies.old==nil and fit.mass==62)
+assert(#REFUSED==0 and FILES['mmd_hotloader/fit_overrides/'..ent.asset..'.new.txt']==nil)
+
+-- The bones were assigned again after this ragdoll was placed: its shapes, its draft's and its
+-- earlier versions' were made for the old bones. Builds that use them and saving them are refused.
+local owner=player(false,false,false,'Owner')
+local old,new={[chest]=5},{[chest]=6}
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,boneMapVersion=1})
+local placed=ragdoll(KEY,{boneMap=old,collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+local draft={collisionOverrides={[chest]={center={0,0,1},extent={3,3,3}}},mass=70}
+for _,op in ipairs({'test','apply','save_default'}) do NOW=NOW+10 request(admin,op,placed,{base=KEY,request=draft}) assert(says(last(admin),'physics_editor.error.bones_changed'),op..' used shapes made for other bones') end
+assert(#SPAWNS==0 and util.JSONToTable(FILES[path]).bodies==nil,'shapes for the old bones were built or saved')
+-- Reset uses none of them: it rebuilds with the saved pins, and its earlier version (old bones) cannot come back.
+NOW=NOW+10 request(admin,'reset',placed,{base=KEY}) local r=last(admin)
+assert(r.state=='ready' and SPAWNS[1].options.boneMap[chest]==6 and next(SPAWNS[1].options.collisionOverrides)==nil,'Reset did not rebuild with the saved pins')
+local rebuilt=ENTS[r.ent] assert(rebuilt.MMDHLPhysicsHistory[1].boneMap[chest]==5,'a version does not remember its pins')
+-- That version is not offered; asked anyway, the answer says why (no respawn helps).
+assert(r.data.hasPrevious==false,'Previous version is offered for a version made for the old bones')
+NOW=NOW+10 request(admin,'previous',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig')}) assert(says(last(admin),'physics_editor.error.previous_bones_changed') and #SPAWNS==1,'Previous version brought back shapes for the old bones')
+-- The rebuilt ragdoll has the current pins: it is edited, tested and saved as usual.
+NOW=NOW+10 request(admin,'apply',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig'),request=draft}) r=last(admin)
+assert(r.state=='ready' and SPAWNS[2].options.boneMap[chest]==6 and SPAWNS[2].options.collisionOverrides[chest].extent[1]==3)
+local current=ENTS[r.ent] assert(current.MMDHLPhysicsHistory[1].boneMap[chest]==6 and r.data.hasPrevious==true)
+NOW=NOW+10 request(admin,'previous',current,{base=current:GetNW2String('MMDHLRig')}) assert(last(admin).state=='ready','Previous version refused a version made for the current bones')
+-- Restore saved builds the saved shapes with the saved pins, whatever the ragdoll had.
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,bodies={[chest]={center={0,0,2},extent={1,1,1}}},mass=50})
+local stale=ragdoll(KEY,{boneMap=old},owner)
+NOW=NOW+10 request(admin,'restore_saved',stale,{base=KEY}) local o=SPAWNS[#SPAWNS].options
+assert(last(admin).state=='ready' and o.mass==50 and o.collisionOverrides[chest].center[3]==2 and o.boneMap[chest]==6,'Restore saved did not rebuild the saved shapes with the saved pins')
+-- Only the body parts' pins count, as when the bone window saves (it keeps the saved
+-- corrections then): a finger or the middle spine pinned since leaves the shapes valid.
+local finger,spine2='ValveBiped.Bip01_L_Finger1','ValveBiped.Bip01_Spine2'
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap={[chest]=6,[finger]=40,[spine2]=3},boneMapVersion=1})
+local before=ragdoll(KEY,{boneMap={[chest]=6},collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+NOW=NOW+10 request(admin,'test',before,{base=KEY,request=draft}) assert(last(admin).state=='ready','a finger pinned since refused the test copy')
+NOW=NOW+10 request(admin,'apply',before,{base=KEY,request=draft}) r=last(admin)
+assert(r.state=='ready' and SPAWNS[#SPAWNS].options.boneMap[finger]==40 and SPAWNS[#SPAWNS].options.collisionOverrides[chest].extent[1]==3,'a finger pinned since refused Apply')
+local applied=ENTS[r.ent] assert(r.data.hasPrevious==true,'a version made before a finger was pinned is not offered')
+NOW=NOW+10 request(admin,'previous',applied,{base=applied:GetNW2String('MMDHLRig')}) assert(last(admin).state=='ready','a finger pinned since refused Previous version')
+local placedBefore=ragdoll(KEY,{boneMap={[chest]=6},collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+NOW=NOW+10 request(admin,'save_default',placedBefore,{base=KEY}) assert(last(admin).state=='ready' and util.JSONToTable(FILES[path]).bodies[chest],'a finger pinned since refused Save for new spawns')
+-- Pins compare as numbers; none and empty are the same; only the 18 body parts count.
+local BM=mmdhl.boneMapper
+assert(BM.SamePhysicalPins({[chest]=6},{[chest]='6'}) and BM.SamePhysicalPins(nil,{}) and not BM.SamePhysicalPins({[chest]=6},nil) and not BM.SamePhysicalPins({},{[chest]=6}) and not BM.SamePhysicalPins({[chest]=6},{[chest]=-1}))
+assert(BM.SamePhysicalPins({[finger]=40},nil) and BM.SamePhysicalPins({[chest]=6,[spine2]=3},{[chest]=6,['ValveBiped.Bip01_Neck1']=2}) and not BM.SamePhysicalPins({['ValveBiped.Bip01_R_Foot']=9},{}))
+-- Builds are ragdolls: an NPC's corpse keeps the NPC's role, weapon and side in its options.
+local corpse=ragdoll(KEY,{role='combine',hostile=true,weapon='weapon_ar2',boneMap={[chest]=6}},owner)
+NOW=NOW+10 request(admin,'test',corpse,{base=KEY,request=draft}) local o=SPAWNS[#SPAWNS].options
+assert(last(admin).state=='ready' and o.role=='ragdoll' and o.hostile==nil and o.weapon==nil,'a test copy of an NPC corpse is built as an NPC')
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+''')
+print('PASS: Save for new spawns and Forget keep the bone window\'s pins (a file with only pins is no saved physics); the editor\'s preview fits with the saved pins; shapes made for older body-part pins are neither built, saved nor offered as Previous version (other pins do not count), Reset and Restore saved rebuild with the current ones')
+
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)
 json_bridge(spawn)
 spawn.execute(SERVER_MOCKS)
@@ -752,6 +847,7 @@ mmdhl.native.RequestCarrierFit=function(id,json) local o=util.JSONToTable(json) 
 NATIVE={} mmdhl.SpawnNative=function(p,id,o,done,flags) NATIVE[#NATIVE+1]={o=o,flags=flags} local e=ragdoll(KEY,o,p) e.asset=id if done then done(e) end return e end
 ''')
 spawn.execute(read('addon/lua/mmdhl/server.lua'))
+spawn.execute(RULES)
 spawn.execute(PROFILE)
 spawn.execute(EDITOR)
 spawn.execute(SERVER_SETUP)
@@ -785,18 +881,76 @@ feed({'spawn',ASSET,0,util.TableToJSON({request=1,role='ragdoll'})}) RECEIVERS.m
 assert(captured and captured.mass==nil,'the spawn menu forced 70 kg over a saved mass')
 feed({'spawn',ASSET,0,util.TableToJSON({request=2,role='ragdoll',mass=900})}) p.MMDHLSpawnPending=nil RECEIVERS.mmdhl_action(0,p) assert(captured.mass==500)
 mmdhl.Spawn=real
--- The collision editor's Save keeps the saved mass and physics, and is for those who may save defaults.
+-- The collision editor's corrected copy ('fit') follows the physics editor's rules: the
+-- mmdhl_physics_editor setting, the edit hook, value checks, the ragdoll limit, one build at
+-- a time, the cooldown and the budget. Its Save keeps the saved mass, physics and pins, and
+-- is for those who may save defaults.
+local hand,chest='ValveBiped.Bip01_L_Hand','ValveBiped.Bip01_Spine4'
 local ent=ragdoll(KEY,{mass=62,collisionOverrides={}},p) ent.asset=ASSET RIGS[KEY].scale=3.23656
+local function fit(by,data) local count=#NATIVE SENT={} feed({'fit','',ent.index,type(data)=='string' and data or util.TableToJSON(data)}) RECEIVERS.mmdhl_action(0,by) tick(5) return #NATIVE>count,notices() end
+local function said(list,key) for _,n in ipairs(list) do if n:find(key,1,true) then return true end end return false end
+local good={bodies={[hand]={center={1,0,0},extent={1,1,1}}},excludedMaterials={}}
 SINGLE=false
-feed({'fit','',ent.index,util.TableToJSON({bodies={['ValveBiped.Bip01_L_Hand']={center={1,0,0},extent={1,1,1}}},excludedMaterials={}})}) RECEIVERS.mmdhl_action(0,p) tick(5)
-local file=util.JSONToTable(FILES[P.SavedPath(ASSET)]) assert(file.bodies['ValveBiped.Bip01_Head1'] and not file.bodies['ValveBiped.Bip01_L_Hand'],'a player who may not save defaults changed them')
-local refused=false for _,n in ipairs(notices()) do refused=refused or n:find('physics_editor.notice.fit_not_saved',1,true)~=nil end assert(refused)
-SINGLE=true
-feed({'fit','',ent.index,util.TableToJSON({bodies={['ValveBiped.Bip01_L_Hand']={center={1,0,0},extent={1,1,1}}},excludedMaterials={3}})}) RECEIVERS.mmdhl_action(0,p) tick(5)
+-- Dedicated servers default to admins only; 0 turns it off for everyone.
+local made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.admin_only'),'a player who may not change physics spawned a corrected copy')
+CONVARS.mmdhl_physics_editor.value='0' made,told=fit(player(true,true,false,'Boss'),good) assert(not made and said(told,'physics_editor.error.disabled'),'the corrected copy ignores mmdhl_physics_editor 0')
+CONVARS.mmdhl_physics_editor.value='2'
+hook.Add('MMDHLCanEditPhysics','test',function(_,_,op) if op=='test' then return false end end)
+made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.not_allowed'),'the edit hook does not decide about the corrected copy') hook.Remove('MMDHLCanEditPhysics','test')
+-- The values are checked as the editor's are.
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1e9}}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an out-of-range shape was built')
+made,told=fit(p,{bodies={Nonsense={center={0,0,0},extent={1,1,1}}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an unknown body was built')
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1},mass=5}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an unknown shape field was built')
+made,told=fit(p,{bodies={},excludedMaterials={9}}) assert(not made and said(told,'physics_editor.error.invalid'),'a material slot the model does not have was accepted')
+made,told=fit(p,'{"bodies":{},"pad":"'..string.rep('x',60001)..'"}') assert(not made and said(told,'physics_editor.error.invalid'),'an oversized request was read')
+-- The extra ragdoll counts toward the gamemode's limit.
+GAMEMODE.PlayerSpawnRagdoll=function() return false end made,told=fit(p,good) GAMEMODE.PlayerSpawnRagdoll=nil
+assert(not made and said(told,'server.error.spawn_forbidden'),'the corrected copy ignores the ragdoll limit')
+p.MMDHLPhysicsBusy=true made,told=fit(p,good) p.MMDHLPhysicsBusy=nil assert(not made and said(told,'physics_editor.error.busy'),'a second build ran at once')
+-- A player who may not save defaults gets the copy, and the default stays.
+made,told=fit(p,good)
+local file=util.JSONToTable(FILES[P.SavedPath(ASSET)]) assert(made and file.bodies['ValveBiped.Bip01_Head1'] and not file.bodies[hand],'a player who may not save defaults changed them')
+assert(said(told,'physics_editor.notice.fit_not_saved') and not p.MMDHLPhysicsBusy)
+made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.rate_limited'),'the corrected copy has no cooldown')
+local before=#NATIVE for k=1,25 do NOW=NOW+3.01 fit(p,good) end
+assert(#NATIVE-before==19,'the budget allowed '..(#NATIVE-before+1)..' corrected copies in 10 minutes')
+-- An older server module builds shapes without their style.
+NOW=NOW+601 LEVEL=0 made=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1},style='capsule'}}}) LEVEL=1
+assert(made and FITS[#FITS].collisionOverrides[hand].style==nil and FITS[#FITS].collisionOverrides[hand].center[1]==1,'an older server module was sent a shape style')
+-- Saving keeps the saved mass, physics, editor state and the bone window's pins.
+local saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap={[chest]=5} saved.boneMapVersion=1 saved.boneMapSavedAt=9 FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+ent.MMDOptions.boneMap={[chest]=5}
+SINGLE=true NOW=NOW+10
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1}}},excludedMaterials={3}})
 file=util.JSONToTable(FILES[P.SavedPath(ASSET)])
-assert(file.bodies['ValveBiped.Bip01_L_Hand'] and not file.bodies['ValveBiped.Bip01_Head1'] and file.excludedMaterials[1]==3 and file.mass==62 and file.physics.bodies['ValveBiped.Bip01_L_Hand'].damping==2 and file.editor,'the collision editor dropped the saved mass, physics or editor state')
+assert(made and said(told,'server.notice.fit_saved') and FITS[#FITS].boneMap[chest]==5)
+assert(file.bodies[hand] and not file.bodies['ValveBiped.Bip01_Head1'] and file.excludedMaterials[1]==3 and file.mass==62 and file.physics.bodies[hand].damping==2 and file.editor,'the collision editor dropped the saved mass, physics or editor state')
+assert(file.boneMap[chest]==5 and file.boneMapVersion==1 and file.boneMapSavedAt==9,'the collision editor dropped the bone window\'s pins')
+-- The bones were assigned again after this ragdoll was placed: its corrections would not match.
+saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap={[chest]=6} FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+NOW=NOW+10 local fits=#FITS made,told=fit(p,good)
+assert(not made and #FITS==fits and said(told,'server.error.fit_bones_changed') and util.JSONToTable(FILES[P.SavedPath(ASSET)]).boneMap[chest]==6,'corrections for a carrier fitted with older pins were built')
+-- An older file's corrections are replaced; its pins stay.
+FILES[P.SavedPath(ASSET)]=util.TableToJSON({version=2,generator=9,bodies={old=1},boneMap={[chest]=6}}) ent.MMDOptions.boneMap={[chest]=6}
+NOW=NOW+10 made=fit(p,good) file=util.JSONToTable(FILES[P.SavedPath(ASSET)])
+assert(made and file.version==3 and file.generator==18 and file.bodies[hand] and file.bodies.old==nil and file.boneMap[chest]==6,'the collision editor deleted pins kept in an older file')
+-- A failed build frees the player for the next one.
+FIT_FAIL=function() return true end NOW=NOW+10 made,told=fit(p,good) FIT_FAIL=nil
+assert(not made and said(told,'Invalid physics settings') and not p.MMDHLPhysicsBusy)
+-- Pins of parts without a body (a finger) leave the corrections valid, as when saving bones.
+saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap['ValveBiped.Bip01_L_Finger1']=40 FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+NOW=NOW+10 made,told=fit(p,good) assert(made and said(told,'server.notice.fit_saved'),'a finger pinned since refused the corrected copy')
+-- The corrected copy of an NPC's corpse (actors.lua copies the NPC's options: role, weapon,
+-- side) is a ragdoll, never an NPC past the gamemode's NPC check.
+mmdhl.HostileActorOptions=function(_,o) o.role='combine' o.hostile=nil o.weapon=o.weapon or 'weapon_ar2' return o end
+for _,role in ipairs({'citizen','combine'}) do
+ ent.MMDOptions={role=role,hostile=role=='citizen' or nil,weapon='weapon_smg1',boneMap={[chest]=6}}
+ NOW=NOW+10 made=fit(p,good) local o=NATIVE[#NATIVE].o
+ assert(made and o.role=='ragdoll' and o.hostile==nil and o.weapon==nil and FITS[#FITS].role=='ragdoll','the corrected copy of a '..role..' corpse spawns an NPC')
+end
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
-print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor keeps saved physics and needs save rights')
+print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor\'s corrected copy follows the physics editor\'s permission, checks and limits, keeps saved physics and pins, refuses older body-part pins, needs save rights to save and is a ragdoll also from an NPC corpse')
 
 # L14: Workshop packages carry the extended file; dedicated servers install it; exports drop who saved it.
 w = lua51.LuaRuntime(unpack_returned_tuples=True)
@@ -809,7 +963,6 @@ WRITTEN={} function writeIfMissing(path,value) WRITTEN[path]=value end function 
 FILES={} file={Read=function(p) return FILES[p] end}
 mmdhl={}
 ''')
-CHECK = LuaRuntime()  # definition() compiles with the newer load(string)
 workshop = read('addon/lua/mmdhl/workshop.lua')
 w.execute(definition(CHECK, workshop, 'function W.ItemFit('))
 w.execute(definition(CHECK, workshop, 'local function installed(job)').replace('local function installed(job)', 'function installed(job)'))
@@ -832,8 +985,9 @@ print('PASS: packages accept fit files with physics, dedicated servers install t
 UI_HEAD = read('addon/lua/mmdhl/ui.lua')
 UI_HEAD = UI_HEAD[:UI_HEAD.index('\n', UI_HEAD.index('mmdhl.UI={')) + 1]
 CLIENT_MOCKS = r'''
-SERVER=false CLIENT=true NOW=10 RealTime=function() return NOW end CurTime=RealTime FrameNumber=function() return 1 end
-IsValid=function(v) return type(v)=='table' and rawget(v,'removed')~=true and rawget(v,'invalid')~=true end
+SERVER=false CLIENT=true NOW=10 RealTime=function() return NOW end CurTime=RealTime FRAME=1 FrameNumber=function() return FRAME end
+-- As in GMod: a table is valid only through its own IsValid method.
+IsValid=function(v) if type(v)~='table' then return false end local f=v.IsValid if not f then return false end return f(v) end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
 -- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
@@ -845,7 +999,7 @@ CONVARS={} local function convar(name,default) local c={value=tostring(default)}
 CreateClientConVar=function(name,default) return CONVARS[name] or convar(name,default) end CreateConVar=function(name,default) return CONVARS[name] or convar(name,default) end
 GetConVar=function(name) return CONVARS[name] end RunConsoleCommand=function(name,value) (CONVARS[name] or convar(name,0)).value=tostring(value) end
 FCVAR_ARCHIVE=1 FCVAR_REPLICATED=2 FCVAR_NOTIFY=4
-game={IsDedicated=function() return false end,SinglePlayer=function() return true end} ents={FindByClass=function() return {} end}
+game={IsDedicated=function() return false end,SinglePlayer=function() return true end} ents={FindByClass=function() FOUND_BY_CLASS=(FOUND_BY_CLASS or 0)+1 return {} end}
 GLOBALS={MMDHLPhysicsEditor=1} GetGlobal2Int=function(k,d) local v=GLOBALS[k] if v==nil then return d end return v end
 HOOKS={} hook={Add=function(e,n,f) HOOKS[e]=HOOKS[e] or {} HOOKS[e][n]=f end,Remove=function(e,n) if HOOKS[e] then HOOKS[e][n]=nil end end,Run=function() end}
 function fire(e,...) for _,f in pairs(HOOKS[e] or {}) do f(...) end end
@@ -873,16 +1027,23 @@ TEXT_ALIGN_CENTER=1 TEXT_ALIGN_LEFT=0
 local function noop() end
 draw={RoundedBox=noop,RoundedBoxEx=noop,SimpleText=noop,SimpleTextOutlined=noop,NoTexture=noop}
 surface={SetFont=noop,GetTextSize=function(t) return #tostring(t or '')*7,14 end,CreateFont=noop,SetDrawColor=noop,DrawRect=noop,DrawLine=noop,DrawOutlinedRect=noop}
-render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=noop,End3D2D=noop,IgnoreZ=function(on) IGNOREZ=on end}
+render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=function() LABELS=(LABELS or 0)+1 end,End3D2D=noop,IgnoreZ=function(on) IGNOREZ=on end}
 util={AddNetworkString=noop,TableToJSON=function(t) return py_encode(t) end,JSONToTable=function(s) if type(s)~='string' then return nil end return py_decode(s) end,Compress=function(s) return 'Z'..s end,Decompress=function(s) if type(s)=='string' and s:sub(1,1)=='Z' then return s:sub(2) end end,
  GetSurfaceIndex=function(n) return ({flesh=1,metal=2,wood=3,ice=4})[n] or -1 end,GetSurfaceData=function() return {density=1000} end,IsValidModel=function(m) return m=='models/alyx.mdl' end,GetModelInfo=function() return {KeyValues=TEMPLATE} end,
  AimVector=function() return Vector(1,0,0) end,IntersectRayWithOBB=function(o) return o+Vector(1,0,0) end,TraceLine=function() return {} end}
-gui={ScreenToVector=function() return Vector(1,0,0) end} EyePos=function() return Vector() end EyeAngles=function() return Angle() end
+gui={ScreenToVector=function() return Vector(1,0,0) end,MouseX=function() return MOUSE_X or 0 end,MouseY=function() return MOUSE_Y or 0 end} EyePos=function() return Vector() end EyeAngles=function() return Angle() end
 SENT={} local inbox={} local writing function feed(list) inbox=list end local function read() return table.remove(inbox,1) end
 RECEIVERS={} net={Receive=function(n,f) RECEIVERS[n]=f end,Start=function(n) writing={name=n,fields={}} end,SendToServer=function() SENT[#SENT+1]=writing end,ReadUInt=read,ReadString=read,ReadData=read,ReadEntity=read}
 for _,name in ipairs({'WriteUInt','WriteString','WriteEntity','WriteData','WriteFloat','WriteBool'}) do net[name]=function(v) writing.fields[#writing.fields+1]=v end end
 -- Panels: every method the editor calls, recorded loosely; ALL lists them for the walk below.
+-- CONTROLS holds the built-in methods a class's instances inherit, as GMod's vgui files do.
 ALL={} local Panel={}
+CONTROLS={
+ -- dtextentry.lua: Enter in a single-line entry moves the focus on, then calls OnEnter.
+ DTextEntry={Think=function(self) self.convarThinks=(self.convarThinks or 0)+1 end,OnLoseFocus=function() end,OnGetFocus=function() end,
+  OnKeyCodeTyped=function(self,code) if code==KEY_ENTER and not self.multiline then self:FocusNext() if self.OnEnter then self:OnEnter(self:GetText()) end end end},
+ -- dframe.lua: Think moves the frame while its title bar is dragged.
+ DFrame={Think=function(self) if self.Dragging then self:SetPos(gui.MouseX()-self.Dragging[1],gui.MouseY()-self.Dragging[2]) end end}}
 local function panel(class,parent)
  local p=setmetatable({class=class,children={},w=100,h=20,visible=true,enabled=true,text='',parent=parent,choices={}},Panel) ALL[#ALL+1]=p
  if parent then parent.children[#parent.children+1]=p end
@@ -891,19 +1052,32 @@ local function panel(class,parent)
  return p
 end
 local loose={'^Set','^Dock','^Make','^SizeTo','^Center','^Invalidate','^Request','^Kill','^Mouse','^Move','^Hide','^Show$','^Open$','^PerformLayout$','^Paint','^Think$'}
-Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
+Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end local control=CONTROLS[rawget(t,'class')] if control and control[k] then return control[k] end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
+function Panel:IsValid() return rawget(self,'removed')~=true end
+function Panel:SetMultiline(v) self.multiline=v end
+-- Keyboard focus, one panel at a time. RequestFocus takes it (the panel that had it loses it);
+-- KillFocus and FocusNext (DTextEntry's Enter) give it up. Losing it calls OnLoseFocus at once,
+-- or with LATE_BLUR only at blur(): the game may change focus later than the call.
+FOCUSED=nil LATE_BLUR=false LATE={}
+local function loseFocus(p) if FOCUSED~=p then return end FOCUSED=nil if p.OnLoseFocus then p:OnLoseFocus() end end
+function blur() local list=LATE LATE={} for _,p in ipairs(list) do loseFocus(p) end end
+function Panel:RequestFocus() if FOCUSED==self then return end local had=FOCUSED if had then loseFocus(had) end FOCUSED=self if self.OnGetFocus then self:OnGetFocus() end end
+function Panel:KillFocus() if LATE_BLUR then LATE[#LATE+1]=self else loseFocus(self) end end
+Panel.FocusNext=Panel.KillFocus
+function Panel:HasFocus() return FOCUSED==self end
 function Panel:Add(class) return panel(class,self) end function Panel:SetParent(p) self.parent=p end function Panel:GetChildren() return self.children end
 function Panel:SetTall(h) self.h=h end function Panel:GetTall() return self.h end function Panel:SetWide(w) self.w=w end function Panel:GetWide() return self.w end
 function Panel:SetSize(w,h) self.w,self.h=w,h end function Panel:GetSize() return self.w,self.h end function Panel:SetPos(x,y) self.x,self.y=x,y end function Panel:GetPos() return self.x or 0,self.y or 0 end
 function Panel:SetVisible(v) self.visible=v end function Panel:IsVisible() return self.visible end function Panel:SetEnabled(v) self.enabled=v end function Panel:IsEnabled() return self.enabled end
-function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end function Panel:SetValue(v) self.text=v end
+function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end
+function Panel:SetValue(v) if self.class=='DCheckBoxLabel' then self.checked=v==true or v==1 if self.OnChange then self:OnChange(self.checked) end else self.text=v end end
 function Panel:SetFont(f) self.font=f end function Panel:GetFont() return self.font end function Panel:Remove() self.removed=true end function Panel:Clear() for _,c in ipairs(self.children) do c.removed=true end self.children={} end
-function Panel:SetChecked(v) self.checked=v end function Panel:GetChecked() return self.checked==true end function Panel:CursorPos() return 0,0 end function Panel:HasFocus() return false end function Panel:IsHovered() return false end
+function Panel:SetChecked(v) self.checked=v end function Panel:GetChecked() return self.checked==true end function Panel:CursorPos() return 0,0 end function Panel:IsHovered() return false end
 function Panel:AddChoice(text,data,selected) self.choices[#self.choices+1]={text,data} end
 function Panel:ChooseOptionID(i) local c=self.choices[i] if c then self.text=c[1] if self.OnSelect then self:OnSelect(i,c[1],c[2]) end end end
 function Panel:AddColumn() return panel('DListView_Column',self) end function Panel:AddLine(...) local l=panel('DListView_Line',self) l.columns={...} self.lines=self.lines or {} self.lines[#self.lines+1]=l return l end function Panel:GetLines() return self.lines or {} end
 function Panel:Close() if self.OnClose then self:OnClose() end self.removed=true end
-vgui={Create=function(class) return panel(class) end,GetControlTable=function() return {OnLoseFocus=function() end} end}
+vgui={Create=function(class) return panel(class) end,GetControlTable=function(class) return CONTROLS[class] end}
 DermaMenu=function() local m={options={}} function m:AddOption(t,f) self.options[#self.options+1]={t,f} return m end function m:Open() MENU=self end return m end
 function walk(root) for _,p in ipairs(ALL) do if not p.removed and p.visible~=false then
  if p.PerformLayout then p:PerformLayout(p.w,p.h) end if p.Paint then p:Paint(p.w,p.h) end if p.PaintOver then p:PaintOver(p.w,p.h) end if p.Think and p.class~='DFrame' then p:Think() end end end end
@@ -915,10 +1089,10 @@ for i=0,17 do local names=mmdhl_body_names RIG.bones[i+1]={name=names[i+1],posit
   hull={{-1,-1,-1},{3,-1,-1},{-1,1,-1},{3,1,-1},{-1,-1,1},{3,-1,1},{-1,1,1},{3,1,1}},faces={{0,1,3,2},{4,6,7,5},{0,4,5,1},{2,3,7,6},{0,2,6,4},{1,5,7,3}}} end
 local M={} M.__index=M function M:GetTranslation() return Vector(0,0,0) end function M:GetAngles() return Angle() end
 local Ent={} Ent.__index=function(t,k) local f=rawget(Ent,k) if f then return f end if type(k)=='string' and k:match('^%u') and not k:match('^MMD') then return function() end end end
-function Ent:GetClass() return 'prop_ragdoll' end function Ent:GetNW2Int(k,d) return k=='MMDHLNativeBodyCount' and 18 or d end function Ent:GetNW2String(k,d) return k=='MMDHLRig' and self.key or d end
+function Ent:IsValid() return rawget(self,'removed')~=true end function Ent:GetClass() return 'prop_ragdoll' end function Ent:GetNW2Int(k,d) return k=='MMDHLNativeBodyCount' and 18 or d end function Ent:GetNW2String(k,d) return k=='MMDHLRig' and self.key or d end
 function Ent:GetBoneMatrix() return setmetatable({},M) end function Ent:OBBMins() return Vector(-10,-10,0) end function Ent:OBBMaxs() return Vector(10,10,70) end function Ent:WorldSpaceCenter() return Vector(0,0,35) end
 function Ent:EntIndex() return self.index end function Ent:GetModel() return 'models/mmd/x/m.mdl' end
-RAGDOLL=setmetatable({key=RIG.key,index=33},Ent) ENTS={[33]=RAGDOLL} Entity=function(i) return ENTS[i] or {invalid=true} end NULL={invalid=true}
+RAGDOLL=setmetatable({key=RIG.key,index=33},Ent) ENTS={[33]=RAGDOLL} NULL={IsValid=function() return false end} Entity=function(i) return ENTS[i] or NULL end
 LocalPlayer=function() return {EyeAngles=function() return Angle() end,GetFOV=function() return 75 end,GetEyeTrace=function() return {Entity=RAGDOLL} end} end
 '''
 CLIENT_SETUP = r'''
@@ -1015,7 +1189,7 @@ e:Close(true) assert(mmdhl.GetPhysicsEditor()==nil and HOOKS.CalcView['MMDHL.Phy
     print(f'PASS: with {label} on the client the editor opens, previews approximately, edits, undoes and applies without errors')
 
 # A current module: the exact preview drives checks, overlaps and the .phy view; Apply rebinds to the new ragdoll.
-c = client_runtime(r'''
+CURRENT_NATIVE = r'''
 mmdhl.native={GetCapabilities=function() return py_encode({physicsEditor=1,version='2.3.0'}) end,RequestAsset=function() return true end}
 PREVIEWS=0
 function mmdhl.native.PreviewCarrierFit(asset,json)
@@ -1027,7 +1201,8 @@ function mmdhl.native.PreviewCarrierFit(asset,json)
  local overlap=on and o.collisionOverrides and o.collisionOverrides['ValveBiped.Bip01_Head1'] and {{a=3,b=4,depth=1}} or {}
  return py_encode({status='ready',key=PREVIEWS==1 and RIG.key or string.rep('f',32),scale=3.23656,m=1,unit=1.1,mass=70,canonical=o.physicsOverrides or {},bodies=bodies,pairs={mode='all',count=136},penetrations=overlap,phyText='solid {\n}\n'})
 end
-''')
+'''
+c = client_runtime(CURRENT_NATIVE)
 c.execute(r'''
 -- Until the server's state arrives (or when it never does) the overlay draws nothing and raises nothing.
 SENT={} mmdhl.OpenPhysicsEditor(RAGDOLL) local waiting=mmdhl.GetPhysicsEditor()
@@ -1091,3 +1266,82 @@ assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 e:Edit(function(d) d.mass=90 end) e:Close() assert(#QUERIES==1 and mmdhl.GetPhysicsEditor()==e) QUERIES[1].args[2]() assert(mmdhl.GetPhysicsEditor()==nil)
 ''')
 print('PASS: with a current module the exact preview drives overlap checks, fixes and the .phy view; Apply rebinds and keeps the draft, Reset shows the factory physics clean; pending refits hold Checks and Apply; picking from the world cancels; notices name the model')
+
+# The editor's widgets keep GMod's built-in panel behaviour and follow the draft; the preview
+# fits with the server's pins; test copies are found once a frame.
+c = client_runtime(CURRENT_NATIVE)
+c.execute(r'''
+local calf='ValveBiped.Bip01_L_Calf'
+STATE.fitOptions.boneMap={[calf]=7}
+local e=openEditor() STATE.fitOptions.boneMap=nil
+assert(LAST_PREVIEW.boneMap and LAST_PREVIEW.boneMap[calf]==7,'the preview was fitted without the pins the server builds with')
+walk()
+-- Enter in a number field commits it: DTextEntry's own Enter moves the focus on and calls OnEnter.
+local weight for _,p in ipairs(ALL) do if not weight and p.class=='DTextEntry' and rawget(p,'Show') and not p.removed then weight=p end end
+local steps=#e.undo
+weight:RequestFocus() weight:SetText('82,5') weight:OnKeyCodeTyped(KEY_ENTER)
+assert(e.draft.mass==82.5,'Enter in a number field did not commit it')
+assert(#e.undo==steps+1 and weight:GetText()=='82.5' and not weight:HasFocus(),'Enter committed the value twice')
+-- The game may move the focus after OnEnter: still one commit.
+weight:RequestFocus() weight:SetText('84') LATE_BLUR=true weight:OnKeyCodeTyped(KEY_ENTER) LATE_BLUR=false blur()
+assert(e.draft.mass==84 and #e.undo==steps+2 and weight:GetText()=='84','Enter before the blur committed the value twice')
+weight:RequestFocus() weight:SetText('90') weight:KillFocus() assert(e.draft.mass==90 and #e.undo==steps+3,'leaving the field no longer commits')
+weight:RequestFocus() weight:OnKeyCodeTyped(KEY_UP) SHIFT=true weight:OnKeyCodeTyped(KEY_UP) SHIFT=false assert(e.draft.mass==101 and #e.undo==steps+5,'the arrow keys do not step the value')
+weight:KillFocus() assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101','leaving the field after the arrows committed again')
+-- Esc reverts what was typed, also through the blur KillFocus causes (at once or later).
+weight:RequestFocus() weight:SetText('120') weight:OnKeyCodeTyped(KEY_ESCAPE)
+assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101' and not weight:HasFocus(),'Esc committed the typed value')
+weight:RequestFocus() weight:SetText('130') LATE_BLUR=true weight:OnKeyCodeTyped(KEY_ESCAPE) LATE_BLUR=false blur()
+assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101','Esc committed the typed value when the blur came later')
+-- The value the draft has, typed again in another form, is no edit.
+weight:RequestFocus() weight:SetText('101,0') weight:KillFocus() assert(#e.undo==steps+5 and weight:GetText()=='101','an unchanged value made an undo step')
+weight:Think() assert((rawget(weight,'convarThinks') or 0)>0,'the number field replaced DTextEntry:Think')
+-- Clicking into a field to read it and out again changes nothing, in every field. Shape fields
+-- would make the fitted shape explicit (and, mirrored, replace the other side's), part fields
+-- would pin their value on both sides, friction would round 0.123 (shown ×5 as 0.61) to 0.122.
+RunConsoleCommand('mmdhl_physics_editor_advanced','1') RunConsoleCommand('mmdhl_physics_editor_mirror','1')
+e:Edit(function(d) d.explicit[6]={limits={x={-30,40,.123}}} end)
+e:ShowTab('numbers') e:Select(6) e:Sync() walk()
+local function same(a,b) if type(a)~='table' or type(b)~='table' then return a==b end for k,v in pairs(a) do if not same(v,b[k]) then return false end end for k in pairs(b) do if a[k]==nil then return false end end return true end
+local draft,before=table.Copy(e.draft),#e.undo local read=0
+for _,p in ipairs(ALL) do if p.class=='DTextEntry' and rawget(p,'Show') and not p.removed and p:IsEnabled() then
+ p:RequestFocus() read=read+1 e.world:RequestFocus()
+ assert(#e.undo==before and same(e.draft,draft),'leaving a number field unchanged (now showing '..tostring(p:GetText())..') changed the draft')
+end end
+assert(read>=15 and e.draft.shapes[6]==nil and e.draft.shapes[10]==nil and e.draft.explicit[6].limits.x[3]==.123 and e.draft.explicit[10]==nil,'reading the fields pinned, mirrored or rounded values')
+-- Enter moves the focus on to the next field: leaving that one unchanged commits nothing either.
+local fields={} for _,p in ipairs(ALL) do if p.class=='DTextEntry' and rawget(p,'Show') and not p.removed and p:IsEnabled() then fields[#fields+1]=p end end
+fields[1]:RequestFocus() fields[1]:SetText('3') fields[1]:OnKeyCodeTyped(KEY_ENTER) fields[2]:RequestFocus() fields[2]:KillFocus()
+assert(#e.undo==before+1,'the field Enter moved on to committed its unchanged value')
+FOCUSED=nil
+-- The QC paste dialog keeps DFrame's Think, which moves it while its title bar is dragged.
+e:PasteDialog() local d=e.dialog
+d.Dragging={10,20} MOUSE_X,MOUSE_Y=300,400 d:Think() d.Dragging=nil
+assert(d.x==290 and d.y==380,'the QC paste dialog cannot be dragged')
+d:Close()
+-- Fit to model parts: the boxes and the set they edit follow Undo (and Discard, versions, Reset).
+e:ShowTab('collisions') walk()
+local skin,skirt=find('0  skin','DCheckBoxLabel'),find('1  skirt','DCheckBoxLabel')
+assert(skin and skirt and skin:GetChecked() and skirt:GetChecked())
+skirt:SetValue(false) assert(#e.draft.excludedMaterials==1 and e.draft.excludedMaterials[1]==1)
+CTRL=true e:Key(KEY_Z) CTRL=false
+assert(#e.draft.excludedMaterials==0 and skirt:GetChecked(),'Undo left the material box unticked')
+skin:SetValue(false)
+assert(#e.draft.excludedMaterials==1 and e.draft.excludedMaterials[1]==0,'an undone exclusion came back with the next box')
+e:Close(true)
+-- Test copies are labelled; the label hook looks them up once a frame among the addon's
+-- characters, never by searching every ragdoll on each render pass.
+NEWRIG=RIG
+local copy=setmetatable({key=RIG.key,index=50},getmetatable(RAGDOLL)) ENTS[50]=copy
+function copy:GetNW2Bool(k,d) if k=='MMDHLPhysicsTestCopy' then return true end return d end
+local listed=0 mmdhl.Entities=function() listed=listed+1 return {RAGDOLL,copy} end
+local label=HOOKS.PostDrawTranslucentRenderables['MMDHL.PhysicsTestCopy']
+FOUND_BY_CLASS=nil LABELS=0 FRAME=FRAME+1
+for pass=1,3 do label(false,false) end
+assert(FOUND_BY_CLASS==nil,'every render pass searched all ragdolls')
+assert(listed==1 and LABELS==3,'the test copy was not labelled on every pass from one lookup a frame')
+label(true,false) label(false,true) assert(LABELS==3,'a depth or skybox pass was labelled')
+FRAME=FRAME+1 copy.removed=true label(false,false) assert(listed==2 and LABELS==3,'a removed test copy is still labelled')
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+''')
+print('PASS: the preview fits with the server\'s pins; Enter commits a number field once, Esc and a field left unchanged commit nothing, its Think stays DTextEntry\'s; the QC paste dialog drags; the material boxes follow Undo; test copies are labelled from one lookup a frame')

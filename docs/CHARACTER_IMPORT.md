@@ -38,7 +38,7 @@ When a PMX, PMD or VRM character looks like a character (at least 6 of the head,
 
 The window then works on the cached model: the fitter's own choice is "found automatically", parts the engine can guess are amber, the rest red. **Save bones** sends only the differences from the fitter's choice (pins) to the server, which checks them with its own fitter and writes `data/mmd_hotloader/fit_overrides/<asset>.json`. Placed characters keep their carriers. Every new fit takes the pins saved at that moment: spawns, respawns (Apply in the collision editor, Replace), first-person arms, pasted dupes and NPC copies of saved ragdolls. **Assign bones…** in the library's right-click menu edits any character the same way; **More ▾ → Reset to automatic** and saving removes the pins.
 
-When collision corrections exist and a physics body part changes, the footer says that the corrections were made for the old bones and are removed on save (the server compares the old and new pins itself). The collision editor then refuses to correct a ragdoll placed before the bones changed: spawn it again first.
+When collision corrections exist and a physics body part changes, the footer says that the corrections were made for the old bones and are removed on save (the server compares the old and new pins itself). The collision editor then refuses to correct a ragdoll placed before the bones changed: spawn it again first. Pins of other parts (fingers, toes, neck, middle spine) keep the corrections, and such ragdolls stay correctable.
 
 If the window is busy with one model when an import's skeleton has been read, the import waits ("Waiting for you to check the bones of …") and its window opens when the first one closes; nothing open is replaced.
 
@@ -123,7 +123,7 @@ The window's starting point: `mmdhl.Action('bonemap_pins', assetId)` answers on 
 
 Pins reach the native readers as `BM.IndexJSON` writes them, with whole numbers (`util.TableToJSON` writes 12 as 12.0). Spawn options still go through `util.TableToJSON`, so the fitter must accept integral numbers in `options.boneMap` (as `InspectBoneMap` does).
 
-`mmdhl.SavedBoneMap(id)` returns the saved pins. `mmdhl.Spawn` reads the file once: collision corrections as before, and `options.boneMap` always from the file, whatever the options carry (respawns copy an entity's options). The arms preview, pasted dupes and NPC variants of saved ragdolls take them the same way. Saving collision corrections keeps the pins and is refused for a ragdoll fitted with other pins than the saved ones.
+`mmdhl.SavedBoneMap(id)` returns the saved pins. `mmdhl.Spawn` reads the file once: collision corrections as before, and `options.boneMap` always from the file, whatever the options carry (respawns copy an entity's options). The arms preview, pasted dupes and NPC variants of saved ragdolls take them the same way. Saving collision corrections keeps the pins and is refused for a ragdoll fitted with other body-part pins than the saved ones; the physics editor's saves and **Forget** keep them too, and its preview and builds are fitted with them. `mmdhl.boneMapper.SamePhysicalPins(a, b)` is that rule: whether two pin sets give the 18 body parts the same bones (saving bones drops the saved corrections by it too).
 
 ### Lua (`mmdhl.boneMapper`)
 

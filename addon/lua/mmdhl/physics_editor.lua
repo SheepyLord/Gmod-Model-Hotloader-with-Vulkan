@@ -13,6 +13,7 @@ local Ops={open=true,close=true,test=true,apply=true,previous=true,reset=true,re
 local Builds={test=true,apply=true,previous=true,reset=true,restore_saved=true}
 local Replaces={apply=true,previous=true,reset=true,restore_saved=true}
 local Based={test=true,apply=true,previous=true,reset=true,restore_saved=true,save_default=true}
+local Pinned={test=true,apply=true,save_default=true}
 -- i18n-keys: physics_editor.error.disabled physics_editor.error.admin_only physics_editor.error.not_allowed physics_editor.error.no_saved physics_editor.error.no_previous
 -- The options a fit depends on besides the edited ones; the client preview sends them back.
 local FitKeys={'scaleMultiplier','scale','height','role','gender','animationSource','animationReference','armsParts'}
@@ -60,11 +61,27 @@ if SERVER then
   return true
  end
  local function readSaved(asset) local t=util.JSONToTable(file.Read(P.SavedPath(asset),'DATA') or '') return istable(t) and t or nil end
+ -- fit_overrides/<asset>.json is shared: the model's default for new spawns (these keys,
+ -- written by this editor and the collision editor) and the bone window's pins, which
+ -- every fit of the model takes. Each writer changes its own keys and keeps the rest.
+ local DefaultKeys={'bodies','scale','collisionOverrideScale','excludedMaterials','mass','physics','editor'}
+ local PinKeys={'boneMap','boneMapVersion','boneMapSavedAt'}
+ local function currentFormat(saved) return saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) end
+ -- Whether the file holds a default for new spawns, not only pins.
+ function P.HasSavedDefault(saved) return istable(saved) and (istable(saved.bodies) or istable(saved.physics) or tonumber(saved.mass)~=nil) end
+ -- The file as a writer starts from: as it is, or, in an older format whose corrections
+ -- no longer load, only the bone window's pins.
+ local function savedForWrite(asset)
+  local saved=readSaved(asset) or {}
+  if not currentFormat(saved) then local pins={} for _,k in ipairs(PinKeys) do pins[k]=saved[k] end saved=pins end
+  saved.version=3 saved.generator=18
+  return saved
+ end
  local warned={}
  -- The saved per-model default (§5.8) for a spawn, or nil; the second value is a notice token.
  function mmdhl.LoadSavedFit(asset)
   local saved=readSaved(asset) if not saved then return nil end
-  if saved.version~=3 or not (saved.generator==14 or saved.generator==15 or saved.generator==18) then return nil,L'server.notice.old_fit_corrections' end
+  if not currentFormat(saved) then return nil,L'server.notice.old_fit_corrections' end
   local out={bodies=istable(saved.bodies) and saved.bodies or nil,scale=tonumber(saved.scale),excludedMaterials=istable(saved.excludedMaterials) and saved.excludedMaterials or nil}
   local mass=tonumber(saved.mass) if mass and mass>=1 and mass<=500 then out.mass=mass end
   local why
@@ -90,25 +107,36 @@ if SERVER then
  function mmdhl.SavePhysicsDefault(p,ent)
   local asset=mmdhl.GetAsset(ent) local o=ent.MMDOptions or {} local rig=mmdhl.GetRig(ent) or {}
   local physics=istable(rig.physicsOverrides) and rig.physicsOverrides or o.physicsOverrides
-  local fit={version=3,generator=18,bodies=table.Copy(o.collisionOverrides or {}),scale=tonumber(o.collisionOverrideScale) or rig.scale,excludedMaterials=table.Copy(o.excludedMaterials or {}),mass=tonumber(o.mass),
-   physics=istable(physics) and next(physics)~=nil and table.Copy(physics) or nil,
-   editor={schema=1,ui=P.SanitizeEditor(o.physicsEditor),savedAt=os.time(),savedBy=IsValid(p) and p:SteamID64() or nil,savedByName=IsValid(p) and p:Nick() or nil}}
+  -- The whole default is replaced; the bone window's pins stay.
+  local fit=savedForWrite(asset) for _,k in ipairs(DefaultKeys) do fit[k]=nil end
+  fit.bodies=table.Copy(o.collisionOverrides or {}) fit.scale=tonumber(o.collisionOverrideScale) or rig.scale fit.excludedMaterials=table.Copy(o.excludedMaterials or {}) fit.mass=tonumber(o.mass)
+  fit.physics=istable(physics) and next(physics)~=nil and table.Copy(physics) or nil
+  fit.editor={schema=1,ui=P.SanitizeEditor(o.physicsEditor),savedAt=os.time(),savedBy=IsValid(p) and p:SteamID64() or nil,savedByName=IsValid(p) and p:Nick() or nil}
   if not writeSaved(asset,fit) then return false,'physics_editor.error.save_failed' end
   return true,fit
  end
+ -- Forgets the default; a file with the bone window's pins keeps them (the model would no
+ -- longer fit without them), any other is deleted.
  function mmdhl.ClearPhysicsDefault(p,ent)
-  local path=P.SavedPath(mmdhl.GetAsset(ent)) file.Delete(path)
+  local asset=mmdhl.GetAsset(ent) local path=P.SavedPath(asset)
+  local rest=savedForWrite(asset) for _,k in ipairs(DefaultKeys) do rest[k]=nil end
+  for k in pairs(rest) do if k~='version' and k~='generator' then return writeSaved(asset,rest) end end
+  file.Delete(path)
   return not file.Exists(path,'DATA')
  end
  function mmdhl.PhysicsState(p,ent)
   local o=ent.MMDOptions or {} local rig=mmdhl.GetRig(ent) or {} local asset=mmdhl.GetAsset(ent) local saved=readSaved(asset)
   local fit={} for _,k in ipairs(FitKeys) do if o[k]~=nil then fit[k]=o[k] end end
+  -- Builds take the saved pins (mmdhl.Spawn); the client's preview must fit with the same ones.
+  fit.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(asset,saved or false) or nil
   local editor=saved and istable(saved.editor) and saved.editor or {}
+  -- A previous version made for other bones than the saved pins cannot come back (handle).
+  local previous=istable(ent.MMDHLPhysicsHistory) and ent.MMDHLPhysicsHistory[1]
   return {base=ent:GetNW2String('MMDHLRig',''),level=mmdhl.PhysicsLevel(),canEdit=P.Can(p,ent,'apply')==true,canSave=P.Can(p,ent,'save_default')==true,
-   hasPrevious=istable(ent.MMDHLPhysicsHistory) and #ent.MMDHLPhysicsHistory>0,fitOptions=fit,
+   hasPrevious=istable(previous) and P.PinsCurrent(previous.boneMap,asset),fitOptions=fit,
    applied={collisionOverrides=o.collisionOverrides or {},collisionOverrideScale=tonumber(o.collisionOverrideScale) or rig.scale,excludedMaterials=o.excludedMaterials or {},mass=tonumber(o.mass) or 70,
     physicsOverrides=istable(rig.physicsOverrides) and rig.physicsOverrides or o.physicsOverrides or {},physicsEditor=o.physicsEditor},
-   savedDefault={exists=saved~=nil,hasPhysics=saved~=nil and istable(saved.physics),savedAt=editor.savedAt,savedByName=editor.savedByName},
+   savedDefault={exists=P.HasSavedDefault(saved),hasPhysics=saved~=nil and istable(saved.physics),savedAt=editor.savedAt,savedByName=editor.savedByName},
    materialCount=tonumber(rig.materialCount) or 0}
  end
  -- Swaps a freshly built ragdoll in for the old one, keeping its pose, look,
@@ -138,7 +166,11 @@ if SERVER then
    undo.ReplaceEntity(old,new) cleanup.ReplaceEntity(old,new)
    local history=istable(old.MMDHLPhysicsHistory) and old.MMDHLPhysicsHistory or {}
    if op=='previous' then local rest={} for i=2,#history do rest[#rest+1]=history[i] end new.MMDHLPhysicsHistory=rest
-   else local list={P.Subset(old.MMDOptions)} for i=1,math.min(#history,9) do list[#list+1]=history[i] end new.MMDHLPhysicsHistory=list end
+   else
+    -- A version keeps the pins it was fitted with: its shapes are for those bones.
+    local version=P.Subset(old.MMDOptions) local pins=old.MMDOptions and old.MMDOptions.boneMap version.boneMap=istable(pins) and table.Copy(pins) or nil
+    local list={version} for i=1,math.min(#history,9) do list[#list+1]=history[i] end new.MMDHLPhysicsHistory=list
+   end
    if mmdhl.StoreNativeState then mmdhl.StoreNativeState(new) end
   end,debug.traceback)
   if not ok then if IsValid(new) then new:Remove() end return false,err end
@@ -169,10 +201,16 @@ if SERVER then
   if text:find('server.error.fit_timeout',1,true) then return L'physics_editor.error.timeout' end
   return L('physics_editor.error.build_failed',{reason=text})
  end
+ -- A build's options start from the ragdoll's own, as a ragdoll: an NPC's corpse (actors.lua)
+ -- keeps the NPC's role, weapon and side, with which mmdhl.Spawn would make an NPC.
+ local function ragdollOptions(ent)
+  local o=table.Copy(ent.MMDOptions or {})
+  o.rigManifest=nil o.backend='source' o.role='ragdoll' o.hostile=nil o.weapon=nil
+  return o
+ end
  -- The options a build uses, from the ragdoll's own and the operation's (§7.5 step 11).
  function P.BuildOptions(p,ent,op,request,level)
-  local o=table.Copy(ent.MMDOptions or {}) local rig=mmdhl.GetRig(ent) or {}
-  o.rigManifest=nil o.backend='source' o.role='ragdoll'
+  local o=ragdollOptions(ent) local rig=mmdhl.GetRig(ent) or {}
   o.position={ent:GetPos():Unpack()} o.angles={ent:GetAngles():Unpack()} o.frozen=Replaces[op] and true or false
   if op=='test' or op=='apply' then
    o.collisionOverrides=request.collisionOverrides or {} o.collisionOverrideScale=tonumber(rig.scale) or request.collisionOverrideScale o.excludedMaterials=request.excludedMaterials or {}
@@ -183,7 +221,8 @@ if SERVER then
    -- A real 70, never nil: nil would load the saved mass again.
    o.collisionOverrides={} o.excludedMaterials={} o.physicsOverrides={} o.mass=70 o.physicsEditor=nil
   elseif op=='restore_saved' then
-   local saved=mmdhl.LoadSavedFit(mmdhl.GetAsset(ent)) if not saved then return nil,'physics_editor.error.no_saved' end
+   -- A file with only the bone window's pins is no saved physics.
+   local saved=mmdhl.LoadSavedFit(mmdhl.GetAsset(ent)) if not P.HasSavedDefault(saved) then return nil,'physics_editor.error.no_saved' end
    o.collisionOverrides=saved.bodies or {} o.collisionOverrideScale=saved.scale o.excludedMaterials=saved.excludedMaterials or {} o.physicsOverrides=saved.physics or {} o.mass=saved.mass or 70
    o.physicsEditor=saved.editor and P.SanitizeEditor(saved.editor.ui) or nil
   elseif op=='previous' then
@@ -197,6 +236,14 @@ if SERVER then
   if not IsValid(p) then return end
   p.MMDHLPhysicsLastBuild=CurTime() local window={} for _,t in ipairs(p.MMDHLPhysicsBuilds or {}) do if CurTime()-t<600 then window[#window+1]=t end end
   window[#window+1]=CurTime() p.MMDHLPhysicsBuilds=window
+ end
+ -- Whether shapes made on a carrier fitted with these pins still fit the model: every build
+ -- takes the saved pins (mmdhl.Spawn), and a shape sits in its body part's bone frame. Only
+ -- the body parts' pins count, by the rule with which saving bones keeps saved corrections.
+ function P.PinsCurrent(pins,asset)
+  local BM=mmdhl.boneMapper
+  if not (BM and BM.SamePhysicalPins and mmdhl.SavedBoneMap) then return true end
+  return BM.SamePhysicalPins(pins,mmdhl.SavedBoneMap(asset))
  end
  function P.RateLimited(p)
   local wait=cooldown:GetFloat()-(CurTime()-(p.MMDHLPhysicsLastBuild or -math.huge))
@@ -225,6 +272,12 @@ if SERVER then
   if Based[op] and payload.base~=ent:GetNW2String('MMDHLRig','') then answer('error',L'physics_editor.error.stale') return end
   if Replaces[op] and ent:GetNW2Bool('MMDHLPhysgunHeld',false) then answer('error',L'physics_editor.error.held') return end
   local asset=mmdhl.GetAsset(ent)
+  -- The ragdoll's shapes (its draft, Save for new spawns) and an earlier version's were made
+  -- for the bones it was fitted with; after the bone window changed them, they would not fit.
+  -- Reset and Restore saved use none of them: they rebuild it with the current bones.
+  if Pinned[op] and not P.PinsCurrent(ent.MMDOptions and ent.MMDOptions.boneMap,asset) then answer('error',L'physics_editor.error.bones_changed') return end
+  local version=op=='previous' and istable(ent.MMDHLPhysicsHistory) and ent.MMDHLPhysicsHistory[1]
+  if istable(version) and not P.PinsCurrent(version.boneMap,asset) then answer('error',L'physics_editor.error.previous_bones_changed') return end
   if op=='save_default' then
    local saved=mmdhl.SavePhysicsDefault(p,ent)
    if saved then answer('ready',L('physics_editor.notice.saved',{name=asset:sub(1,12)}),ent,{savedAt=os.time()}) else answer('error',L'physics_editor.error.save_failed') end
@@ -277,6 +330,44 @@ if SERVER then
   if not ok then finish() ErrorNoHalt('[Model Hotloader physics] '..tostring(err)..'\n') answer('error',L('physics_editor.error.build_failed',{reason=tostring(err):match('^[^\n]*')})) end
  end
  P.Handle=handle
+ -- The collision editor's "Save fit and spawn corrected copy" (mmdhl_action 'fit'): a new
+ -- ragdoll beside this one with the sent shapes, saved for new spawns when the player may
+ -- save defaults. It is a build like a test copy: the same permission, limits and checks.
+ -- notice(p, token) answers the player.
+ function P.CollisionFit(p,ent,value,notice)
+  local allowed,why=P.Can(p,ent,'test') if not allowed then notice(p,L(why)) return end
+  if ent.MMDHLPhysicsBusy or p.MMDHLPhysicsBusy then notice(p,L'physics_editor.error.busy') return end
+  local asset=mmdhl.GetAsset(ent)
+  if not P.PinsCurrent(ent.MMDOptions and ent.MMDOptions.boneMap,asset) then notice(p,L'server.error.fit_bones_changed') return end
+  local wait=P.RateLimited(p) if wait then notice(p,L('physics_editor.error.rate_limited',{seconds=wait})) return end
+  local data=isstring(value) and #value<=MaxPayload and util.JSONToTable(value) or nil
+  if not istable(data) then notice(p,L('physics_editor.error.invalid',{field='collisionOverrides',reason='not_object'})) return end
+  local rig=mmdhl.GetRig(ent) or {} local level=mmdhl.PhysicsLevel()
+  local req={collisionOverrides=data.bodies or data,excludedMaterials=data.excludedMaterials or {}}
+  if level<1 then req=P.ShapesOnly(req) end
+  local valid,errors=P.Validate(req,{unit=P.Unit(rig),level=level,materialCount=rig.materialCount})
+  if not valid then local e=errors[1] notice(p,L('physics_editor.error.invalid',{field=e.field,reason=e.reason})) return end
+  if gamemode.Call('PlayerSpawnRagdoll',p,asset)==false then notice(p,L'server.error.spawn_forbidden') return end
+  -- The model's default is server-wide: only those who may save physics defaults change it.
+  local canSave=P.Can(p,ent,'save_default')==true
+  local o=ragdollOptions(ent)
+  o.collisionOverrides=req.collisionOverrides o.collisionOverrideScale=rig.scale o.excludedMaterials=req.excludedMaterials
+  o.position={ent:GetPos():Unpack()} o.position[2]=o.position[2]+100 o.frozen=true
+  p.MMDHLPhysicsBusy=true
+  local finished=false
+  local function finish() if finished then return false end finished=true if IsValid(p) then p.MMDHLPhysicsBusy=nil end recordBuild(p) return true end
+  local ok,err=xpcall(function()
+   mmdhl.Spawn(p,asset,o,function(created,failure)
+    if not finish() then return end
+    if not IsValid(created) then notice(p,failure) return end
+    if not canSave then notice(p,L'physics_editor.notice.fit_not_saved') return end
+    -- Only the shapes change: a saved mass, physics profile and the bone window's pins stay.
+    local fit=savedForWrite(asset) fit.bodies=o.collisionOverrides fit.scale=o.collisionOverrideScale fit.excludedMaterials=o.excludedMaterials
+    notice(p,writeSaved(asset,fit) and L'server.notice.fit_saved' or L'physics_editor.error.save_failed')
+   end)
+  end,debug.traceback)
+  if not ok then finish() ErrorNoHalt('[Model Hotloader physics] '..tostring(err)..'\n') notice(p,L('physics_editor.error.build_failed',{reason=tostring(err):match('^[^\n]*')})) end
+ end
  net.Receive('mmdhl_physics',function(_,p)
   local protocol=net.ReadUInt(8) local request=net.ReadUInt(32) local op=net.ReadString() local ent=net.ReadEntity() local n=net.ReadUInt(16)
   local data=n>0 and net.ReadData(n) or ''
@@ -341,15 +432,23 @@ concommand.Add('mmdhl_physics_editor_open',function()
  local ent=LocalPlayer():GetEyeTrace().Entity
  if editable(ent) and mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) else notification.AddLegacy(L'physics_editor.error.not_ragdoll',NOTIFY_ERROR,5) end
 end,nil,'Open the ragdoll physics editor for the Model Hotloader ragdoll you are looking at.')
--- Test copies say so above their head.
+-- Test copies say so above their head. The hook runs for every view rendered (reflections,
+-- cameras): they are looked up once a frame among the addon's own characters.
+local testCopies,testCopiesFrame={},nil
+local function findTestCopies()
+ local frame=FrameNumber() if frame==testCopiesFrame then return testCopies end
+ testCopiesFrame=frame for i=#testCopies,1,-1 do testCopies[i]=nil end
+ for _,ent in ipairs(mmdhl.Entities and mmdhl.Entities() or {}) do
+  if IsValid(ent) and ent:GetClass()=='prop_ragdoll' and ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) then testCopies[#testCopies+1]=ent end
+ end
+ return testCopies
+end
 hook.Add('PostDrawTranslucentRenderables','MMDHL.PhysicsTestCopy',function(depth,sky)
  if depth or sky then return end
- for _,ent in ipairs(ents.FindByClass('prop_ragdoll')) do
-  if ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) then
-   local rig=mmdhl.GetRig(ent) local head=rig and rig.bodies and rig.bodies[4] local matrix=head and ent:GetBoneMatrix(head.bone)
-   if matrix then local m=(tonumber(rig.scale) or 3.23656)/3.23656 local ang=EyeAngles() ang:RotateAroundAxis(ang:Up(),-90) ang:RotateAroundAxis(ang:Forward(),90)
-    cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(L'physics_editor.test_copy_label','DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
-  end
+ for _,ent in ipairs(findTestCopies()) do
+  local rig=IsValid(ent) and mmdhl.GetRig(ent) local head=rig and rig.bodies and rig.bodies[4] local matrix=head and ent:GetBoneMatrix(head.bone)
+  if matrix then local m=(tonumber(rig.scale) or 3.23656)/3.23656 local ang=EyeAngles() ang:RotateAroundAxis(ang:Up(),-90) ang:RotateAroundAxis(ang:Forward(),90)
+   cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(L'physics_editor.test_copy_label','DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
  end
 end)
 include('mmdhl/physics_editor_ui.lua')
