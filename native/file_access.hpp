@@ -1,5 +1,6 @@
 #pragma once
 #include "runtime.hpp"
+#include <atomic>
 #include <future>
 #include <optional>
 #include <stdexcept>
@@ -31,7 +32,8 @@ struct FilePolicy {
  bool broadFolder(const fs::path& folder) const;
 };
 // Text from Lua shown in dialogs: valid UTF-8, control, format and bidi characters
-// removed, spaces collapsed, at most maxCharacters code points.
+// removed, quotation marks turned into apostrophes, spaces collapsed, at most
+// maxCharacters code points.
 std::string cleanLabel(std::string_view text,size_t maxCharacters);
 // An absolute X:\ path from Lua checked without touching the disk: no network or
 // device forms, no relative, drive-relative, "..", stream or reserved-name parts.
@@ -58,7 +60,10 @@ struct FileGrantStore {
 // %LOCALAPPDATA%\ModelHotloader\file-access.json
 fs::path fileAccessStore();
 struct FileReadResult {std::string data;Json info;};
-struct FileAccessConfig {fs::path worker,store,temp;FilePolicy policy;};
+// keepResultsMs: how long a finished read or listing waits to be collected before it is dropped.
+struct FileAccessConfig {fs::path worker,store,temp;FilePolicy policy;uint64_t keepResultsMs=30000;};
+// A read or listing on its own thread and when it finished (GetTickCount64; 0 while it runs).
+template<class T> struct FileWork {std::future<T> future;std::shared_ptr<std::atomic<uint64_t>> finished;};
 // One per client module. Lua calls arrive on the game thread; reads and listings run
 // on their own threads with copies of what they need.
 class FileAccess {
@@ -78,8 +83,10 @@ public:
  void release(const std::string& handle);
  void cancel(uint64_t id);
  Json grants();
- void revoke(const std::string& id);
+ // false when the change applies but could not be saved (it then lasts until the map changes).
+ bool revoke(const std::string& id);
  // false: off at once. true: {"enabled":true}, or {"request":id} for the confirmation dialog.
+ // "notSaved" marks a change that applies but could not be saved.
  Json setEnabled(bool enabled,const std::string& language);
  struct Item;
  struct Request;
@@ -93,11 +100,12 @@ private:
  std::map<std::string,std::shared_ptr<const Item>> items;
  std::map<std::string,unsigned> denials;
  unsigned refusals=0;
- std::map<uint64_t,std::future<FileReadResult>> reads;
- std::map<uint64_t,std::future<Json>> lists;
+ std::map<uint64_t,FileWork<FileReadResult>> reads;
+ std::map<uint64_t,FileWork<Json>> lists;
  std::vector<std::future<FileReadResult>> droppedReads;  // canceled: a read cannot be interrupted
  std::vector<std::future<Json>> droppedLists;
  size_t running();
+ bool persist();
  void available(const std::string& requester);
  uint64_t enqueue(std::unique_ptr<Request> r);
  void pump();

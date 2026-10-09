@@ -557,7 +557,8 @@ FUNCTION(FileAccessPollList) {auto r=files().pollList(number(LUA,1));if(!r){LUA-
 FUNCTION(FileAccessRelease) {files().release(stringArg(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
 FUNCTION(FileAccessCancel) {files().cancel(number(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
 FUNCTION(FileAccessGrants) {push(LUA,files().grants());return 1;} END_FILE_FUNCTION
-FUNCTION(FileAccessRevoke) {files().revoke(stringArg(LUA,1));LUA->PushBool(true);return 1;} END_FILE_FUNCTION
+// false: revoked until the map changes, but the store could not be saved.
+FUNCTION(FileAccessRevoke) {LUA->PushBool(files().revoke(stringArg(LUA,1)));return 1;} END_FILE_FUNCTION
 // Off at once; on only after the player confirms in a native dialog (arg 2: its language).
 FUNCTION(FileAccessSetEnabled) {if(!LUA->IsType(1,GarrysMod::Lua::Type::Bool))throw std::runtime_error("Expected true or false");push(LUA,files().setEnabled(LUA->GetBool(1),LUA->IsType(2,GarrysMod::Lua::Type::String)?stringArg(LUA,2):std::string("en")));return 1;} END_FILE_FUNCTION
 FUNCTION(StartMainThreadSampling) {double ms=LUA->GetNumber(1);if(!std::isfinite(ms)||ms<100||ms>60000)throw std::runtime_error("Sampling duration must be 100 to 60000 ms");mainThreadSampler.start(ms);LUA->PushBool(true);return 1;} END_FUNCTION

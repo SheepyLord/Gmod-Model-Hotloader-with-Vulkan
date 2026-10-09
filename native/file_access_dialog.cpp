@@ -1,6 +1,7 @@
 // The worker's half of file access: the windows the player answers. They run in the
 // worker process, which Lua cannot drive, and every sentence is compiled in; only the
-// requester, script, purpose and title fields come from the addon, shown in quotes.
+// requester, script, purpose and title fields come from the addon, shown in quotes or
+// marked as not verified (cleanLabel turned their own quotation marks into apostrophes).
 #include "file_access.hpp"
 #include <windows.h>
 #include <commctrl.h>
@@ -17,7 +18,7 @@ struct Text {
 };
 const std::pair<const char*,Text> texts[]={
  {"en",{.title=L"Model Hotloader: file access",.askFile=L"An addon asks to read a file",.askFolder=L"An addon asks to read a folder",
-  .addon=L"Addon: “{requester}” (the name its script reports; not verified)",.script=L"Script: {script}",.purpose=L"The addon says: “{purpose}”",
+  .addon=L"Addon: “{requester}” (the name its script reports; not verified)",.script=L"Script (reported by the addon; not verified): {script}",.purpose=L"The addon says: “{purpose}”",
   .file=L"File: {path} ({size})",.folder=L"Folder: {path}",.folderNote=L"Allowing a folder lets the addon read every file in it and in its subfolders.",
   .warning=L"An addon can use whatever it reads as it likes, including sending it to a server or a website. Allow only addons you trust.",
   .once=L"Allow once",.onceNote=L"Until the map changes.",.always=L"Always allow this addon here",.alwaysNote=L"Without asking again, for files in {folder}",.deny=L"Deny",.close=L"Close",
@@ -30,7 +31,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"Addons will be able to ask you to choose files, or to allow a file or folder. Nothing is read until you answer in a window like this one.",.enableYes=L"Turn on",.enableNo=L"Keep off",
   .units={L"bytes",L"KB",L"MB",L"GB"}}},
  {"fr",{.title=L"Model Hotloader : accès aux fichiers",.askFile=L"Un addon demande à lire un fichier",.askFolder=L"Un addon demande à lire un dossier",
-  .addon=L"Addon : « {requester} » (nom indiqué par son script ; non vérifié)",.script=L"Script : {script}",.purpose=L"L’addon indique : « {purpose} »",
+  .addon=L"Addon : « {requester} » (nom indiqué par son script ; non vérifié)",.script=L"Script (indiqué par l’addon ; non vérifié) : {script}",.purpose=L"L’addon indique : « {purpose} »",
   .file=L"Fichier : {path} ({size})",.folder=L"Dossier : {path}",.folderNote=L"Autoriser un dossier permet à l’addon de lire tous les fichiers qu’il contient, sous-dossiers compris.",
   .warning=L"Un addon peut faire ce qu’il veut de ce qu’il lit, y compris l’envoyer à un serveur ou à un site web. N’autorisez que les addons auxquels vous faites confiance.",
   .once=L"Autoriser une fois",.onceNote=L"Jusqu’au changement de carte.",.always=L"Toujours autoriser cet addon ici",.alwaysNote=L"Sans redemander, pour les fichiers de {folder}",.deny=L"Refuser",.close=L"Fermer",
@@ -43,7 +44,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"Les addons pourront vous demander de choisir des fichiers, ou d’autoriser un fichier ou un dossier. Rien n’est lu tant que vous n’avez pas répondu dans une fenêtre comme celle-ci.",.enableYes=L"Activer",.enableNo=L"Laisser désactivé",
   .units={L"octets",L"Ko",L"Mo",L"Go"}}},
  {"ja",{.title=L"Model Hotloader：ファイルアクセス",.askFile=L"アドオンがファイルの読み取りを求めています",.askFolder=L"アドオンがフォルダーの読み取りを求めています",
-  .addon=L"アドオン：「{requester}」（スクリプトが名乗っている名前で、確認されていません）",.script=L"スクリプト：{script}",.purpose=L"アドオンの説明：「{purpose}」",
+  .addon=L"アドオン：「{requester}」（スクリプトが名乗っている名前で、確認されていません）",.script=L"スクリプト（アドオンの自己申告で、確認されていません）：{script}",.purpose=L"アドオンの説明：「{purpose}」",
   .file=L"ファイル：{path}（{size}）",.folder=L"フォルダー：{path}",.folderNote=L"フォルダーを許可すると、アドオンはその中とサブフォルダー内のすべてのファイルを読み取れます。",
   .warning=L"アドオンは読み取った内容を自由に使えます。サーバーやウェブサイトへの送信も可能です。信頼できるアドオンだけに許可してください。",
   .once=L"今回だけ許可",.onceNote=L"マップが変わるまで有効です。",.always=L"このアドオンにここを常に許可",.alwaysNote=L"{folder} 内のファイルは今後確認しません",.deny=L"拒否",.close=L"閉じる",
@@ -56,7 +57,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"アドオンが、ファイルの選択や、ファイル・フォルダーの読み取り許可を求められるようになります。このようなウィンドウで応答するまで、何も読み取られません。",.enableYes=L"オンにする",.enableNo=L"オフのままにする",
   .units={L"バイト",L"KB",L"MB",L"GB"}}},
  {"ko",{.title=L"Model Hotloader: 파일 접근",.askFile=L"애드온이 파일 읽기를 요청합니다",.askFolder=L"애드온이 폴더 읽기를 요청합니다",
-  .addon=L"애드온: “{requester}” (스크립트가 밝힌 이름이며 확인되지 않았습니다)",.script=L"스크립트: {script}",.purpose=L"애드온이 밝힌 이유: “{purpose}”",
+  .addon=L"애드온: “{requester}” (스크립트가 밝힌 이름이며 확인되지 않았습니다)",.script=L"스크립트(애드온이 밝힌 것이며 확인되지 않았습니다): {script}",.purpose=L"애드온이 밝힌 이유: “{purpose}”",
   .file=L"파일: {path} ({size})",.folder=L"폴더: {path}",.folderNote=L"폴더를 허용하면 애드온이 그 안과 하위 폴더의 모든 파일을 읽을 수 있습니다.",
   .warning=L"애드온은 읽은 내용을 마음대로 사용할 수 있으며, 서버나 웹사이트로 보낼 수도 있습니다. 신뢰하는 애드온만 허용하세요.",
   .once=L"이번만 허용",.onceNote=L"맵이 바뀔 때까지 유효합니다.",.always=L"이 애드온에 여기를 항상 허용",.alwaysNote=L"{folder} 안의 파일은 다시 묻지 않습니다",.deny=L"거부",.close=L"닫기",
@@ -69,7 +70,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"애드온이 파일을 선택하거나 파일 또는 폴더를 허용해 달라고 요청할 수 있게 됩니다. 이런 창에서 응답하기 전에는 아무것도 읽히지 않습니다.",.enableYes=L"켜기",.enableNo=L"끈 상태로 두기",
   .units={L"바이트",L"KB",L"MB",L"GB"}}},
  {"ru",{.title=L"Model Hotloader: доступ к файлам",.askFile=L"Дополнение просит прочитать файл",.askFolder=L"Дополнение просит прочитать папку",
-  .addon=L"Дополнение: «{requester}» (имя, которое сообщает его скрипт; не проверено)",.script=L"Скрипт: {script}",.purpose=L"Дополнение сообщает: «{purpose}»",
+  .addon=L"Дополнение: «{requester}» (имя, которое сообщает его скрипт; не проверено)",.script=L"Скрипт (со слов дополнения; не проверено): {script}",.purpose=L"Дополнение сообщает: «{purpose}»",
   .file=L"Файл: {path} ({size})",.folder=L"Папка: {path}",.folderNote=L"Разрешив папку, вы позволите дополнению читать все файлы в ней и во вложенных папках.",
   .warning=L"Дополнение может использовать прочитанное как угодно, в том числе отправить на сервер или сайт. Разрешайте только дополнениям, которым доверяете.",
   .once=L"Разрешить один раз",.onceNote=L"До смены карты.",.always=L"Всегда разрешать этому дополнению здесь",.alwaysNote=L"Без повторных вопросов для файлов в {folder}",.deny=L"Запретить",.close=L"Закрыть",
@@ -82,7 +83,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"Дополнения смогут просить вас выбрать файлы или разрешить файл или папку. Ничего не читается, пока вы не ответите в таком окне.",.enableYes=L"Включить",.enableNo=L"Оставить выключенным",
   .units={L"байт",L"КБ",L"МБ",L"ГБ"}}},
  {"zh-cn",{.title=L"Model Hotloader：文件访问",.askFile=L"有插件请求读取文件",.askFolder=L"有插件请求读取文件夹",
-  .addon=L"插件：“{requester}”（由其脚本自称，未经验证）",.script=L"脚本：{script}",.purpose=L"插件给出的理由：“{purpose}”",
+  .addon=L"插件：“{requester}”（由其脚本自称，未经验证）",.script=L"脚本（由插件自称，未经验证）：{script}",.purpose=L"插件给出的理由：“{purpose}”",
   .file=L"文件：{path}（{size}）",.folder=L"文件夹：{path}",.folderNote=L"允许访问文件夹后，插件可以读取其中及其子文件夹中的所有文件。",
   .warning=L"插件可以随意使用读取到的内容，包括发送到服务器或网站。请只允许你信任的插件。",
   .once=L"仅允许这一次",.onceNote=L"在切换地图前有效。",.always=L"始终允许此插件读取这里",.alwaysNote=L"读取 {folder} 中的文件时不再询问",.deny=L"拒绝",.close=L"关闭",
@@ -95,7 +96,7 @@ const std::pair<const char*,Text> texts[]={
   .enableText=L"插件将可以请你选择文件，或请求允许读取某个文件或文件夹。在你于此类窗口中作出回应之前，不会读取任何内容。",.enableYes=L"开启",.enableNo=L"保持关闭",
   .units={L"字节",L"KB",L"MB",L"GB"}}},
  {"zh-tw",{.title=L"Model Hotloader：檔案存取",.askFile=L"有附加元件要求讀取檔案",.askFolder=L"有附加元件要求讀取資料夾",
-  .addon=L"附加元件：「{requester}」（由其指令碼自稱，未經驗證）",.script=L"指令碼：{script}",.purpose=L"附加元件提供的理由：「{purpose}」",
+  .addon=L"附加元件：「{requester}」（由其指令碼自稱，未經驗證）",.script=L"指令碼（由附加元件自稱，未經驗證）：{script}",.purpose=L"附加元件提供的理由：「{purpose}」",
   .file=L"檔案：{path}（{size}）",.folder=L"資料夾：{path}",.folderNote=L"允許存取資料夾後，附加元件可以讀取其中及其子資料夾內的所有檔案。",
   .warning=L"附加元件可以任意使用讀取到的內容，包括傳送到伺服器或網站。請只允許你信任的附加元件。",
   .once=L"僅允許這一次",.onceNote=L"在切換地圖前有效。",.always=L"一律允許此附加元件讀取這裡",.alwaysNote=L"讀取 {folder} 中的檔案時不再詢問",.deny=L"拒絕",.close=L"關閉",
@@ -166,7 +167,7 @@ Json consent(const Json& request,const Text& t){
  content+=L"\n\n"+(folder?fill(t.folder,{{L"path",path}}):fill(t.file,{{L"path",path},{L"size",size(request.value("size",uint64_t(0)),t)}}));
  std::vector<std::pair<int,std::wstring>> choices;std::wstring footer=t.warning;
  if(!problem.empty()){
-  const wchar_t* why=problem=="not_found"?t.notFound:problem=="link"?t.link:problem=="denied_location"?t.denied:problem=="not_a_file"?t.notFile:problem=="not_a_folder"?t.notFolder:problem=="network"?t.network:t.unreadable;
+  const wchar_t* why=problem=="not_found"?t.notFound:problem=="link"?t.link:problem=="denied_location"?t.denied:problem=="not_a_file"?t.notFile:problem=="not_a_folder"?t.notFolder:problem=="network"||problem=="remote_drive"?t.network:t.unreadable;
   content+=L"\n\n"+std::wstring(why);
  }else{
   if(folder)content+=L"\n"+std::wstring(t.folderNote);

@@ -17,8 +17,8 @@ local function decode(value,err,code) if not isstring(value) then return nil,err
 local function language() return mmdhl.I18n and mmdhl.I18n.Language and mmdhl.I18n.Language() or 'en' end
 local function localHost() local p=LocalPlayer() return game.SinglePlayer() or (IsValid(p) and p:IsListenServerHost()) end
 -- Native refusal codes (file_access.hpp) and the phrases that explain them.
--- i18n-keys: file_access.error.denied file_access.error.auto_denied file_access.error.busy file_access.error.not_found file_access.error.network file_access.error.remote_drive file_access.error.invalid_path file_access.error.denied_location file_access.error.link file_access.error.hidden file_access.error.too_large file_access.error.offset file_access.error.not_a_file file_access.error.not_a_folder file_access.error.released file_access.error.unreadable file_access.error.dialog_failed file_access.error.too_many_items file_access.error.denied_by_hook file_access.unavailable_disabled file_access.unavailable_remote file_access.unavailable_server_realm file_access.unavailable_worker file_access.needs_update
-local messages={denied='denied',auto_denied='auto_denied',busy='busy',not_found='not_found',network='network',remote_drive='remote_drive',
+-- i18n-keys: file_access.error.denied file_access.error.auto_denied file_access.error.auto_denied_session file_access.error.busy file_access.error.not_found file_access.error.network file_access.error.remote_drive file_access.error.invalid_path file_access.error.denied_location file_access.error.link file_access.error.hidden file_access.error.too_large file_access.error.offset file_access.error.not_a_file file_access.error.not_a_folder file_access.error.released file_access.error.unreadable file_access.error.dialog_failed file_access.error.too_many_items file_access.error.denied_by_hook file_access.unavailable_disabled file_access.unavailable_remote file_access.unavailable_server_realm file_access.unavailable_worker file_access.needs_update
+local messages={denied='denied',auto_denied='auto_denied',auto_denied_session='auto_denied_session',busy='busy',not_found='not_found',network='network',remote_drive='remote_drive',
  relative='invalid_path',parent='invalid_path',stream='invalid_path',device='invalid_path',invalid_path='invalid_path',denied_location='denied_location',link='link',outside='link',hidden='hidden',
  too_large='too_large',offset_too_large='offset',not_a_file='not_a_file',not_a_folder='not_a_folder',released='released',unknown_request='released',unreadable='unreadable',
  dialog_failed='dialog_failed',too_many_items='too_many_items',denied_by_hook='denied_by_hook'}
@@ -77,12 +77,20 @@ function Item:Release() return FA.Release(self) end
 FA.Item=Item
 local function item(t) return setmetatable({handle=t.handle,name=t.name,size=t.size,folder=t.folder==true,remembered=t.remembered==true,displayPath=t.displayPath},Item) end
 local function handleOf(value) if istable(value) then value=value.handle end return isstring(value) and value or nil end
+-- The player's choice applies, but native could not save it: it lasts until the map changes.
+local function notSaved() notification.AddLegacy(L'file_access.not_saved',NOTIFY_ERROR,8) end
+-- Queued behind the callbacks, never run inside the poll: a listener that fails or asks
+-- again cannot lose an answer or add to `pending` while the poll walks it.
+local function changed() due[#due+1]={function() hook.Run('MMDHL.FileAccessChanged') end,{n=0}} wake() end
 local function finishRequest(p,status)
- if status.changed then hook.Run('MMDHL.FileAccessChanged') end
- if status.state~='granted' then fail(p.cb,status.code or 'denied',status.error) return end
- if p.enable then deliver(p.cb,true) return end
- local items={} for _,t in ipairs(status.items or {}) do items[#items+1]=item(t) end
- deliver(p.cb,true,items,status.refused or {})
+ if status.notSaved then notSaved() end
+ if status.state~='granted' then fail(p.cb,status.code or 'denied',status.error)
+ elseif p.enable then deliver(p.cb,true)
+ else
+  local items={} for _,t in ipairs(status.items or {}) do items[#items+1]=item(t) end
+  deliver(p.cb,true,items,status.refused or {})
+ end
+ if status.changed then changed() end
 end
 local function call(f,...) local ok,a,b,c=pcall(f,...) if not ok then return nil,tostring(a),'dialog_failed' end return a,b,c end
 local function check()
@@ -201,13 +209,14 @@ end)
 timer.Simple(0,function() hook.Run('MMDHL.FileAccessReady',FA) end)
 -- ---- Management window (Utilities -> Character Models) ----
 function FA.Grants() if not supported() then return {enabled=false,grants={}} end local t=decode(native.FileAccessGrants()) return istable(t) and t or {enabled=false,grants={}} end
-function FA.Revoke(id) if supported() and isstring(id) then native.FileAccessRevoke(id) hook.Run('MMDHL.FileAccessChanged') end end
+function FA.Revoke(id) if supported() and isstring(id) then if native.FileAccessRevoke(id)==false then notSaved() end hook.Run('MMDHL.FileAccessChanged') end end
 -- Off at once. On: native asks the player to confirm; done(enabled) runs afterwards.
 function FA.SetEnabled(enabled,done)
  done=isfunction(done) and done or function() end
  if not supported() then noteOldBinary() deliver(done,false) return end
  local result=decode(native.FileAccessSetEnabled(enabled==true,language()))
  if istable(result) and result.request then pending[result.request]={kind='request',enable=true,cb=function(ok) done(ok==true) end} wake() return end
+ if istable(result) and result.notSaved then notSaved() end
  hook.Run('MMDHL.FileAccessChanged') deliver(done,istable(result) and result.enabled==true)
 end
 function FA.OpenManager()

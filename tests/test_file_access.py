@@ -3,8 +3,9 @@ API and no net receivers; an old binary module reports "needs update" and still 
 every callback runs exactly once, from the Think poll and never during the call; the
 deny-only hook refuses before native and cannot grant; the MMDHL.RequestUserFile hook
 forwards to the picker or RequestPath; requester labels and the reporting script are
-sanitized; native refusal codes read as real phrases; the management window lists,
-revokes and switches through native."""
+sanitized; native refusal codes read as real phrases; MMDHL.FileAccessChanged runs after
+the callback and outside the poll; a choice native could not save is reported; the
+management window lists, revokes and switches through native."""
 import json
 from pathlib import Path
 from lupa import LuaRuntime
@@ -59,8 +60,8 @@ function FAKE_NATIVE()
  n.FileAccessRelease=function(h) record('Release',h) return true end
  n.FileAccessCancel=function(id) record('Cancel',id) return true end
  n.FileAccessGrants=function() record('Grants') return util.TableToJSON(GRANTS) end
- n.FileAccessRevoke=function(id) record('Revoke',id) return true end
- n.FileAccessSetEnabled=function(on,language) record('SetEnabled',on,language) if not on then GRANTS.enabled=false return util.TableToJSON({enabled=false}) end local id=nextId() STATES[id]={state='pending',dialog=true} return util.TableToJSON({request=id}) end
+ n.FileAccessRevoke=function(id) record('Revoke',id) return REVOKE_SAVED~=false end
+ n.FileAccessSetEnabled=function(on,language) record('SetEnabled',on,language) if not on then GRANTS.enabled=false return util.TableToJSON({enabled=false,notSaved=OFF_NOT_SAVED}) end local id=nextId() STATES[id]={state='pending',dialog=true} return util.TableToJSON({request=id}) end
  return n
 end
 function THINK() local f=HOOKS.Think and HOOKS.Think['MMDHL.FileAccess'] if f then f() end NOW=NOW+1 end
@@ -195,6 +196,28 @@ local changed=0 hook.Add('MMDHL.FileAccessChanged','test',function() changed=cha
 local remembered=CALLBACK() FA.RequestPath('C:\\Games\\a.json',{addon='Keep',folder=false},remembered.fn)
 STATES[SEQ]={state='granted',changed=true,items={{handle=string.rep('c',32),name='a.json',remembered=true}}}
 THINK() assert(remembered.runs==1 and remembered.args[2][1].remembered==true and changed==1)
+-- The hook runs after the callback, from the queue: a listener that fails cannot lose the answer...
+local order={}
+hook.Add('MMDHL.FileAccessChanged','broken',function() order[#order+1]='changed' error('listener failed') end)
+local errors=#ERRORS
+local first=CALLBACK() FA.RequestPath('C:\\Games\\b.json',{addon='Keep'},function(...) order[#order+1]='callback' first.fn(...) end)
+STATES[SEQ]={state='granted',changed=true,items={{handle=string.rep('e',32),name='b.json',remembered=true}}}
+THINK() assert(first.runs==1 and first.args[1]==true and #ERRORS==errors+1 and order[1]=='callback' and order[2]=='changed','a failing listener lost the answer: '..table.concat(order,','))
+hook.Remove('MMDHL.FileAccessChanged','broken')
+-- ...and one that asks again does not change the requests while the poll walks them.
+local again=CALLBACK()
+hook.Add('MMDHL.FileAccessChanged','asks again',function() hook.Remove('MMDHL.FileAccessChanged','asks again') FA.RequestPath('C:\\Games\\c.json',{addon='Keep'},again.fn) end)
+local second,third=CALLBACK(),CALLBACK()
+FA.RequestPath('C:\\Games\\b.json',{addon='Keep'},second.fn) FA.RequestPath('C:\\Games\\d.json',{addon='Keep'},third.fn)
+STATES[SEQ-1]={state='granted',changed=true,items={{handle=string.rep('f',32),name='b.json'}}}
+errors=#ERRORS THINK()
+assert(second.runs==1 and third.runs==0 and again.runs==0 and #ERRORS==errors and util.JSONToTable(LAST('Request')[1]).path=='C:\\Games\\c.json','the listener could not ask again')
+STATES[SEQ]={state='denied',code='denied'} STATES[SEQ-1]={state='denied',code='denied'} THINK() assert(again.runs==1 and third.runs==1)
+-- A choice native could not save still applies; the player hears about it once.
+local notices=#NOTICES local kept=CALLBACK() FA.RequestPath('C:\\Games\\e.json',{addon='Keep'},kept.fn)
+STATES[SEQ]={state='granted',changed=true,notSaved=true,items={{handle=string.rep('a',32),name='e.json',remembered=true}}}
+THINK() local told=0 for i=notices+1,#NOTICES do if NOTICES[i].kind=='legacy' and NOTICES[i].text==mmdhl.L'file_access.not_saved' then told=told+1 end end
+assert(kept.runs==1 and kept.args[1]==true and told==1,'the unsaved choice was not reported')
 -- A request whose answer vanished (the module restarted) still calls back.
 local lost=CALLBACK() FA.RequestPath('C:\\z.json',{addon='Lost'},lost.fn) STATES[SEQ]=nil THINK() assert(lost.runs==1 and lost.args[3]=='unknown_request')
 ''')
@@ -228,12 +251,13 @@ print('PASS: MMDHLCanAccessUserFile only denies, and MMDHL.RequestUserFile forwa
 
 # ---- Every refusal code reads as a real phrase ----
 lua.execute(r'''
-for _,code in ipairs({'denied','auto_denied','busy','not_found','network','remote_drive','relative','parent','stream','device','invalid_path','denied_location','link','outside','hidden','too_large',
+for _,code in ipairs({'denied','auto_denied','auto_denied_session','busy','not_found','network','remote_drive','relative','parent','stream','device','invalid_path','denied_location','link','outside','hidden','too_large',
  'offset_too_large','not_a_file','not_a_folder','released','unknown_request','unreadable','dialog_failed','too_many_items','denied_by_hook','disabled','unavailable_remote','no_local_server','worker_missing','needs_update','invalid_options','something_new'}) do
  local text=mmdhl.FileAccess.Message(code,'detail')
  assert(isstring(text) and text~='' and not text:find('mmdhl.file_access',1,true),code..': '..tostring(text))
 end
 assert(mmdhl.FileAccess.Message('something_new','detail')==mmdhl.L('file_access.error.other',{error='detail'}))
+assert(mmdhl.FileAccess.Message('auto_denied_session')==mmdhl.L'file_access.error.auto_denied_session' and mmdhl.FileAccess.Message('auto_denied_session')~=mmdhl.FileAccess.Message('auto_denied'))
 ''')
 print('PASS: every native refusal code has a localized explanation')
 
@@ -273,8 +297,11 @@ local list=find('DListView') assert(#list.lines==1 and list.lines[1].values[1]==
 local box=find('DCheckBoxLabel',mmdhl.L'file_access.manage.enabled') assert(box.checked==true)
 find('DButton',mmdhl.L'file_access.manage.revoke').DoClick() assert(LAST('Revoke')[1]=='0123456789abcdef')
 find('DButton',mmdhl.L'file_access.manage.revoke_all').DoClick() assert(LAST('Revoke')[1]=='all' and QUERIES[1]==mmdhl.L'file_access.manage.revoke_all_confirm')
+-- A revoke or a switch native could not save is reported (it applies until the map changes).
+local function unsaved() local n=0 for _,v in ipairs(NOTICES) do if v.kind=='legacy' and v.text==mmdhl.L'file_access.not_saved' then n=n+1 end end return n end
+local before=unsaved() REVOKE_SAVED=false find('DButton',mmdhl.L'file_access.manage.revoke').DoClick() REVOKE_SAVED=nil assert(unsaved()==before+1,'an unsaved revoke was not reported')
 -- Off at once; on asks natively and shows the confirmation notice meanwhile.
-box.OnChange(box,false) assert(LAST('SetEnabled')[1]==false)
+OFF_NOT_SAVED=true box.OnChange(box,false) OFF_NOT_SAVED=nil assert(LAST('SetEnabled')[1]==false and unsaved()==before+2,'an unsaved switch was not reported')
 for _,f in ipairs(TIMERS) do f() end
 box.OnChange(box,true) local args=LAST('SetEnabled') assert(args[1]==true and args[2]=='en')
 THINK() assert(NOTICES[#NOTICES].text==mmdhl.L'file_access.waiting_confirm')

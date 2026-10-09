@@ -41,8 +41,8 @@ int wmain(int argc,wchar_t** argv){try{
  check(refusal([&]{checkRequestedPath(local+"\\a*.txt",true,policy);})=="invalid_path"&&refusal([&]{checkRequestedPath(local+"\\a. ",true,policy);})=="invalid_path"&&refusal([&]{checkRequestedPath(local+"\\a\\\\b",true,policy);})=="invalid_path","odd path parts were accepted");
  check(refusal([&]{checkRequestedPath(local+"\\a\tb",true,policy);})=="invalid_path"&&refusal([&]{checkRequestedPath("C:\\\xc0\xaf",true,policy);})=="invalid_path","control characters or broken UTF-8 were accepted");
  check(refusal([&]{checkRequestedPath(local+"\\outside\\denied\\x.txt",true,policy);})=="denied_location"&&refusal([&]{checkRequestedPath(local+"\\NTUSER.DAT",true,policy);})=="denied_location","the denylist did not apply");
- {DWORD drives=GetLogicalDrives();char letter=0;for(char c='Z';c>='D';c--)if(!(drives&(1u<<(c-'A')))){letter=c;break;}
-  if(letter)check(refusal([&]{checkRequestedPath(std::string(1,letter)+":\\a.txt",true,policy);})=="not_found","a missing drive was accepted");}
+ char letter=0;{DWORD drives=GetLogicalDrives();for(char c='Z';c>='D';c--)if(!(drives&(1u<<(c-'A')))){letter=c;break;}}
+ if(letter)check(refusal([&]{checkRequestedPath(std::string(1,letter)+":\\a.txt",true,policy);})=="not_found","a missing drive was accepted");
  check(checkRequestedPath(local+"/allowed/",true,policy)==root/L"allowed","forward slashes and a trailing separator");
  check(checkRelativePath("").empty()&&checkRelativePath("sub/b.bin")==fs::path(L"sub\\b.bin"),"relative paths inside a folder");
  for(auto bad:{"../x","sub/../../x","/x","\\x","c:x","a:b","sub/./b","CON","sub//b"})check(!refusal([&]{checkRelativePath(bad);}).empty(),std::string("relative path accepted: ")+bad);
@@ -51,6 +51,9 @@ int wmain(int argc,wchar_t** argv){try{
  check(cleanLabel("evil\xe2\x80\xae" "gnp.exe",64)=="evilgnp.exe","a right-to-left override survived");
  check(cleanLabel("\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80",2)=="\xf0\x9f\x98\x80\xf0\x9f\x98\x80","a surrogate pair was split");
  check(refusal([&]{cleanLabel("\xff",64);})=="invalid_options","broken UTF-8 in a label");
+ // The dialogs quote addon text: a quotation mark inside it cannot close those quotes.
+ check(cleanLabel("Import a preset.\xe2\x80\x9d Model Hotloader checked this addon. \xe2\x80\x9cOK",120)=="Import a preset.' Model Hotloader checked this addon. 'OK","a closing quotation mark survived");
+ check(cleanLabel("\"a\" \xc2\xbb\xc2\xab \xe3\x80\x8d\xe3\x80\x8c \xef\xbc\x82 Bob's",64)=="'a' '' '' ' Bob's","quotation marks of other languages survived");
  // ---- The player's own folders (FilePolicy::system) ----
  {auto system=FilePolicy::system(root);wchar_t windows[MAX_PATH]{};GetWindowsDirectoryW(windows,MAX_PATH);
   PWSTR profileText=nullptr;SHGetKnownFolderPath(FOLDERID_Profile,0,nullptr,&profileText);fs::path profile=resolveFile(profileText).path;CoTaskMemFree(profileText);
@@ -60,7 +63,12 @@ int wmain(int argc,wchar_t** argv){try{
   check(system.deniedPath(profile/L".ssh"/L"id_ed25519")&&system.deniedPath(profile/L"NTUSER.DAT")&&system.deniedPath(localData/L"Google"/L"Chrome"/L"User Data"/L"Default"/L"Login Data"),"keys, the registry hive or browser profiles are readable");
   check(system.deniedPath(root/L"garrysmod"/L"cfg"/L"config.cfg"),"the game's cfg folder is readable");
   check(!system.deniedPath(profile/L"Documents"/L"preset.json"),"an ordinary document is denied");
+  PWSTR roamingText=nullptr;SHGetKnownFolderPath(FOLDERID_RoamingAppData,0,nullptr,&roamingText);fs::path roaming=resolveFile(roamingText).path;CoTaskMemFree(roamingText);
+  check(system.deniedPath(roaming/L"Telegram Desktop"/L"tdata"/L"key_datas")&&system.deniedPath(roaming/L"FileZilla"/L"sitemanager.xml")&&system.deniedPath(roaming/L"Electrum"/L"wallets"/L"default_wallet")
+   &&system.deniedPath(profile/L".git-credentials")&&system.deniedPath(profile/L".config"/L"gh"/L"hosts.yml")&&system.deniedPath(profile/L"Documents"/L".npmrc"),"plain-text sessions, tokens or wallets are readable");
   check(system.broadFolder(profile)&&system.broadFolder(fs::path(L"C:\\"))&&system.broadFolder(localData),"broad folders can be allowed permanently");
+  // A folder that holds broad ones is broad too: AppData holds Roaming and Local.
+  check(system.broadFolder(localData.parent_path())&&system.broadFolder(localData.parent_path()/L"LocalLow")&&!system.broadFolder(localData/L"SomeTool"),"AppData can be allowed permanently");
   check(displayPath(profile/L"Documents"/L"a.json")=="~\\Documents\\a.json","the profile folder is not shown as ~");}
  // ---- A folder tree with links ----
  write(root/L"allowed"/L"a.json","{\"x\":1}\r\n");
@@ -96,8 +104,10 @@ int wmain(int argc,wchar_t** argv){try{
  // ---- Requests, dialogs and reads ----
  auto log=root/L"dialogs.log";SetEnvironmentVariableW(L"MMDHL_FA_TEST_LOG",log.c_str());
  FileAccessConfig config;config.worker=argv[1];config.store=root/L"store"/L"file-access.json";config.temp=root/L"tmp";config.policy=policy;fs::create_directories(config.temp);
- // Lua can write anything under garrysmod/data: a forged store there means nothing.
- write(root/L"garrysmod"/L"data"/L"mmd_hotloader"/L"file-access.json",Json{{"schema",1},{"enabled",true},{"grants",{{{"id","0123456789abcdef"},{"requester","Evil"},{"folder",local+"\\outside"}}}}}.dump());
+ // Lua can write anything under garrysmod/data: the module's store is in %LOCALAPPDATA% (the
+ // dialogs' folders are in the user's temporary folder, checked below).
+ {PWSTR p=nullptr;SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&p);fs::path localData=p;CoTaskMemFree(p);
+  check(fileAccessStore()==localData/L"ModelHotloader"/L"file-access.json","the grants store is not in %LOCALAPPDATA%: "+u8(fileAccessStore()));}
  auto fa=std::make_unique<FileAccess>(config);
  // Without the server realm in this process (a remote server) nothing can be asked.
  check(!localServerRealm()&&fa->info().value("reason","")=="no_local_server"&&!fa->info().value("available",true),"file access looked available without a local server");
@@ -106,7 +116,20 @@ int wmain(int argc,wchar_t** argv){try{
  // A remote server's scripts cannot see or change the player's choices either.
  check(refusal([&]{fa->grants();})=="unavailable_remote"&&refusal([&]{fa->revoke("all");})=="unavailable_remote"&&refusal([&]{fa->setEnabled(false,"en");})=="unavailable_remote","management passed without a local server");
  acquireRuntimeRealm(true);
- check(fa->grants()["grants"].empty()&&fa->info().value("enabled",false),"grants were read from a forged file");
+ check(fa->grants()["grants"].empty()&&fa->info().value("enabled",false),"a new store has grants or is off");
+ // The module's own setup names no temporary folder: the dialogs use the user's, by a random name.
+ {wchar_t temp[MAX_PATH+1]{};GetTempPathW(MAX_PATH+1,temp);auto label="Temp test "+std::to_string(GetCurrentProcessId());
+  auto folder=[&]{for(auto& e:fs::directory_iterator(temp))if(e.path().filename().wstring().starts_with(L"mmdhl-fa-")&&fs::exists(e.path()/L"request.json"))try{if(readJson(e.path()/L"request.json").value("requester","")==label)return e.path();}catch(...){}return fs::path();};
+  FileAccess own({config.worker,root/L"store3"/L"file-access.json",{},policy});answer(L"wait");auto id=own.pick({{"requester",label}});
+  auto dir=folder();check(!dir.empty()&&dir.filename().wstring().size()==9+32,"the dialog's private folder is not in %TEMP%");
+  own.cancel(id);Sleep(100);check(!fs::exists(dir),"the dialog's private folder was left in %TEMP%");}
+ // A missing drive or a never-readable place is told in the window like a missing file, not
+ // at once: a script cannot learn silently which drives or user folders this computer has.
+ {FileAccess probe({config.worker,root/L"store4"/L"file-access.json",config.temp,policy});answer(L"once");
+  auto told=[&](const std::string& path,const std::string& problem){auto id=probe.request({{"requester","Drives"},{"path",path}});auto r=wait(probe,id);auto shown=logged(log).back();
+   check(r.value("state","")=="denied"&&shown.value("problem","")==problem&&shown.value("path","")==path&&!shown.value("remember",true),"the window for "+path+": "+r.dump()+" "+shown.dump());};
+  if(letter)told(std::string(1,letter)+":\\a.txt","not_found");
+  told(local+"\\outside\\denied\\x.txt","denied_location");}
  check(fa->setEnabled(true,"en").value("enabled",false),"turning on while already on");
  check(fa->info().value("available",false),"file access unavailable in a local session: "+fa->info().dump());
  answer(L"once");auto granted=wait(*fa,fa->request(ask));
@@ -186,7 +209,7 @@ int wmain(int argc,wchar_t** argv){try{
  // Revoking: the grant is gone and so are the items it answered.
  granted=wait(*fa,fa->request({{"requester","Test Addon"},{"path",local+"\\allowed\\a.json"}}));check(granted["items"][0].value("remembered",false),"the remembered grant after re-enabling");
  auto grants=fa->grants();check(grants["grants"].size()==1&&grants["grants"][0]["folder"].get<std::string>().starts_with("~"),"the grants list: "+grants.dump());
- fa->revoke(grants["grants"][0]["id"]);check(fa->grants()["grants"].empty()&&readJson(config.store)["grants"].empty(),"revoke");
+ check(fa->revoke(grants["grants"][0]["id"])&&fa->grants()["grants"].empty()&&readJson(config.store)["grants"].empty(),"revoke");
  check(refusal([&]{fa->read(granted["items"][0]["handle"],Json::object());})=="released","an item outlived its revoked grant");
  // The store: a corrupt file means no grants; entries that fail the rules are dropped.
  write(config.store,"{not json");fa=std::make_unique<FileAccess>(config);check(fa->grants()["grants"].empty()&&fa->info().value("enabled",false),"a corrupt store");
@@ -196,10 +219,34 @@ int wmain(int argc,wchar_t** argv){try{
   {{"id","0123456789abcde3"},{"requester","Bad\nname"},{"folder",local+"\\allowed"}}}}}.dump());
  fa=std::make_unique<FileAccess>(config);grants=fa->grants();
  check(grants["grants"].size()==1&&grants["grants"][0]["requester"]=="Kept"&&!grants.value("enabled",true),"store validation: "+grants.dump());
- // Labels are free to change: after ten refusals in a session nobody may ask.
- fa=std::make_unique<FileAccess>(FileAccessConfig{config.worker,root/L"store2"/L"file-access.json",config.temp,policy});answer(L"deny");
- for(int i=0;i<10;i++)check(wait(*fa,fa->pick({{"requester","Name "+std::to_string(i)}})).value("state","")=="denied","a renamed requester");
- check(refusal([&]{fa->pick({{"requester","Fresh name"}});})=="auto_denied","a renamed requester kept asking");
+ // Closing a picker is not a refusal of the addon, and an allowed request clears its refusals.
+ fa=std::make_unique<FileAccess>(FileAccessConfig{config.worker,root/L"store2"/L"file-access.json",config.temp,policy});
+ answer(L"cancelled");for(int i=0;i<4;i++)check(wait(*fa,fa->pick({{"requester","Picker"}})).value("state","")=="denied","closing the picker "+std::to_string(i+1)+" times");
+ Json again={{"requester","Again"},{"path",local+"\\allowed\\a.json"}};
+ answer(L"deny");for(int i=0;i<2;i++)wait(*fa,fa->request(again));
+ answer(L"once");check(wait(*fa,fa->request(again)).value("state","")=="granted","allowed after two refusals");
+ answer(L"deny");for(int i=0;i<3;i++)check(wait(*fa,fa->request(again)).value("state","")=="denied","refusals before the allowed request still counted");
+ check(refusal([&]{fa->request(again);})=="auto_denied","a requester refused three times after an allowed request asked again");
+ // Labels are free to change: after ten refusals or closed pickers in a map nobody may ask.
+ check(wait(*fa,fa->request({{"requester","Name"},{"path",local+"\\allowed\\a.json"}})).value("state","")=="denied","a renamed requester");
+ check(refusal([&]{fa->pick({{"requester","Fresh name"}});})=="auto_denied_session","a renamed requester kept asking");
+ // A store that cannot be written: the player's answers apply until the map changes, are
+ // reported as not saved, and no error (with a path in it) reaches Lua.
+ write(root/L"blocker","not a folder");
+ {FileAccess locked({config.worker,root/L"blocker"/L"file-access.json",config.temp,policy});answer(L"always");
+  auto r=wait(locked,locked.request({{"requester","Locked"},{"path",local+"\\allowed\\a.json"}}));
+  check(r.value("state","")=="granted"&&r.value("notSaved",false)&&r.value("changed",false)&&r["items"][0].value("remembered",false)&&locked.grants()["grants"].size()==1,"always with a store that cannot be saved: "+r.dump());
+  check(!locked.revoke("all")&&locked.grants()["grants"].empty(),"revoking with a store that cannot be saved");
+  auto off=locked.setEnabled(false,"en");check(!off.value("enabled",true)&&off.value("notSaved",false)&&!locked.info().value("enabled",true),"turning off with a store that cannot be saved: "+off.dump());
+  answer(L"yes");auto turnedOn=wait(locked,locked.setEnabled(true,"en")["request"]);
+  check(turnedOn.value("state","")=="granted"&&turnedOn.value("notSaved",false)&&locked.info().value("enabled",false),"turning on with a store that cannot be saved: "+turnedOn.dump());}
+ // A result nobody collects holds its read slot only for keepResultsMs.
+ {FileAccessConfig quick=config;quick.store=root/L"store5"/L"file-access.json";quick.keepResultsMs=1000;FileAccess reader(quick);answer(L"once");
+  auto file=wait(reader,reader.request({{"requester","Reader"},{"path",local+"\\allowed\\a.json"}}))["items"][0]["handle"].get<std::string>();
+  std::vector<uint64_t> forgotten;for(int i=0;i<8;i++)forgotten.push_back(reader.read(file,Json::object()));
+  check(refusal([&]{reader.read(file,Json::object());})=="busy","a ninth read ran beside eight");
+  Sleep(1500);check(readNow(reader,file,Json::object()).data=="{\"x\":1}\r\n","uncollected results kept their slots");
+  check(refusal([&]{reader.pollRead(forgotten[0]);})=="unknown_request","an uncollected result was kept");}
  fa.reset();releaseRuntimeRealm(true);check(!localServerRealm(),"the server realm count");
  std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule and dialogs\n";
  return 0;

@@ -115,6 +115,13 @@ bool plainDirectory(const fs::path& path){auto a=GetFileAttributesW(ioPath(path)
 void removeFolder(const fs::path& dir){std::error_code error;if(!dir.empty()&&plainDirectory(dir))fs::remove_all(ioPath(dir),error);}
 int64_t now(){return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();}
 int64_t unixTime(LARGE_INTEGER t){return t.QuadPart/10000000-11644473600ll;}
+bool regularFile(const fs::path& path){std::error_code error;return fs::is_regular_file(path,error);}
+// The dialogs quote addon text with “ ” « » 「 」: a closing mark (or one that looks like it)
+// inside the text would let the addon write sentences that seem to be Model Hotloader's.
+bool quotationMark(wchar_t c){
+ static constexpr std::wstring_view marks=L"\"«»‹›“”„‟″‶ʺ˝״≪≫❝❞〃〈〉《》「」『』〝〞〟﹁﹂﹃﹄＂｢｣";
+ return marks.find(c)!=marks.npos;
+}
 }
 std::string cleanLabel(std::string_view text,size_t maxCharacters){
  std::wstring w;try{w=wide(text);}catch(...){refuse("invalid_options","Text from the addon is not valid UTF-8");}
@@ -127,7 +134,7 @@ std::string cleanLabel(std::string_view text,size_t maxCharacters){
   if(c>=0xDC00&&c<=0xDFFF)continue;
   bool pair=c>=0xD800&&c<=0xDBFF;if(pair&&!(i+1<w.size()&&w[i+1]>=0xDC00&&w[i+1]<=0xDFFF))continue;
   if(space&&!out.empty()){out.push_back(L' ');if(++used>=maxCharacters)break;}
-  space=false;out.push_back(c);if(pair)out.push_back(w[++i]);used++;
+  space=false;out.push_back(quotationMark(c)?L'\'':c);if(pair)out.push_back(w[++i]);used++;
  }
  return utf8(out);
 }
@@ -142,7 +149,8 @@ bool FilePolicy::deniedPath(const fs::path& path) const {
 }
 bool FilePolicy::broadFolder(const fs::path& folder) const {
  if(!folder.has_relative_path()||trimmed(folder)==trimmed(folder.root_path()))return true;
- auto f=trimmed(folder);for(auto& b:broad)if(sameText(f,trimmed(b)))return true;
+ // A folder that holds one of them is broader still (C:\Users\me\AppData holds Roaming and Local).
+ for(auto& b:broad)if(insideFolder(b,folder))return true;
  return false;
 }
 FilePolicy FilePolicy::system(const fs::path& gameRoot){
@@ -156,19 +164,23 @@ FilePolicy FilePolicy::system(const fs::path& gameRoot){
  if(!roaming.empty()){
   for(auto name:{L"Credentials",L"Protect",L"Crypto",L"Vault",L"SystemCertificates"})deny(roaming/L"Microsoft"/name);
   for(auto app:{L"Mozilla\\Firefox",L"Opera Software",L"Thunderbird",L"discord\\Local Storage",L"discordcanary\\Local Storage",L"discordptb\\Local Storage",L"gnupg"})deny(roaming/app);
+  // Sessions, saved passwords and wallets that work without Windows' own protection.
+  for(auto app:{L"Telegram Desktop\\tdata",L"Signal",L"FileZilla",L"Exodus",L"Electrum\\wallets",L"Ethereum\\keystore",L"Bitcoin\\wallets"})deny(roaming/app);
  }
  if(!local.empty()){
   for(auto name:{L"Credentials",L"Vault"})deny(local/L"Microsoft"/name);
   for(auto browser:{L"Google\\Chrome\\User Data",L"Microsoft\\Edge\\User Data",L"BraveSoftware\\Brave-Browser\\User Data",L"Chromium\\User Data",L"Vivaldi\\User Data",L"Yandex\\YandexBrowser\\User Data",L"Mozilla\\Firefox"})deny(local/browser);
   deny(local/L"ModelHotloader");
  }
- if(!profile.empty())for(auto keys:{L".ssh",L".gnupg",L".aws",L".azure",L".kube",L".docker"})deny(profile/keys);
+ if(!profile.empty())for(auto keys:{L".ssh",L".gnupg",L".aws",L".azure",L".kube",L".docker",L".config\\gh"})deny(profile/keys);
  // Steam's login tokens: its config folder and the ssfn files beside it.
  wchar_t steam[MAX_PATH]{};DWORD size=sizeof(steam);
  if(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Valve\\Steam",L"SteamPath",RRF_RT_REG_SZ,nullptr,steam,&size)==ERROR_SUCCESS&&steam[0]){fs::path root(steam);root.make_preferred();deny(root/L"config");}
  if(!gameRoot.empty())deny(gameRoot/L"garrysmod"/L"cfg");
- p.deniedNames={L"ntuser.dat",L"usrclass.dat",L"ssfn",L"mmdhl-fa-"};
- for(auto id:{&FOLDERID_UserProfiles,&FOLDERID_Profile,&FOLDERID_Desktop,&FOLDERID_Documents,&FOLDERID_Downloads,&FOLDERID_RoamingAppData,&FOLDERID_LocalAppData,&FOLDERID_ProgramData,&FOLDERID_ProgramFiles,&FOLDERID_ProgramFilesX86,&FOLDERID_SkyDrive,&FOLDERID_Public})
+ // Registry hives, Steam's login files, plain-text tokens (git, npm, netrc, PyPI) and wallets, anywhere.
+ p.deniedNames={L"ntuser.dat",L"usrclass.dat",L"ssfn",L"mmdhl-fa-",L".git-credentials",L".npmrc",L".netrc",L"_netrc",L".pypirc",L"wallet.dat"};
+ for(auto id:{&FOLDERID_UserProfiles,&FOLDERID_Profile,&FOLDERID_Desktop,&FOLDERID_Documents,&FOLDERID_Downloads,&FOLDERID_Pictures,&FOLDERID_Videos,&FOLDERID_Music,&FOLDERID_SavedGames,
+  &FOLDERID_RoamingAppData,&FOLDERID_LocalAppData,&FOLDERID_LocalAppDataLow,&FOLDERID_ProgramData,&FOLDERID_ProgramFiles,&FOLDERID_ProgramFilesX86,&FOLDERID_SkyDrive,&FOLDERID_Public})
   if(auto path=knownFolder(*id);!path.empty())p.broad.push_back(canonical(path));
  return p;
 }
@@ -183,13 +195,16 @@ fs::path drivePath(std::string_view s){
  if(w.size()>3&&w.back()==L'\\')w.pop_back();
  return fs::path(w);
 }
+// Asked before anything opens the path: opening a network drive contacts its server.
+const char* driveProblem(const fs::path& path,bool requireLocal){
+ wchar_t root[]={path.wstring()[0],L':',L'\\',0};auto type=GetDriveTypeW(root);
+ if(type==DRIVE_NO_ROOT_DIR||type==DRIVE_UNKNOWN)return "not_found";
+ return requireLocal&&type==DRIVE_REMOTE?"remote_drive":nullptr;
+}
 }
 fs::path checkRequestedPath(std::string_view s,bool requireLocal,const FilePolicy& policy){
  auto path=drivePath(s);
- // Asked before anything opens the path: opening a network drive contacts its server.
- wchar_t root[]={path.wstring()[0],L':',L'\\',0};auto type=GetDriveTypeW(root);
- if(type==DRIVE_NO_ROOT_DIR||type==DRIVE_UNKNOWN)refuse("not_found","There is no such drive");
- if(requireLocal&&type==DRIVE_REMOTE)refuse("remote_drive","Files on network drives can only be chosen in the file picker");
+ if(auto problem=driveProblem(path,requireLocal))refuse(problem,problem==std::string("not_found")?"There is no such drive":"Files on network drives can only be chosen in the file picker");
  if(policy.deniedPath(path))refuse("denied_location","Model Hotloader never lets addons read this location");
  return path;
 }
@@ -304,7 +319,7 @@ fs::path privateFolder(const fs::path& temp){
  refuse("dialog_failed","Cannot create a private folder for the dialog");
 }
 void launchDialog(FileAccess::Request& r,const fs::path& worker,const wchar_t* mode){
- if(!fs::is_regular_file(worker))refuse("worker_missing","The Model Hotloader worker is missing");
+ if(!regularFile(worker))refuse("worker_missing","The Model Hotloader worker is missing");
  auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)refuse("dialog_failed","Invalid worker path");return L"\""+p.wstring()+L"\"";};
  auto cmd=quote(worker)+L" "+mode+L" "+quote(r.dir);
  r.group=CreateJobObjectW(nullptr,nullptr);JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;SetInformationJobObject(r.group,JobObjectExtendedLimitInformation,&limits,sizeof(limits));
@@ -325,6 +340,9 @@ FileAccess::FileAccess(FileAccessConfig c):config(std::move(c)),policy(std::make
  }
 }
 FileAccess::~FileAccess(){for(auto& [id,r]:requests)stop(*r);}
+// The player's answer counts at once; saving it is best effort, so a locked or read-only
+// store cannot turn a decision into a failure. false: the change lasts until the map changes.
+bool FileAccess::persist(){try{store.save();return true;}catch(...){return false;}}
 void FileAccess::stop(Request& r){
  // The folder can go once the worker is gone (it may still hold request.json open).
  if(r.group){TerminateJobObject(r.group,1);if(r.process)WaitForSingleObject(r.process,2000);CloseHandle(r.group);r.group=nullptr;}
@@ -332,7 +350,7 @@ void FileAccess::stop(Request& r){
  removeFolder(r.dir);r.dir.clear();
 }
 Json FileAccess::info(){
- std::string reason=!localServerRealm()?"no_local_server":!store.enabled?"disabled":!fs::is_regular_file(config.worker)?"worker_missing":"ok";
+ std::string reason=!localServerRealm()?"no_local_server":!store.enabled?"disabled":!regularFile(config.worker)?"worker_missing":"ok";
  return {{"version",1},{"available",reason=="ok"},{"reason",reason},{"enabled",store.enabled},{"local",localServerRealm()},{"maxRead",FileReadMaximum},{"defaultRead",FileReadDefault},{"maxOffset",FileOffsetMaximum},{"maxList",FileListMaximum},{"dialog",active!=0},{"queued",queue.size()}};
 }
 // The enable confirmation counts its refusals under a key no cleaned label can be.
@@ -341,10 +359,10 @@ static void localOnly(){if(!localServerRealm())refuse("unavailable_remote","File
 void FileAccess::available(const std::string& requester){
  localOnly();
  if(!store.enabled)refuse("disabled","The player turned file access for other addons off");
- if(!fs::is_regular_file(config.worker))refuse("worker_missing","The Model Hotloader worker is missing");
+ if(!regularFile(config.worker))refuse("worker_missing","The Model Hotloader worker is missing");
  if(auto it=denials.find(requester);it!=denials.end()&&it->second>=FileDenialLimit)refuse("auto_denied","The player denied this addon three times; it can ask again after the map changes");
  // Labels are free to change, so a script cannot ask forever under new names either.
- if(refusals>=FileRefusalLimit)refuse("auto_denied","The player denied ten requests; addons can ask again after the map changes");
+ if(refusals>=FileRefusalLimit)refuse("auto_denied_session","The player refused or closed ten requests; addons can ask again after the map changes");
 }
 static void common(FileAccess::Request& r,const Json& o){
  if(!o.is_object())refuse("invalid_options","File access options must be an object");
@@ -359,9 +377,13 @@ uint64_t FileAccess::pick(const Json& o){
 uint64_t FileAccess::request(const Json& o){
  auto r=std::make_unique<Request>();r->kind=Request::Path;common(*r,o);r->folder=flag(o,"folder");
  if(!o.contains("path")||!o["path"].is_string())refuse("invalid_options","Give the path to request");
- available(r->requester);r->path=checkRequestedPath(o["path"].get<std::string>(),true,*policy);
+ available(r->requester);r->path=drivePath(o["path"].get<std::string>());
+ // Only the text is refused at once. A missing or network drive or a never-readable place
+ // is told in the window like a missing file, with nothing opened: an immediate answer
+ // would let a script learn silently which drives or user folders this computer has.
+ if(auto problem=driveProblem(r->path,true))r->problem=problem;else if(policy->deniedPath(r->path))r->problem="denied_location";
  // A remembered folder answers without asking, once the path proves to lead inside it.
- if(store.covering(r->requester,r->path))try{
+ if(r->problem.empty()&&store.covering(r->requester,r->path))try{
   auto target=resolveFile(r->path);
   if(target.folder==r->folder&&!policy->deniedPath(target.path))if(auto g=store.covering(r->requester,target.path))r->result=grant(*r,target,g->id);
  }catch(const FileAccessError&){}
@@ -375,17 +397,19 @@ uint64_t FileAccess::enqueue(std::unique_ptr<Request> r){
  for(size_t i=0;i+32<done.size();i++)requests.erase(done[i]);
  auto id=sequence++;if(r->result.is_null())queue.push_back(id);requests.emplace(id,std::move(r));pump();return id;
 }
+// Other failures get fixed sentences: a system message can name a folder in the player's
+// profile (and with it the Windows user name), and paths never travel to Lua.
 void FileAccess::pump(){
  if(active){
   auto& r=*requests.at(active);if(WaitForSingleObject(r.process,0)==WAIT_TIMEOUT)return;
   Json answer;try{answer=readJson(r.dir/L"result.json");}catch(...){}
   stop(r);active=0;
-  try{finish(r,answer);}catch(const FileAccessError& e){r.result=failed(e.code,e.what());}catch(const std::exception& e){r.result=failed("dialog_failed",e.what());}
+  try{finish(r,answer);}catch(const FileAccessError& e){r.result=failed(e.code,e.what());}catch(const std::exception&){r.result=failed("dialog_failed","The answer could not be handled");}
  }
  while(!active&&!queue.empty()){
   auto id=queue.front();queue.pop_front();auto& r=*requests.at(id);
   try{start(r);if(r.result.is_null())active=id;}
-  catch(const FileAccessError& e){stop(r);r.result=failed(e.code,e.what());}catch(const std::exception& e){stop(r);r.result=failed("dialog_failed",e.what());}
+  catch(const FileAccessError& e){stop(r);r.result=failed(e.code,e.what());}catch(const std::exception&){stop(r);r.result=failed("dialog_failed","The dialog could not be prepared");}
  }
 }
 void FileAccess::start(Request& r){
@@ -393,7 +417,7 @@ void FileAccess::start(Request& r){
  if(r.kind==Request::Path){
   // The path is opened here, after the request was accepted: the player sees the
   // dialog whether it exists or not, so an addon cannot probe for files silently.
-  try{auto t=resolveFile(r.path);
+  if(r.problem.empty())try{auto t=resolveFile(r.path);
    if(t.folder!=r.folder)r.problem=r.folder?"not_a_folder":"not_a_file";
    else if(policy->deniedPath(t.path))r.problem="denied_location";
    else if(props::networkPath(utf8(t.path.wstring())))r.problem="network";
@@ -416,7 +440,7 @@ Json FileAccess::grant(Request& r,const ResolvedFile& target,const std::string& 
  auto entry=std::make_shared<Item>();entry->root=target.path;entry->folder=target.folder;entry->size=target.size;entry->requester=r.requester;entry->grant=grantId;
  entry->name=utf8(target.path.filename().empty()?target.path.wstring():target.path.filename().wstring());
  auto handle=randomHex(16);items[handle]=entry;
- if(!grantId.empty())for(auto& g:store.grants)if(g.id==grantId){g.used=now();try{store.save();}catch(...){}}
+ if(!grantId.empty())for(auto& g:store.grants)if(g.id==grantId&&g.used!=now()){g.used=now();persist();}
  Json item={{"handle",handle},{"name",entry->name},{"folder",entry->folder},{"remembered",!grantId.empty()},{"displayPath",displayPath(target.path)}};
  if(!entry->folder)item["size"]=entry->size;
  return {{"state","granted"},{"items",Json::array({item})}};
@@ -427,10 +451,12 @@ void FileAccess::finish(Request& r,const Json& answer){
  auto refused=[&](const char* message){denials[r.requester]++;refusals++;r.result=denied("denied",message);};
  if(r.kind==Request::Enable){
   if(said!="yes"){refused("The player kept file access off");return;}
-  store.enabled=true;store.save();r.result={{"state","granted"},{"enabled",true},{"changed",true}};return;
+  store.enabled=true;r.result={{"state","granted"},{"enabled",true},{"changed",true}};if(!persist())r.result["notSaved"]=true;return;
  }
  if(r.kind==Request::Pick){
-  if(said!="selected"||!answer.contains("paths")||!answer["paths"].is_array()){refused("The player chose nothing");return;}
+  // Closing a picker is not a refusal of the addon (the player usually opened it from the
+  // addon's own menu); it counts only towards the map's limit, which stops a picker loop.
+  if(said!="selected"||!answer.contains("paths")||!answer["paths"].is_array()){refusals++;r.result=denied("denied","The player chose nothing");return;}
   Json granted=Json::array(),rejected=Json::array();std::string first;
   for(auto& p:answer["paths"]){
    if(!p.is_string()||granted.size()>=64)continue;
@@ -443,18 +469,20 @@ void FileAccess::finish(Request& r,const Json& answer){
    }catch(const FileAccessError& e){if(first.empty())first=e.code;rejected.push_back({{"name",utf8(fs::path(wide(p.get<std::string>())).filename().wstring())},{"code",e.code}});}
   }
   if(granted.empty()){r.result=failed(first.empty()?"not_found":first,"Nothing the player chose can be read");return;}
-  r.result={{"state","granted"},{"items",granted}};if(!rejected.empty())r.result["refused"]=rejected;return;
+  // The player trusts this addon after all: earlier refusals no longer count against it.
+  denials.erase(r.requester);r.result={{"state","granted"},{"items",granted}};if(!rejected.empty())r.result["refused"]=rejected;return;
  }
  if(!r.target||(said!="once"&&said!="always")){refused("The player denied the request");return;}
  // The target is checked again when it is read; "always" is kept only where the dialog offered it.
- std::string grantId;
+ std::string grantId;bool saved=true;
  if(said=="always"&&r.canRemember){
   FileGrant g;g.id=randomHex(8);g.requester=r.requester;g.folder=r.rememberFolder;g.created=g.used=now();
   store.grants.erase(std::remove_if(store.grants.begin(),store.grants.end(),[&](const FileGrant& o){return o.requester==g.requester&&insideFolder(o.folder,g.folder);}),store.grants.end());
   if(store.grants.size()>=256)store.grants.erase(store.grants.begin());
-  store.grants.push_back(g);store.save();grantId=g.id;
+  store.grants.push_back(g);grantId=g.id;saved=persist();
  }
- r.result=grant(r,*r.target,grantId);if(!grantId.empty())r.result["changed"]=true;
+ denials.erase(r.requester);
+ r.result=grant(r,*r.target,grantId);if(!grantId.empty())r.result["changed"]=true;if(!saved)r.result["notSaved"]=true;
 }
 Json FileAccess::poll(uint64_t id){
  pump();auto it=requests.find(id);if(it==requests.end())refuse("unknown_request","Unknown file request");
@@ -467,13 +495,24 @@ void FileAccess::cancel(uint64_t id){
   if(active==id){stop(*it->second);active=0;}
   queue.erase(std::remove(queue.begin(),queue.end(),id),queue.end());requests.erase(it);pump();return;
  }
- if(auto it=reads.find(id);it!=reads.end()){droppedReads.push_back(std::move(it->second));reads.erase(it);}
- if(auto it=lists.find(id);it!=lists.end()){droppedLists.push_back(std::move(it->second));lists.erase(it);}
+ if(auto it=reads.find(id);it!=reads.end()){droppedReads.push_back(std::move(it->second.future));reads.erase(it);}
+ if(auto it=lists.find(id);it!=lists.end()){droppedLists.push_back(std::move(it->second.future));lists.erase(it);}
 }
-// Reads and listings still running, canceled ones included; finished canceled ones are let go.
+namespace {
+// Runs f on its own thread and notes when it ended, failures included.
+template<class F> auto work(F f){
+ auto finished=std::make_shared<std::atomic<uint64_t>>(0);
+ return FileWork<decltype(f())>{std::async(std::launch::async,[f,finished]{struct Done{std::atomic<uint64_t>& at;~Done(){at=GetTickCount64();}} done{*finished};return f();}),finished};
+}
+}
+// The slots: reads and listings still running (canceled ones until they end) and results
+// waiting to be collected. A result nobody collects within keepResultsMs is dropped, so a
+// script that stops polling (or forgot its ids on a Lua refresh) cannot hold them for good.
 size_t FileAccess::running(){
  auto ready=[](auto& f){return f.wait_for(std::chrono::seconds(0))==std::future_status::ready;};
  std::erase_if(droppedReads,ready);std::erase_if(droppedLists,ready);
+ auto now=GetTickCount64();auto stale=[&](auto& entry){auto at=entry.second.finished->load();return at&&now-at>=config.keepResultsMs&&ready(entry.second.future);};
+ std::erase_if(reads,stale);std::erase_if(lists,stale);
  return reads.size()+lists.size()+droppedReads.size()+droppedLists.size();
 }
 std::shared_ptr<const FileAccess::Item> FileAccess::item(const std::string& handle) const {
@@ -488,12 +527,12 @@ uint64_t FileAccess::read(const std::string& handle,const Json& o){
  if(options.contains("relative")&&!options["relative"].is_null()){if(!options["relative"].is_string())refuse("invalid_options","relative must be text");r.relative=checkRelativePath(options["relative"].get<std::string>());}
  if(!r.relative.empty()&&!entry->folder)refuse("invalid_options","Only folders have paths inside them");
  if(running()>=8)refuse("busy","Too many reads are running");
- auto id=sequence++;auto rules=policy;reads.emplace(id,std::async(std::launch::async,[entry,r,rules]{return readItem(*entry,r,*rules);}));return id;
+ auto id=sequence++;auto rules=policy;reads.emplace(id,work([entry,r,rules]{return readItem(*entry,r,*rules);}));return id;
 }
 std::optional<FileReadResult> FileAccess::pollRead(uint64_t id){
  auto it=reads.find(id);if(it==reads.end())refuse("unknown_request","Unknown read");
- if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
- auto future=std::move(it->second);reads.erase(it);return future.get();
+ if(it->second.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
+ auto future=std::move(it->second.future);reads.erase(it);return future.get();
 }
 uint64_t FileAccess::list(const std::string& handle,const Json& o){
  if(!localServerRealm()||!store.enabled)refuse(!store.enabled?"disabled":"unavailable_remote","File access is not available");
@@ -502,12 +541,12 @@ uint64_t FileAccess::list(const std::string& handle,const Json& o){
  if(options.contains("relative")&&!options["relative"].is_null()){if(!options["relative"].is_string())refuse("invalid_options","relative must be text");relative=checkRelativePath(options["relative"].get<std::string>());}
  if(!entry->folder)refuse("not_a_folder","Only folders can be listed");
  if(running()>=8)refuse("busy","Too many reads are running");
- auto id=sequence++;auto rules=policy;lists.emplace(id,std::async(std::launch::async,[entry,relative,hidden,rules]{return listItem(*entry,relative,hidden,*rules);}));return id;
+ auto id=sequence++;auto rules=policy;lists.emplace(id,work([entry,relative,hidden,rules]{return listItem(*entry,relative,hidden,*rules);}));return id;
 }
 std::optional<Json> FileAccess::pollList(uint64_t id){
  auto it=lists.find(id);if(it==lists.end())refuse("unknown_request","Unknown listing");
- if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
- auto future=std::move(it->second);lists.erase(it);return future.get();
+ if(it->second.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
+ auto future=std::move(it->second.future);lists.erase(it);return future.get();
 }
 void FileAccess::release(const std::string& handle){items.erase(handle);}
 Json FileAccess::grants(){
@@ -515,19 +554,20 @@ Json FileAccess::grants(){
  Json list=Json::array();for(auto& g:store.grants)list.push_back({{"id",g.id},{"requester",g.requester},{"folder",displayPath(g.folder)},{"created",g.created},{"used",g.used}});
  return {{"enabled",store.enabled},{"grants",list}};
 }
-void FileAccess::revoke(const std::string& id){
+bool FileAccess::revoke(const std::string& id){
  localOnly();
  auto gone=[&](const FileGrant& g){return id=="all"||g.id==id;};
  for(auto it=items.begin();it!=items.end();)if(!it->second->grant.empty()&&std::any_of(store.grants.begin(),store.grants.end(),[&](const FileGrant& g){return gone(g)&&g.id==it->second->grant;}))it=items.erase(it);else ++it;
- store.grants.erase(std::remove_if(store.grants.begin(),store.grants.end(),gone),store.grants.end());store.save();
+ store.grants.erase(std::remove_if(store.grants.begin(),store.grants.end(),gone),store.grants.end());return persist();
 }
 Json FileAccess::setEnabled(bool enabled,const std::string& code){
  // A remote server's scripts can neither see nor change the player's choices.
  localOnly();
  if(!enabled){
-  store.enabled=false;store.save();items.clear();
+  // Off before anything is saved: a store that cannot be written must not keep it on.
+  store.enabled=false;items.clear();
   for(auto& [id,r]:requests)if(r->result.is_null()){stop(*r);r->result=denied("disabled","The player turned file access for other addons off");}
-  queue.clear();active=0;return {{"enabled",false}};
+  queue.clear();active=0;Json off={{"enabled",false}};if(!persist())off["notSaved"]=true;return off;
  }
  if(store.enabled)return {{"enabled",true}};
  // Turning it on is the player's decision too, asked natively.

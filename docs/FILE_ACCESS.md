@@ -24,9 +24,17 @@ API and its limits).
 * **Allow once** lasts until the map changes. **Always allow this addon here**
   remembers the folder (and its subfolders) for that addon name. It is not
   offered for whole drives, your user folder, Desktop, Documents, Downloads,
-  AppData or Program Files.
-* An addon that you refuse three times is refused for the rest of the map
-  without asking; after ten refusals in one map nobody can ask.
+  Pictures, Music, Videos, Saved Games, AppData (all of it: Roaming, Local and
+  LocalLow), OneDrive, Public or Program Files, nor for a folder that holds one
+  of them.
+* An addon that you refuse three times in a request window (**Deny**, or
+  closing the window) is refused for the rest of the map without asking;
+  allowing one of its requests clears its count. Closing a file picker does not
+  count against the addon, but after ten refusals and closed pickers in one map
+  no addon can ask until the map changes.
+* If Model Hotloader cannot save a choice (for example, its folder in
+  `%LOCALAPPDATA%` is read-only or held by antivirus software), a notice says
+  so; the choice still applies until the map changes.
 * **Utilities → User → Character Models → File access for other addons…**
   lists the remembered folders (your user folder is shown as `~`), revokes them
   one by one or all at once, and has the switch **Let addons ask to read
@@ -46,8 +54,11 @@ The decision is made in the native module, where Lua cannot reach it:
   Derma buttons and override hooks, but not windows of another process. Their
   sentences are compiled into the module in the player's language; only the
   addon's name, its reported script, its stated purpose and a short title come
-  from Lua, shown in quotes, cleaned of control and text-direction characters
-  and cut to length.
+  from Lua. They are shown in quotes or marked as reported and not verified,
+  cleaned of control and text-direction characters, cut to length, and their
+  own quotation marks (`"`, `“ ”`, `« »`, `「 」` and look-alikes) become
+  apostrophes, so the text cannot close the quotes and add sentences that look
+  like Model Hotloader's.
 * Requests and answers travel through a folder the module creates in the
   user's temporary folder with a random name, and remembered folders are stored
   in `%LOCALAPPDATA%\ModelHotloader\file-access.json`. Lua can write anything
@@ -68,15 +79,26 @@ The decision is made in the native module, where Lua cannot reach it:
 * Some places are never readable, even with consent: the Windows folder,
   Windows credential and key stores, browser profiles (Chrome, Edge, Brave,
   Chromium, Vivaldi, Yandex, Opera, Firefox, Thunderbird), `.ssh`, `.gnupg`,
-  `.aws`, `.azure`, `.kube` and `.docker` in the user folder, registry hives
-  (`NTUSER.DAT`), Steam's `config` folder and `ssfn` files, Discord's local
-  storage, the game's `cfg` folder and the remembered-folders store itself.
+  `.aws`, `.azure`, `.kube`, `.docker` and `.config\gh` in the user folder,
+  registry hives (`NTUSER.DAT`), Steam's `config` folder and `ssfn` files,
+  Discord's local storage, Telegram's session (`tdata`), Signal, FileZilla's
+  saved sites, the Exodus, Electrum, Ethereum and Bitcoin wallets,
+  `.git-credentials`, `.npmrc`, `.netrc`, `.pypirc` and `wallet.dat` files
+  anywhere, the game's `cfg` folder and the remembered-folders store itself.
+  This list is a second line of defence, not a promise that everything secret
+  on the computer is covered: allow only what an addon needs.
 * An addon never receives full paths: items carry an opaque handle, the file
-  name and a display path with the user folder shown as `~`.
-* Whether a named path exists is only revealed after the player answered: a
-  missing file still opens the request window (which says so), so an addon
-  cannot probe the disk silently. Inside a remembered folder, requests are
-  answered without a window.
+  name and a display path with the user folder shown as `~`. Failures carry
+  fixed English sentences, never a system message that could name a folder.
+* Whether a named file or folder exists, whether its drive letter exists or is
+  a network drive, and whether it is on the never-readable list are only
+  revealed after the player answered: such a request still opens the request
+  window (which says what is wrong and offers only **Close**), and nothing is
+  opened for a missing or network drive or a never-readable place. So an addon
+  cannot probe the disk, or guess the Windows user name from the never-readable
+  list, silently. Only path text that is malformed (relative, `..`, network
+  forms, device names) is refused at once. Inside a remembered folder, requests
+  are answered without a window.
 
 Not guaranteed:
 
@@ -88,6 +110,10 @@ Not guaranteed:
 * Any client addon can call the native functions directly
   (`mmdhl_native.FileAccess*`), skipping the Lua hooks below. That gives it
   nothing more: the native rules and dialogs still apply.
+* `MMDHL.RequestUserFile` is an ordinary GMod hook: any client addon can add a
+  hook of its own that returns `true` first and answers another addon's request
+  with made-up items or data. Use `mmdhl.FileAccess` directly when it exists,
+  and the hook only as the fallback (the example below does both).
 * Once an addon has read something, Model Hotloader cannot control what it does
   with it.
 
@@ -97,11 +123,12 @@ Not guaranteed:
 
 ```lua
 -- Ask the player for a JSON preset; works when Model Hotloader 2.3.0 is installed.
-local handled = hook.Run('MMDHL.RequestUserFile', {
+local opts = {
     addon = 'My HUD',                       -- your addon's name (required, up to 64 characters)
     purpose = 'Import a HUD layout',        -- shown in quotes (up to 120 characters)
     filters = {{'HUD layouts', '*.json'}},  -- up to 8, patterns like *.json;*.txt
-}, function(ok, items, code)
+}
+local function chosen(ok, items, code)
     if not ok then print('No layout: ' .. items) return end  -- items is a localized reason here
     local file = items[1]
     file:Read({mode = 'text'}, function(read, text, info)
@@ -110,7 +137,11 @@ local handled = hook.Run('MMDHL.RequestUserFile', {
         local layout = util.JSONToTable(text)
         if layout then MyHUD.Apply(layout) end
     end)
-end)
+end
+-- The API when it is there (no other addon can answer in between), the hook otherwise.
+local handled = true
+if mmdhl and mmdhl.FileAccess then mmdhl.FileAccess.Pick(opts, chosen)
+else handled = hook.Run('MMDHL.RequestUserFile', opts, chosen) end
 if not handled then
     -- Model Hotloader is not installed (or its Lua did not load): offer another way.
 end
@@ -150,19 +181,23 @@ from UTF-8, UTF-16, Shift-JIS, GBK, Big5 or UHC to UTF-8 (`info.encoding`),
 with line ends as `\n`, control characters other than tab removed and surrounding
 blank space trimmed. Use binary mode when the exact bytes matter. At most one
 dialog is open at a time and four requests wait behind it (`busy`); at most
-eight reads and listings run at once.
+eight reads and listings run at once, and a result that nobody collects within
+30 seconds is dropped (the Lua API collects every result on the next frame).
 
-Codes: `denied` (the player refused, closed the window or chose nothing),
-`auto_denied`, `busy`, `not_found`, `network`, `remote_drive`, `invalid_path`
-(also `relative`, `parent`, `stream`, `device`), `denied_location`, `link`,
-`outside`, `hidden`, `too_large`, `offset_too_large`, `not_a_file`,
-`not_a_folder`, `released`, `unreadable`, `dialog_failed`, `too_many_items`,
-`invalid_options`, `denied_by_hook`, `needs_update`, `unavailable_remote`,
-`disabled`, `worker_missing`.
+Codes: `denied` (the player refused, closed the window or chose nothing; also
+every request whose window could only say what is wrong), `auto_denied` (this
+addon was refused three times), `auto_denied_session` (ten refusals and closed
+pickers in this map, from any addons), `busy`, `not_found`, `network`,
+`remote_drive`, `invalid_path` (also `relative`, `parent`, `stream`,
+`device`), `denied_location`, `link`, `outside`, `hidden`, `too_large`,
+`offset_too_large`, `not_a_file`, `not_a_folder`, `released`, `unreadable`,
+`dialog_failed`, `too_many_items`, `invalid_options`, `denied_by_hook`,
+`needs_update`, `unavailable_remote`, `disabled`, `worker_missing`.
 
 ### Hooks
 
-* `MMDHL.RequestUserFile(opts, callback)`: the entry above.
+* `MMDHL.RequestUserFile(opts, callback)`: the entry above. Another addon's
+  hook could answer first (see "Not guaranteed").
 * `MMDHLCanAccessUserFile(addonName, request)`: return `false` to refuse a
   request before any dialog opens (a privacy addon, a single player rule).
   `request` has `kind` (`'pick'` or `'path'`), `addon`, `script`, `path`,
@@ -173,7 +208,9 @@ Codes: `denied` (the player refused, closed the window or chose nothing),
   `mmdhl.FileAccess` exists from then on (with an old binary module its
   `IsAvailable()` says so).
 * `MMDHL.FileAccessChanged()`: a folder was remembered or revoked, or the
-  switch changed.
+  switch changed. After a request it runs from the `Think` poll after that
+  request's callback; a listener that raises an error is reported and changes
+  nothing else.
 
 ## Technical reference
 
@@ -193,9 +230,12 @@ Codes: `denied` (the player refused, closed the window or chose nothing),
   `FileAccessPollRead(id)` (`false` while running, then `data, infoJson`),
   `FileAccessList(handle, json)` / `FileAccessPollList(id)`,
   `FileAccessRelease(handle)`, `FileAccessCancel(id)`, `FileAccessGrants()`,
-  `FileAccessRevoke(id or "all")` and `FileAccessSetEnabled(bool, language)`
+  `FileAccessRevoke(id or "all")` (`false` when the change applies but could
+  not be saved) and `FileAccessSetEnabled(bool, language)`
   (`{"enabled":false}`, `{"enabled":true}` or `{"request":id}` for the
-  confirmation dialog). The server module has none of them.
+  confirmation dialog). A `granted` poll result or a `SetEnabled` result with
+  `"notSaved":true` is a choice that applies until the map changes but could
+  not be saved. The server module has none of them.
 * The same release closes older ways for Lua to touch other computers or read
   beside any path: `BeginImport`, `Reload`, `PropReload` and the worker's
   `--request` refuse network sources before anything opens them (mapped drive
