@@ -74,18 +74,20 @@ so saved face presets keep working.
 
 The rig manifest carries `torso`: `{"method": "topology" | "names" |
 "degenerate", "repairs": [{"code", "bones": [PMX indices], "text"}]}`. The
-texts are English; the bone window lists them as notes. Codes:
+texts are English; the bone window shows each code as a note in the player's
+language (`bonemap.torso_*`) with the names of its `bones`, in this order:
 
-| Code | Meaning |
-|---|---|
-| `reordered` | The `上半身N` names run against the hierarchy (Ganyu): the middle spine and chest follow the hierarchy. |
-| `ignored` | A `上半身3` holds no shoulders (a leaf helper, or a neck base above the chest): it follows its parent. |
-| `neck_on_spine`, `shoulders_on_spine` | The neck (or the shoulders) hang from `Spine1`; the other one decides the chest. |
-| `rejected` | The bone holding the neck and shoulders cannot be the chest (physics, breast helper, off the torso line, used by another part). |
-| `band` | A chest or middle spine outside its band moves with another or a synthesized pivot. |
-| `coincident` | A chain bone at the chest's place moves with the chest. |
-| `swapped` | Name fallback: the bone named as the chest hangs below the one named as the middle spine. |
-| `names`, `degenerate` | The fallbacks of step 6. |
+| Code | `bones` | Meaning |
+|---|---|---|
+| `reordered` | middle spine, chest | The `上半身N` names run against the hierarchy (Ganyu): the lower bone is the middle spine, the higher one the chest. |
+| `ignored` | the bone | A `上半身3` holds no shoulders (a leaf helper, or a neck base above the chest): it follows its parent. |
+| `neck_on_spine` | neck, chest | The neck hangs from `Spine1`; the bone holding the shoulders is the chest. |
+| `shoulders_on_spine` | chest | The shoulders hang from `Spine1`; the bone holding the neck is the chest. |
+| `rejected` | the bone | The bone holding the neck and shoulders cannot be the chest (physics, breast helper, off the torso line, used by another part). |
+| `band` | bone, chest; or the bone | A chest or middle spine outside its band moves with the chest below it, or with a synthesized pivot. |
+| `coincident` | bone, chest | A chain bone at the chest's place moves with the chest. |
+| `swapped` | parent, chest | Name fallback: the bone named as the middle spine hangs below the one named as the chest and becomes the chest. |
+| `names`, `degenerate` | none; Spine1's bone | The fallbacks of step 6. |
 
 ## Bone pins
 

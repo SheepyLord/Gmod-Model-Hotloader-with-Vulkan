@@ -307,7 +307,7 @@ assert(notes.reordered and notes.band)
 -- Saved pins: the chest on the neck base, outside its band, moves with a synthesized chest.
 -- The window still shows the player's bone, and saving again keeps exactly the saved pins.
 s=state(f.current,f.pins)
-for _,i in ipairs(f.current.issues) do s.nativeIssues[#s.nativeIssues+1]={code=i.code=='band' and 'band' or 'native',severity=i.severity,slot=i.slot,args={message=i.text}} end
+for _,i in ipairs(f.current.issues) do s.nativeIssues[#s.nativeIssues+1]=BM.NativeIssue(i) end
 BM.Validate(s)
 assert(BM.Value(s,VB..'Spine4')==idx['首根元'] and s.slots[VB..'Spine4'].origin=='fit_saved' and #s.aliases[VB..'Spine4']==0)
 assert(BM.Value(s,VB..'L_Toe0')==-1 and s.slots[VB..'L_Toe0'].origin=='fit_saved' and BM.Value(s,VB..'Spine2')==idx['上半身3'])
@@ -604,6 +604,10 @@ CLOCK=CLOCK+2 REPLIES={} BM.HandleSave(p,'../'..id,util.TableToJSON({version=1,b
 proposal.missing={VB..'L_Calf'} r=save({version=1,boneMap={[VB..'L_Thigh']=12}}) assert(r[2]==false and says(r,'bonemap_invalid') and says(r,'bonemap.slot.left_lower_leg'))
 proposal.missing={} proposal.issues={{code='duplicate',severity='error',text='Bone 12 is used twice'}}
 r=save({version=1,boneMap={[VB..'L_Thigh']=12}}) assert(r[2]==false and says(r,'Bone 12 is used twice'))
+-- A pin that took a required part's bone: the refusal names the pin, not the part it emptied.
+proposal.missing={VB..'L_Calf'} proposal.issues={{code='duplicate',severity='error',slot=VB..'L_Thigh',text='Bone "knee" is assigned to the thigh'}}
+r=save({version=1,boneMap={[VB..'L_Thigh']=12}}) assert(r[2]==false and says(r,'is assigned to the thigh') and not says(r,'left_lower_leg'))
+proposal.missing={}
 proposal.issues={{code='band',severity='warning',text='aliased'}}
 -- Saving merges into the collision corrections and checks the structure of what the window
 -- showed: the fitter's own choice with the pins on top, not the fitter's repaired torso.
@@ -866,4 +870,47 @@ game={SinglePlayer=function() return true end}
 -- The rescue prompt.
 local prompt=BM.ShowRescuePrompt(id,'Hero',{VB..'L_Thigh',VB..'L_Calf'}) PAINT_ALL()
 SAY('PASS: fit window loads the cached model, shows guesses and fitter notes, saves pins and closes on the answer; rescue prompt paints')
+''')
+
+# ---- the fitter's recorded answers in the window: notes in the player's words, and a live
+# refresh that keeps a pin outside its band out of its own aliases ----
+lua.execute(r'''
+local BM,VB=mmdhl.boneMapper,'ValveBiped.Bip01_'
+local f=util.JSONToTable(WINDOW_JSON)
+local idx={} for i,b in ipairs(f.inspect.skeleton.bones) do idx[b.name]=i-1 end
+local function state(current,pins) return BM.NewState('fit',{asset=string.rep('e',64),name='Torso',skeleton=f.inspect.skeleton,auto=f.inspect.auto,proposal=f.proposal,current=current,pins=pins,torso=current.torso}) end
+-- Built 上半身 > 上半身3 > 上半身2 > 首根元: 上半身3 sits below 上半身2, which now holds the chest.
+local s=state(f.proposal,{}) BM.Validate(s)
+local text={} for _,i in ipairs(s.issues) do if i.code=='torso' then text[i.args.code]=BM.IssueText(s,i) end end
+assert(text.reordered==mmdhl.L('bonemap.torso_reordered',{lower='上半身3',upper='上半身2'}) and text.reordered:find('上半身3 sits below 上半身2',1,true) and text.reordered:find('chest now follows 上半身2',1,true),text.reordered)
+assert(text.band==mmdhl.L('bonemap.torso_merged',{bone='首根元',target='上半身2'}),text.band)
+-- Every note the fitter writes has its own words; unknown ones keep the native English.
+local b3,b2,base=idx['上半身3'],idx['上半身2'],idx['首根元']
+local function note(code,bones) return BM.IssueText(s,{code='torso',severity='info',slot='',args={code=code},repair={code=code,bones=bones,text='native '..code}}) end
+assert(note('coincident',{base,b2})==mmdhl.L('bonemap.torso_merged',{bone='首根元',target='上半身2'}))
+assert(note('band',{base})==mmdhl.L('bonemap.torso_band',{bone='首根元'}))
+assert(note('ignored',{b3})==mmdhl.L('bonemap.torso_ignored',{bone='上半身3'}))
+assert(note('rejected',{b2})==mmdhl.L('bonemap.torso_rejected',{bone='上半身2'}))
+assert(note('neck_on_spine',{base,b2})==mmdhl.L('bonemap.torso_neck_on_spine',{bone='上半身2'}))
+assert(note('shoulders_on_spine',{b2})==mmdhl.L('bonemap.torso_shoulders_on_spine',{bone='上半身2'}))
+assert(note('swapped',{b3,b2})==mmdhl.L('bonemap.torso_swapped',{bone='上半身2',other='上半身3'}))
+assert(note('names',{})==mmdhl.L'bonemap.torso_names' and note('degenerate',{idx['上半身']})==mmdhl.L'bonemap.torso_names' and note('later',{})=='native later')
+-- Fitter issues: a band warning by part, the chest warning, others in the native English.
+local function issue(code,slot) return BM.NativeIssue({code=code,severity='warning',slot=slot,text='native '..code}) end
+assert(BM.IssueText(s,issue('band',VB..'Spine2'))==mmdhl.L'bonemap.issue.band_middle' and BM.IssueText(s,issue('band',VB..'Spine4'))==mmdhl.L'bonemap.issue.band')
+assert(BM.IssueText(s,issue('chest',VB..'Spine2'))==mmdhl.L'bonemap.issue.chest' and issue('chest',VB..'Spine2').slot==VB..'Spine2')
+assert(issue('moved',VB..'Neck1').code=='native' and BM.IssueText(s,issue('moved',VB..'Neck1'))=='native moved')
+-- The chest saved on the neck base, outside its band: after the window's live refresh the
+-- card still shows 首根元 as the chest's own bone and not also as moving with it.
+s=state(f.current,f.pins)
+assert(BM.Value(s,VB..'Spine4')==base and #s.aliases[VB..'Spine4']==0)
+local weight=BM.EffectiveWeight(s,VB..'Spine4')
+mmdhl.native.GetBoneMapProposal=function(asset,json) return util.TableToJSON(f.current) end
+local win=BM.ShowWindow(s,{}) win:RefreshProposal()
+assert(BM.Value(s,VB..'Spine4')==base and #s.aliases[VB..'Spine4']==0 and BM.EffectiveWeight(s,VB..'Spine4')==weight)
+assert(s.aliases[VB..'Spine2'] and #s.aliases[VB..'Spine2']==0)
+local band=false for _,i in ipairs(BM.IssuesOf(s,VB..'Spine4')) do band=band or (i.code=='band' and BM.IssueText(s,i)==mmdhl.L'bonemap.issue.band') end
+assert(band,'the refreshed band warning keeps its words')
+PAINT_ALL() win.finish('cancelled')
+SAY('PASS: the fitter\'s notes and warnings in the player\'s words (the reordered torso true to the skeleton), and a live refresh keeps a pin out of its own aliases')
 ''')

@@ -18,7 +18,7 @@ local autoskip=CreateClientConVar('mmdhl_bonemap_autoskip','0',true,false,'Impor
 -- i18n-keys: bonemap.reason.moves bonemap.reason.moves_none bonemap.reason.used bonemap.reason.helper bonemap.reason.physics
 -- i18n-keys: bonemap.issue.required bonemap.issue.duplicate bonemap.issue.order bonemap.issue.leg_on_spine bonemap.issue.sides_swapped bonemap.issue.side bonemap.issue.facing
 -- i18n-keys: bonemap.issue.height bonemap.issue.length bonemap.issue.unweighted bonemap.issue.twist bonemap.issue.physics bonemap.issue.physics_optional bonemap.issue.recommended
--- i18n-keys: bonemap.issue.finger_partial bonemap.issue.jiggle_body bonemap.issue.jiggle_too_many bonemap.issue.range bonemap.issue.band bonemap.issue.native
+-- i18n-keys: bonemap.issue.finger_partial bonemap.issue.jiggle_body bonemap.issue.jiggle_too_many bonemap.issue.range bonemap.issue.band bonemap.issue.native bonemap.issue.chest
 -- i18n-keys: bonemap.jiggle.kind.hair bonemap.jiggle.kind.skirt bonemap.jiggle.kind.chest bonemap.jiggle.kind.tail bonemap.jiggle.kind.accessory
 -- i18n-keys: bonemap.jiggle.swing.less bonemap.jiggle.swing.normal bonemap.jiggle.swing.more
 -- i18n-keys: bonemap.notice.saved_file bonemap.notice.same_skeleton bonemap.notice.file_changed bonemap.notice.saved_fit bonemap.notice.resized
@@ -245,7 +245,7 @@ function BM.FitLoaded(window,state,info,pins,hasCollision)
  s.format=entry and isstring(entry.source) and entry.source:lower():match('%.(%w+)$') or (istable(info.vrm) and 'vrm' or 'pmx')
  if next(pins) then s.notice={key='saved_fit',args={}} end
  if istable(info.conversion) then s.converted=true end
- for _,i in ipairs(current.issues or {}) do if istable(i) and i.severity then s.nativeIssues[#s.nativeIssues+1]={code=i.code=='band' and 'band' or i.code=='range' and 'range' or 'native',severity=i.severity,slot=i.slot or '',args={message=tostring(i.text or '')}} end end
+ for _,i in ipairs(current.issues or {}) do if istable(i) and i.severity then s.nativeIssues[#s.nativeIssues+1]=BM.NativeIssue(i) end end
  window:SetState(s)
 end
 -- Fit mode without a window: the parts the fitter misses for a model, with its
@@ -346,13 +346,26 @@ local function issueText(state,i)
  if a.side then a.side=L('bonemap.side.'..a.side) end
  if i.code=='physics' and i.severity=='warning' then return L('bonemap.issue.physics_optional',a) end
  if i.code=='torso' then
+  -- The fitter's notes (rig_torso.hpp): reordered {middle spine, chest}, the lower bone
+  -- first; band and coincident {bone, the chest it moves with} or {bone} alone, moving
+  -- with a created one; neck_on_spine {neck, chest}; swapped {parent, chest}.
   local r=i.repair or {}
-  if r.code=='reordered' and istable(r.bones) and #r.bones>=2 then return L('bonemap.torso_reordered',{lower=tostring((state.bones[r.bones[1]+1] or {}).name or ''),upper=tostring((state.bones[r.bones[2]+1] or {}).name or '')}) end
-  if r.code=='merged' and istable(r.bones) and #r.bones>=2 then return L('bonemap.torso_merged',{bone=tostring((state.bones[r.bones[1]+1] or {}).name or ''),target=tostring((state.bones[r.bones[2]+1] or {}).name or '')}) end
+  local list=istable(r.bones) and r.bones or {}
+  local function bone(k) local b=tonumber(list[k]) return tostring((b and state.bones[b+1] or {}).name or '') end
+  if r.code=='reordered' and #list>=2 then return L('bonemap.torso_reordered',{lower=bone(1),upper=bone(2)}) end
+  if (r.code=='merged' or r.code=='band' or r.code=='coincident') and #list>=2 then return L('bonemap.torso_merged',{bone=bone(1),target=bone(2)}) end
+  if r.code=='band' and #list==1 then return L('bonemap.torso_band',{bone=bone(1)}) end
+  if r.code=='ignored' and #list>=1 then return L('bonemap.torso_ignored',{bone=bone(1)}) end
+  if r.code=='rejected' and #list>=1 then return L('bonemap.torso_rejected',{bone=bone(1)}) end
+  if r.code=='neck_on_spine' and #list>=2 then return L('bonemap.torso_neck_on_spine',{bone=bone(2)}) end
+  if r.code=='shoulders_on_spine' and #list>=1 then return L('bonemap.torso_shoulders_on_spine',{bone=bone(1)}) end
+  if r.code=='swapped' and #list>=2 then return L('bonemap.torso_swapped',{bone=bone(2),other=bone(1)}) end
+  if r.code=='names' or r.code=='degenerate' then return L'bonemap.torso_names' end
   return tostring(r.text or '')
  end
  if i.code=='native' then return L('bonemap.issue.native',{message=tostring(a.message or '')}) end
- if i.code=='band' or i.code=='range' then return L('bonemap.issue.'..i.code) end
+ if i.code=='band' then return i.slot==VB..'Spine2' and L'bonemap.issue.band_middle' or L'bonemap.issue.band' end
+ if i.code=='range' or i.code=='chest' then return L('bonemap.issue.'..i.code) end
  return L('bonemap.issue.'..i.code,a)
 end
 BM.IssueText=issueText
@@ -436,8 +449,8 @@ function BM.ShowWindow(state,opts)
   local result=mmdhl.Decode(native.GetBoneMapProposal(state.asset,BM.IndexJSON('boneMap',BM.Pins(state))))
   if not istable(result) then return end
   state.nativeIssues={}
-  for _,i in ipairs(result.issues or {}) do if istable(i) then state.nativeIssues[#state.nativeIssues+1]={code=i.code=='band' and 'band' or i.code=='range' and 'range' or 'native',severity=i.severity or 'warning',slot=i.slot or '',args={message=tostring(i.text or '')}} end end
-  for _,b in ipairs(result.bones or {}) do if istable(b) and BM.Mapped(b.name) then state.aliases[b.name]=b.aliases or {} end end
+  for _,i in ipairs(result.issues or {}) do if istable(i) then state.nativeIssues[#state.nativeIssues+1]=BM.NativeIssue(i) end end
+  for _,b in ipairs(result.bones or {}) do if istable(b) and BM.Mapped(b.name) then state.aliases[b.name]=BM.SlotAliases(b.aliases,BM.Value(state,b.name)) end end
   state.torso=result.torso
   BM.Validate(state) win.summary=BM.Summary(state) win:Refresh()
  end
