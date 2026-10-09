@@ -31,7 +31,7 @@ struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;std::map<std::string,std::future<Json>> previewing;std::map<std::string,Json> previewed;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -83,12 +83,12 @@ static void forgetAssets(const std::vector<std::string>& ids){
   for(auto& [handle,p]:world().instances)if(p->model->id==id)throw std::runtime_error("Remove the model from the map before deleting it");
   if(auto it=context->loading.find(id);it!=context->loading.end()){if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready)throw std::runtime_error("Model is still loading; retry deletion in a moment");context->loading.erase(it);}
   for(auto& [key,future]:context->fitting)if(key.starts_with(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
-  for(auto& [key,future]:context->previewing)if(key.starts_with(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
+  if(context->previews.busy(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
  }
  for(auto& id:ids){
   context->assets.erase(id);
   for(auto it=context->fitted.begin();it!=context->fitted.end();)if(it->first.starts_with(id))it=context->fitted.erase(it);else ++it;
-  for(auto it=context->previewed.begin();it!=context->previewed.end();)if(it->first.starts_with(id))it=context->previewed.erase(it);else ++it;
+  context->previews.forget(id);
  }
 }
 FUNCTION(ForgetAssets) {forgetAssets(json(LUA,1).get<std::vector<std::string>>());LUA->PushBool(true);return 1;} END_FUNCTION
@@ -156,7 +156,7 @@ FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return
 // The physics editor's exact preview, in both realms: the carrier a build with
 // these options would produce (shapes, masses, overlaps, .phy text), without
 // writing anything. A cached fit answers at once; a refit runs off-thread and
-// reports "pending" until the same options are asked for again.
+// reports "pending" until the editor's poll finds it done (PreviewQueue).
 FUNCTION(PreviewCarrierFit) {
  auto id=stringArg(LUA,1);auto m=asset(id);if(!m){LUA->PushNil();LUA->PushString("Asset not loaded");return 2;}
  auto options=json(LUA,2);if(!options.is_object())throw std::runtime_error("Invalid preview options");
@@ -168,12 +168,7 @@ FUNCTION(PreviewCarrierFit) {
  }
  auto run=[m,options]{try{return previewCarrier(fitRig(*m,options));}catch(const std::exception& e){return Json{{"status","error"},{"errors",Json::array({{{"code","fit_failed"},{"path",""},{"detail",e.what()}}})}};}};
  if(m->fittedRig&&!options.contains("height")&&options.value("excludedMaterials",Json::array()).empty()){push(LUA,run());return 1;}
- auto key=carrierFitKey(id,options);
- if(auto done=context->previewed.find(key);done!=context->previewed.end()){push(LUA,done->second);return 1;}
- auto pending=context->previewing.find(key);
- if(pending==context->previewing.end()){context->previewing.emplace(key,std::async(std::launch::async,run));push(LUA,{{"status","pending"}});return 1;}
- if(pending->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"status","pending"}});return 1;}
- auto result=pending->second.get();context->previewing.erase(pending);if(context->previewed.size()>=4)context->previewed.erase(context->previewed.begin());context->previewed.emplace(key,result);push(LUA,result);return 1;
+ push(LUA,context->previews.poll(id,carrierFitKey(id,options),run));return 1;
 } END_FUNCTION
 FUNCTION(CreateInstance) {auto id=stringArg(LUA,1);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}LUA->PushNumber(double(world().create(m,json(LUA,2))));return 1;} END_FUNCTION
 FUNCTION(SubmitSourcePose) {requireServer();auto& p=world().get(number(LUA,1));if(!p.sourceRig)throw std::runtime_error("Instance has no Source carrier");

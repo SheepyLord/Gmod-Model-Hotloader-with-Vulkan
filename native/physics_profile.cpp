@@ -4,6 +4,7 @@
 #include <BulletCollision/NarrowPhaseCollision/btGjkEpaPenetrationDepthSolver.h>
 #include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <locale>
 #include <set>
@@ -305,4 +306,19 @@ Json previewCarrier(const Rig& r){
  Json counted={{"mode",collisionMode(r.physics)},{"count",pairs.size()}};
  return {{"status","ready"},{"key",r.key},{"scale",r.scale},{"m",r.scale/ScmiSourceUnitsPerPmx},{"unit",stature/60},{"mass",r.mass},{"canonical",r.physics.is_object()?r.physics:Json::object()},{"bodies",bodies},{"pairs",counted},{"penetrations",overlaps},{"phyText",physicsText(r)}};
 }
+void PreviewQueue::harvest(){
+ for(auto it=running.begin();it!=running.end();){
+  if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready){++it;continue;}
+  auto key=it->first;auto done=std::move(it->second);it=running.erase(it);
+  std::erase_if(finished,[&](auto& f){return f.first==key;});finished.emplace_back(key,done.get());if(finished.size()>4)finished.erase(finished.begin());
+ }
+}
+Json PreviewQueue::poll(const std::string& id,const std::string& key,std::function<Json()> run){
+ harvest();for(auto& [k,result]:finished)if(k==key)return result;
+ bool wait=running.size()>=2;for(auto& [k,future]:running)wait|=k.starts_with(id);
+ if(!wait)running.emplace(key,std::async(std::launch::async,std::move(run)));
+ return {{"status","pending"}};
+}
+bool PreviewQueue::busy(const std::string& id){harvest();return std::any_of(running.begin(),running.end(),[&](auto& r){return r.first.starts_with(id);});}
+void PreviewQueue::forget(const std::string& id){std::erase_if(finished,[&](auto& f){return f.first.starts_with(id);});}
 }

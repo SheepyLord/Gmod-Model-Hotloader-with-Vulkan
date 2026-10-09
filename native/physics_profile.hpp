@@ -1,6 +1,8 @@
 #pragma once
 #include "rig.hpp"
 #include <array>
+#include <functional>
+#include <future>
 namespace mmd {
 // Physics profiles: the player's edits to a carrier's .phy (joint limits and
 // friction, per-body mass share, damping, inertia, drag and surface, total
@@ -47,4 +49,18 @@ struct Penetration { int a,b; float depth; };
 std::vector<Penetration> restPenetrations(const Rig&,const std::vector<std::pair<int,int>>& pairs);
 // The "ready" result of PreviewCarrierFit for a fitted rig: bodies, masses, overlaps and the exact .phy text.
 Json previewCarrier(const Rig&);
+// PreviewCarrierFit's off-thread refits. The editor polls with its latest draft, so
+// at most one refit runs per model (two in all) and a newer draft waits for it;
+// finished ones, also of drafts the editor moved on from, wait in a cache of four.
+struct PreviewQueue {
+ // The finished result for key, else {"status":"pending"} (run starts when nothing of this model runs).
+ Json poll(const std::string& id,const std::string& key,std::function<Json()> run);
+ // Whether a refit of this model still runs: deleting it waits, finished ones never block.
+ bool busy(const std::string& id);
+ // Drops this model's finished results.
+ void forget(const std::string& id);
+ std::map<std::string,std::future<Json>> running;std::vector<std::pair<std::string,Json>> finished;
+private:
+ void harvest();
+};
 }

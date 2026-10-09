@@ -6,6 +6,7 @@
 // to the carrier fit itself, and only while every "legacy" check here passes.
 #include "physics_profile.hpp"
 #include "rig_animation.hpp"
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <thread>
 using namespace mmd;
 namespace {
 // Verbatim copy of the text section bridge.cpp wrote before physicsText existed.
@@ -339,6 +341,30 @@ int main(int argc,char** argv){
             Json arms={{"role","arms"},{"gender","female"},{"animationSource","models/reference.mdl"},{"animationReference",reference},{"armsParts",Json::array()}};auto plain=fitRig(*cached,arms);arms["physicsOverrides"]={{"schema",42}};
             bool ok=true;std::string key;try{key=fitRig(*cached,arms).key;}catch(const std::exception&){ok=false;}
             check(ok&&key==plain.key&&!plain.manifest.contains("physicsOverrides"),"c_arms ignore physicsOverrides, even an unreadable one");
+        }
+        // N17: slow-path previews. A draft the editor moved on from never blocks deleting the model,
+        // one refit runs per model (two in all) and finished ones wait in a cache of four.
+        {
+            std::map<std::string,std::promise<void>> gates;std::map<std::string,std::shared_future<void>> opened;std::atomic_int started=0;
+            auto job=[&](const std::string& key){if(!gates.contains(key)){opened[key]=gates[key].get_future().share();}auto gate=opened[key];return std::function<Json()>([gate,key,&started]{started++;gate.wait();return Json{{"status","ready"},{"key",key}};});};
+            auto open=[&](const std::string& key){gates.at(key).set_value();};
+            {
+                PreviewQueue queue;auto settle=[&](const std::string& id){for(int n=0;n<1000&&queue.busy(id);n++)std::this_thread::sleep_for(std::chrono::milliseconds(5));return !queue.busy(id);};
+                auto a1=queue.poll("a","a1",job("a1"));auto a2=queue.poll("a","a2",job("a2"));
+                check(a1["status"]=="pending"&&a2["status"]=="pending"&&queue.running.size()==1&&queue.busy("a"),"a newer draft waits for the model's running refit");
+                open("a1");bool done=settle("a");
+                check(done&&!queue.busy("a")&&queue.running.empty(),"a finished refit of a superseded draft no longer blocks deleting the model");
+                check(queue.poll("a","a2",job("a2"))["status"]=="pending"&&queue.busy("a"),"the latest draft starts once the model is free");
+                open("a2");settle("a");
+                check(queue.poll("a","a1",job("a1"))["key"]=="a1"&&queue.poll("a","a2",job("a2"))["key"]=="a2"&&started==2,"finished refits answer from the cache without fitting again");
+                queue.poll("b","b1",job("b1"));queue.poll("c","c1",job("c1"));queue.poll("d","d1",job("d1"));
+                check(queue.running.size()==2&&!queue.running.contains("d1")&&!queue.busy("d"),"at most two refits run at once");
+                open("b1");settle("b");open("c1");settle("c");
+                queue.poll("d","d1",job("d1"));open("d1");settle("d");queue.poll("e","e1",job("e1"));open("e1");settle("e");
+                check(queue.finished.size()==4&&queue.finished.front().first=="b1"&&queue.poll("e","e1",job("e1"))["key"]=="e1","the cache keeps the four newest results");
+                queue.forget("e");check(queue.poll("e","e1",job("e1"))["status"]=="pending","forgetting a model drops its cached previews");
+                settle("e");
+            }
         }
         // P1: the preview's fast path is cheap enough to follow every edit.
         {
