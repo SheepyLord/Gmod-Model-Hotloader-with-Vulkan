@@ -274,10 +274,11 @@ end
 
 net.Receive('mmdhl_collision_mesh',function()
  local ent=net.ReadEntity() local key=net.ReadString() local count=net.ReadUInt(16) local decoded=util.JSONToTable(util.Decompress(net.ReadData(count)) or '')
- if IsValid(ent) and key==ent:GetNW2String('MMDHLRig','') and istable(decoded) then ent.MMDHLActualCollision=decoded end
+ if IsValid(ent) and key==ent:GetNW2String('MMDHLRig','') and istable(decoded) then ent.MMDHLActualCollision=decoded ent.MMDHLActualCollisionKey=key end
 end)
+-- A ragdoll rebound to another carrier asks again: its collision changed with the key.
 function mmdhl.RequestCollisionMesh(ent)
- if not IsValid(ent) or ent.MMDHLActualCollision or (ent.MMDHLMeshRequestAt or 0)>RealTime() then return end
+ if not IsValid(ent) or (ent.MMDHLActualCollision and ent.MMDHLActualCollisionKey==ent:GetNW2String('MMDHLRig','')) or (ent.MMDHLMeshRequestAt or 0)>RealTime() then return end
  ent.MMDHLMeshRequestAt=RealTime()+2 net.Start('mmdhl_collision_mesh') net.WriteEntity(ent) net.SendToServer()
 end
 include('mmdhl/native_render.lua')
