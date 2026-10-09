@@ -35,11 +35,14 @@ function mmdhl.Spawn(p,id,options,done,progress)
  end
  local function cleaned() return mmdhl.cleanupGeneration~=generation end
  if not isstring(id) or #id~=64 or id:find('[^a-f0-9]') then finish(nil,L'server.error.invalid_model_id') return end
- if not options.collisionOverrides then
-  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
-  if saved and saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) then options.collisionOverrides=saved.bodies options.collisionOverrideScale=saved.scale options.excludedMaterials=saved.excludedMaterials
-  elseif saved then notice(p,L'server.notice.old_fit_corrections') end
+ local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
+ if not istable(saved) then saved=nil end
+ if not options.collisionOverrides and saved then
+  if saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) then options.collisionOverrides=saved.bodies options.collisionOverrideScale=saved.scale options.excludedMaterials=saved.excludedMaterials
+  elseif saved.bodies~=nil then notice(p,L'server.notice.old_fit_corrections') end
  end
+ -- Bones assigned in the bone window (fitter pins; natives without them ignore the option).
+ if options.boneMap==nil and saved and istable(saved.boneMap) and next(saved.boneMap) then options.boneMap=saved.boneMap end
  if mmdhl.CanUseAsset and not mmdhl.CanUseAsset(p,id) then finish(nil,L'server.error.not_approved') return end
  if options.role=='combine' or options.hostile then options=mmdhl.HostileActorOptions(p,options) end
  local actorError options,actorError=mmdhl.ActorOptions(options) if not options then finish(nil,actorError) return end
@@ -100,6 +103,7 @@ net.Receive('mmdhl_action',function(_,p)
   end,function(message) reply('loading',message) end)
   return
  end
+ if action=='bonemap' then if mmdhl.boneMapper and mmdhl.boneMapper.HandleSave then mmdhl.boneMapper.HandleSave(p,id,value) end return end
  if not mmdhl.CanEdit(p,ent,'bodygroups') then return end
  if IsValid(ent) and ent:GetClass()~='mmdhl_ragdoll' and mmdhl.IsMMD(ent) then
   local h=mmdhl.GetInstance(ent)
@@ -115,7 +119,10 @@ net.Receive('mmdhl_action',function(_,p)
    local asset=mmdhl.GetAsset(ent)
    mmdhl.Spawn(p,asset,options,function(created,err)
     if not IsValid(created) then notice(p,err) return end
-    file.CreateDir('mmd_hotloader/fit_overrides') file.Write('mmd_hotloader/fit_overrides/'..asset..'.json',util.TableToJSON({version=3,generator=18,bodies=options.collisionOverrides,scale=options.collisionOverrideScale,excludedMaterials=options.excludedMaterials},true))
+    local path='mmd_hotloader/fit_overrides/'..asset..'.json'
+    local saved=util.JSONToTable(file.Read(path,'DATA') or '') if not istable(saved) then saved={} end
+    saved.version=3 saved.generator=18 saved.bodies=options.collisionOverrides saved.scale=options.collisionOverrideScale saved.excludedMaterials=options.excludedMaterials
+    file.CreateDir('mmd_hotloader/fit_overrides') file.Write(path,util.TableToJSON(saved,true))
     notice(p,L'server.notice.fit_saved')
    end)
   elseif action=='replace' and not ent:IsPlayer() then

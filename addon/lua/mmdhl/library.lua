@@ -115,6 +115,17 @@ function library.Update(id,changes)
  if not writeSettings(id,settings) then return false,L'library.error.save_failed' end
  library.Refresh() return true
 end
+-- The fit at import or spawn: {ok=false, missing={keys}} shows the "Needs bones" badge;
+-- {ok=true} clears it.
+function library.SetFitStatus(id,fit)
+ local entry=validId(id) and library.entries[id] if not entry then return false end
+ local ok=not istable(fit) or fit.ok~=false
+ if ok and entry.settings.fit==nil then return true end
+ local settings=table.Copy(entry.settings)
+ settings.fit=not ok and {ok=false,missing=istable(fit.missing) and fit.missing or {}} or nil
+ if not writeSettings(id,settings) then return false end
+ library.Refresh() return true
+end
 function library.Delete(ids,done)
  done=done or function() end
  if library.job or mmdhl.pendingSpawn or library.deleting then done(false,L'library.delete.busy') return end
@@ -177,7 +188,9 @@ local function pickerNotice(show)
  surface.PlaySound('garrysmod/content_downloaded.wav')
 end
 function library.BrowseImport(kind)
- -- One model at a time: a pending terms-of-use question comes first.
+ -- One model at a time: an open bone window and a pending terms-of-use question come first.
+ local BM=mmdhl.boneMapper
+ if BM and IsValid(BM.frame) then BM.frame:MakePopup() library.status=L'bonemap.window_open' hook.Run('MMDHL.ImportChanged') return false end
  if mmdhl.terms and IsValid(mmdhl.terms.pending) then mmdhl.terms.pending:MakePopup() return false end
  library.reimportOf=nil
  local handle,err if kind then handle,err=native.Browse(kind) else handle,err=native.Browse() end
@@ -199,7 +212,7 @@ end
 -- Import feedback: explain failures and catch models imported on the wrong side.
 local function hints() return {
  {'vrm avatar',L'library.hint.vrm_avatar'},
- {'belong in static props',L'library.hint.static_file'},
+ {'belong in static props',mmdhl.boneMapper and mmdhl.boneMapper.Available('convert') and L'library.hint.character_format' or L'library.hint.static_file'},
  {'humanoid map',L'library.hint.vrm_humanoid'},
  {'external buffer',L'library.hint.vrm_external_buffer'},
  {'vrm file',L'library.hint.vrm_damaged'},
@@ -280,7 +293,15 @@ function mmdhl.VrmSummary(info)
   L('library.vrm.spring_bones',{joints=springs,colliders=colliders})}
  return short,table.concat(long,'\n'),meta.allowRedistribution
 end
-function mmdhl.ImportHint(err)
+-- Structured worker errors (errorCode) choose their hint before the message text does.
+local codeHints={['character.format']='library.hint.character_format',['character.blend']='library.hint.character_blend',['character.parse']='library.hint.character_parse',
+ ['character.no_skeleton']='library.hint.character_no_skeleton',['character.too_few_bones']='library.hint.character_no_skeleton',['character.too_many_bones']='library.hint.character_too_complex',
+ ['character.too_complex']='library.hint.character_too_complex',['character.bone_map']='library.hint.character_bone_map',['character.jiggle']='library.hint.character_jiggle',
+ ['character.orientation']='library.hint.character_orientation',['character.needs_mapping']='library.hint.character_needs_mapping',['character.request_version']='library.hint.character_needs_mapping'}
+-- i18n-keys: library.hint.character_format library.hint.character_blend library.hint.character_parse library.hint.character_no_skeleton library.hint.character_too_complex
+-- i18n-keys: library.hint.character_bone_map library.hint.character_jiggle library.hint.character_orientation library.hint.character_needs_mapping
+function mmdhl.ImportHint(err,code)
+ if isstring(code) and codeHints[code] then return L(codeHints[code]) end
  local lower=tostring(err or ''):lower()
  for _,hint in ipairs(hints()) do if lower:find(hint[1],1,true) then return hint[2] end end
  return L'library.hint.default'
@@ -296,20 +317,22 @@ function library.StartStaticImport(source,objects)
 end
 local function startImport(kind,source)
  if kind=='static' then return library.StartStaticImport(source) end
+ local BM=mmdhl.boneMapper
+ if BM and BM.Convertible(source) then return BM.Probe(source) end
  return library.StartImport(native.BeginImport(source,'{}'))
 end
 function mmdhl.ShowImportFailure(status,kind)
  local UI=mmdhl.UI if not UI then Derma_Message(tostring(status.error),L'library.failure.title_short',L'common.close') return end
  local s,f=UI.metrics()
  local file=tostring(status.filename or (status.source and string.GetFileFromFilename(status.source)) or L'library.failure.selected_file')
- local hint=status.hint or mmdhl.ImportHint(status.error)
+ local hint=status.hint or mmdhl.ImportHint(status.error,status.errorCode)
  local unknown=L'library.failure.unknown'
  local details=table.concat({L('library.failure.detail_file',{file=file}),L('library.failure.detail_source',{source=tostring(status.source or unknown)}),kind=='static' and L'library.failure.detail_type_static' or L'library.failure.detail_type_character',L('library.failure.detail_step',{step=tostring(status.stage or unknown)}),L('library.failure.detail_error',{error=tostring(status.error or unknown)}),L('library.failure.detail_time',{time=os.date('%Y-%m-%d %H:%M:%S')})},'\n')
  local frame=vgui.Create('DFrame') frame:SetTitle('') frame:SetSize(s(640),s(380)) frame:Center() frame:MakePopup() frame:DockPadding(s(16),s(16),s(16),s(14)) frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
  frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Color(246,248,251)) draw.RoundedBoxEx(6,0,0,w,s(6),Color(196,62,62),true,true,false,false) end
  local title=UI.label(frame,L('library.failure.title',{file=file}),f.Title,s(34)) title:Dock(TOP) title:SetTextColor(Color(166,38,38))
- local stage=UI.label(frame,L('library.failure.while',{step=tostring(status.stage or L'library.failure.importing'):lower(),error=tostring(status.error or L'library.import.unknown_error')}),f.Body,s(48)) stage:Dock(TOP) stage:SetWrap(true)
- local try=UI.label(frame,L('library.failure.what_to_try',{hint=hint}),f.Body,s(48)) try:Dock(TOP) try:SetWrap(true) try:SetTextColor(UI.colors.muted)
+ local stage=UI.label(frame,L('library.failure.while',{step=tostring(status.stage or L'library.failure.importing'):lower(),error=tostring(status.error or L'library.import.unknown_error')}),f.Body,s(48)) stage:Dock(TOP) stage:SetWrap(true) stage:SetAutoStretchVertical(true)
+ local try=UI.label(frame,L('library.failure.what_to_try',{hint=hint}),f.Body,s(48)) try:Dock(TOP) try:SetWrap(true) try:SetAutoStretchVertical(true) try:SetTextColor(UI.colors.muted)
  local buttons=frame:Add('DPanel') buttons:Dock(BOTTOM) buttons:SetTall(s(34)) buttons:SetPaintBackground(false) buttons:DockMargin(0,s(10),0,0)
  local close=UI.button(buttons,L'common.close',function() frame:Close() end,s(34),f.Body) close:Dock(RIGHT) close:SetWide(s(100))
  local copy=UI.button(buttons,L'library.failure.copy_details',function() SetClipboardText(details) notification.AddLegacy(L'library.failure.copied',NOTIFY_GENERIC,4) end,s(34),f.Body) copy:Dock(RIGHT) copy:SetWide(s(130)) copy:DockMargin(0,0,s(8),0)
@@ -318,8 +341,17 @@ function mmdhl.ShowImportFailure(status,kind)
   -- The worker also recognises VRM avatars saved as .glb; its (English) error names them.
   local pmd=extension=='.pmd' or extension=='.vrm' or tostring(status.error or ''):lower():find('vrm avatar',1,true)~=nil
   local retryKind=(kind=='static' and pmd) and 'library' or kind
-  local retry=UI.button(buttons,pmd and kind=='static' and L'library.failure.import_as_character' or L'library.failure.retry',function() frame:Close() if not library.job then startImport(retryKind,status.source) end end,s(34),f.Strong,true)
-  retry:Dock(LEFT) retry:SetWide(s(170))
+  -- A file without a usable skeleton can still be a static prop.
+  local asProp=status.errorCode=='character.no_skeleton' or status.errorCode=='character.too_few_bones'
+  if asProp then retryKind='static' end
+  local retry=UI.button(buttons,asProp and L'library.failure.import_as_prop' or pmd and kind=='static' and L'library.failure.import_as_character' or L'library.failure.retry',function() frame:Close() if not library.job then startImport(retryKind,status.source) end end,s(34),f.Strong,true)
+  retry:Dock(LEFT) retry:SetWide(asProp and s(200) or s(170))
+  -- A failed conversion goes back to the bone window with the player's choices.
+  local BM=mmdhl.boneMapper local session=BM and BM.sessions and BM.sessions[status.source]
+  if session then
+   local back=UI.button(buttons,L'library.failure.back_to_bones',function() frame:Close() if not IsValid(BM.frame) then BM.ShowWindow(session,{}) end end,s(34),f.Body)
+   back:Dock(LEFT) back:SetWide(s(200)) back:DockMargin(s(8),0,0,0)
+  end
  end
  local text=frame:Add('DTextEntry') text:Dock(FILL) text:SetMultiline(true) text:SetEditable(false) text:SetFont(f.Small) text:SetText(details) text:DockMargin(0,s(6),0,0)
 end
@@ -419,7 +451,12 @@ local function promptCharacterInstead(status)
     mmdhl.props.library.Delete({status.asset},function() if not library.job then startImport('library',status.source) end end)
    end,L'library.character_instead.keep')
  elseif info.skeleton and info.skeleton.humanoid then
-  Derma_Message(L('library.rigged_prop.text',{name=name,bones=info.skeleton.bones or 0}),L'library.rigged_prop.title',L'common.ok')
+  local BM=mmdhl.boneMapper
+  if BM and status.source and BM.Convertible(status.source) then
+   Derma_Query(L('library.rigged_prop.query',{name=name,bones=info.skeleton.bones or 0}),L'library.rigged_prop.title',L'library.rigged_prop.import',function()
+    mmdhl.props.library.Delete({status.asset},function() if not library.job then startImport('library',status.source) end end)
+   end,L'library.rigged_prop.keep')
+  else Derma_Message(L('library.rigged_prop.text',{name=name,bones=info.skeleton.bones or 0}),L'library.rigged_prop.title',L'common.ok') end
  end
 end
 mmdhl.PromptStaticInstead=promptStaticInstead
@@ -428,6 +465,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
  if not library.job or (library.nextPoll or 0)>RealTime() then return end library.nextPoll=RealTime()+.1
  local status,err=mmdhl.Decode(native.PollJob(library.job))
  if not status then library.job=nil library.status=tostring(err) pickerNotice(false) hook.Run('MMDHL.ImportChanged') return end
+ if mmdhl.boneMapper and mmdhl.boneMapper.OnJobStatus(status) then hook.Run('MMDHL.ImportChanged') return end
  if status.state~='running' or status.stage~='Select model' then pickerNotice(false) end
  library.status=status.state=='failed' and L('library.import.failed',{error=tostring(status.error or L'library.import.unknown_error')}) or status.stage or status.error or status.state
  if status.warning then library.status=library.status..' — '..status.warning end
@@ -439,6 +477,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   local function proceed()
    if library.job then library.status=L'library.import.busy' hook.Run('MMDHL.ImportChanged') return end
    if kind=='static' then library.StartStaticImport(source)
+   elseif mmdhl.boneMapper and mmdhl.boneMapper.Convertible(source) then mmdhl.boneMapper.Probe(source)
    else library.StartImport(native.BeginImport(source,'{}')) library.status=L'library.import.importing_model' end
    hook.Run('MMDHL.ImportChanged')
   end
@@ -482,7 +521,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   if #warnings>0 then library.status=L('library.import.with_warnings',{message=library.status,count=#warnings}) end
   notification.AddLegacy(library.status,#warnings>0 and NOTIFY_HINT or NOTIFY_GENERIC,8)
   hook.Run('MMDHL.Imported',status.asset)
-  timer.Simple(0,function() promptStaticInstead(status) end)
+  timer.Simple(0,function() promptStaticInstead(status) if mmdhl.boneMapper and mmdhl.boneMapper.AfterImport then mmdhl.boneMapper.AfterImport(status) end end)
  elseif status.state=='failed' or status.state=='cancelled' then
   library.job=nil library.reimportOf=nil notification.AddLegacy(library.status,status.state=='failed' and NOTIFY_ERROR or NOTIFY_HINT,8)
   local kind=(status.kind=='static' or library.jobKind=='static') and 'static' or 'library'
@@ -513,7 +552,9 @@ local function spawnStatus(request,state,message,index)
  if state~='loading' then mmdhl.spawnRequests[request]=nil if mmdhl.pendingSpawn==request then mmdhl.pendingSpawn=nil end end
  if pending and pending.callback then pending.callback(state,message,index) end
  if state=='ready' then notification.AddLegacy(message,NOTIFY_GENERIC,5)
- elseif state=='error' then notification.AddLegacy(message,NOTIFY_ERROR,8) end
+ elseif state=='error' then notification.AddLegacy(message,NOTIFY_ERROR,8)
+  if pending and pending.asset and mmdhl.boneMapper and mmdhl.boneMapper.CheckRescue then mmdhl.boneMapper.CheckRescue(pending.asset) end
+ end
  hook.Run('MMDHL.SpawnStatus',state,message,index)
 end
 net.Receive('mmdhl_spawn_status',function() spawnStatus(net.ReadUInt(32),net.ReadString(),mmdhl.Localize(net.ReadString()),net.ReadUInt(16)) end)
