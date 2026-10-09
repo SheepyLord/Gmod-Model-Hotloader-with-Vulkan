@@ -456,6 +456,20 @@ void converterTests(){
  {auto id=first["asset"].get<std::string>();auto loaded=loadAsset(cache,id);
   check(loaded->springs&&loaded->conversionBoneMap.size()==MappedSlotCount&&loaded->conversionBoneMap.at("ValveBiped.Bip01_Pelvis")==0,"reload: springs and the conversion bone map come back with the cached asset");
   auto registry=readJson(cache/L"sources.local.json");check(registry[id]["options"]==request,"reload: the registry keeps the request, so Reload converts the same way");
+  // InspectBoneMap: the skeleton for the window and the structural rules on an assignment.
+  // (Options are built explicitly: a braced {{"key",value}} argument can become an array.)
+  auto options=[](const char* key,Json value){Json o=Json::object();o[key]=std::move(value);return o;};
+  auto inspected=inspectBoneMap(*loaded,options("include",Json::array({"skeleton"})));
+  check(inspected["auto"]["slots"]["ValveBiped.Bip01_Pelvis"]["bone"]==0&&inspected["skeleton"]["bones"].size()==loaded->bones.size()&&inspected["issues"].empty(),"inspect: the cached model's skeleton and automatic map");
+  Json values=Json::object();for(auto& [key,value]:loaded->conversionBoneMap)values[key]=value;
+  values["ValveBiped.Bip01_Spine1"]=double(loaded->conversionBoneMap.at("ValveBiped.Bip01_Spine1"));// Lua numbers may arrive as 3.0
+  auto clean=inspectBoneMap(*loaded,options("values",values));
+  check(!clean.contains("skeleton")&&clean["issues"].empty(),"inspect: the converted map passes the structural rules (integral numbers in any JSON form)");
+  values["ValveBiped.Bip01_R_Hand"]=values["ValveBiped.Bip01_L_Hand"];values["ValveBiped.Bip01_L_Foot"]=9999;values["ValveBiped.Bip01_L_Toe0"]=1.5;
+  auto checked=inspectBoneMap(*loaded,options("values",values));std::set<std::string> codes;for(auto& i:checked["issues"])codes.insert(i["code"].get<std::string>()+":"+i["slot"].get<std::string>());
+  check(codes.contains("duplicate:ValveBiped.Bip01_R_Hand")&&codes.contains("range:ValveBiped.Bip01_L_Foot")&&codes.contains("range:ValveBiped.Bip01_L_Toe0"),"inspect: duplicates and values out of range or not whole are problems");
+  bool invalid=false;try{inspectBoneMap(*loaded,options("values",Json::array()));}catch(const std::exception& e){invalid=std::string(e.what())=="Invalid bone map options";}
+  check(invalid,"inspect: malformed options are refused");
   // A hand-edited map (with a consistent identity) is checked like any cached index.
   auto manifest=readJson(cache/L"assets"/wide(id)/L"manifest.json");manifest["conversion"]["boneMap"]["ValveBiped.Bip01_L_Hand"]=9999;
   auto identity=manifest;identity["id"]=manifest["sourceHash"];auto text=identity.dump();auto forged=hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));manifest["id"]=forged;

@@ -548,8 +548,10 @@ Json inspectBoneMap(const Model& model,const Json& options){
   if(!options["values"].is_object())throw std::runtime_error("Invalid bone map options");
   std::map<std::string,int> values;
   for(auto& [key,item]:options["values"].items()){
-   if(!slotByKey(key)||!item.is_number_integer()||item.get<int64_t>()<-1||item.get<int64_t>()>=int64_t(view.bones.size())){issues.push_back({{"code","range"},{"severity","error"},{"slot",key},{"bone",-1},{"text","The assignment of "+key+" does not fit this model."}});continue;}
-   values[key]=item.get<int>();}
+   // Lua's JSON may write a whole number as 3.0: any integral number is accepted.
+   double v=item.is_number()?item.get<double>():.5;
+   if(!slotByKey(key)||!std::isfinite(v)||std::floor(v)!=v||v<-1||v>=double(view.bones.size())){issues.push_back({{"code","range"},{"severity","error"},{"slot",key},{"bone",-1},{"text","The assignment of "+key+" does not fit this model."}});continue;}
+   values[key]=int(v);}
   for(auto& p:checkBoneMap(view,values,{}))issues.push_back({{"code",p.code},{"severity",p.severity},{"slot",p.slot},{"bone",p.bone},{"text",p.text}});
  }
  out["issues"]=issues;
