@@ -383,6 +383,11 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       present(1,1);
       bool same=atRest(p.skin[pelvis].inverse()*p.skin[groove],{0,0,0});if(gpu){const auto& s=*p.snapshot;same=same&&s.gpu;for(int k=0;k<12&&same;k++)same=std::fabs(s.palette[groove*12+k]-s.palette[pelvis*12+k])<(k%4==3?.01f:1e-5f);}
       check(same,("the groove's skinning matrix is the pelvis's under a rigid pose"+mode+(gpu?", in the hardware palette too":"")).c_str());
+      // What GetAlignmentProbe reads: every vertex of the drawn parts where it is drawn; a
+      // hardware-skinned snapshot does not hold most of them, the palette places them.
+      {std::vector<uint8_t> referenced(m->vertices.size(),0);for(auto i:m->indices)referenced[i]=1;size_t expected=0,visited=0;for(auto r:referenced)expected+=r;double drawnError=0;
+       p.drawnVertices([&](size_t i,const btVector3& v){visited++;drawnError=std::max(drawnError,double((v-toWorld(m->vertices[i].position)).length()));});
+       check(p.snapshot->gpu==gpu&&visited==expected&&drawnError<.02,("drawn vertices are read where the active skinning path draws them, with the far body"+mode).c_str());}
       p.requireCpuVertices();double error=0,radius=0;
       for(size_t i=0;i<m->vertices.size();i++){auto& d=p.snapshot->vertices[i];auto expected=toWorld(m->vertices[i].position);error=std::max(error,double((btVector3(d.x,d.y,d.z)-expected).length()));radius=std::max(radius,double((expected-placed.getOrigin()).length()));}
       check(error<.02,("vertices weighted to MMD control roots follow the Source pelvis far from the world origin"+mode).c_str());
@@ -404,6 +409,9 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       present(1+1./60,2);const auto& g=p.global;auto offset=[&](size_t a,size_t b){return m->bones[b].position-m->bones[a].position;};
       check((g[ankle].getOrigin()-ankleBefore).length()>2&&atRest(g[ankle].inverse()*g[legGoal],offset(ankle,legGoal))&&atRest(g[toe].inverse()*g[toeGoal],offset(toe,toeGoal)),("leg and toe IK goals ride on the Source-driven ankle and toe"+mode).c_str());
       check(atRest(g[toe].inverse()*g[heelGoal],offset(toe,heelGoal)),("an IK goal hung below the toe IK goal follows the bent foot"+mode).c_str());
+      // A hidden part is not drawn: the probe skips its vertices (the control vertices are Core only).
+      p.setMaterialState({false,true},{false,false});p.ensureSnapshot();bool core=false,fabric=false;p.drawnVertices([&](size_t i,const btVector3&){core|=i>=control;fabric|=i==3;});
+      check(!core&&fabric,("drawn vertices skip hidden parts"+mode).c_str());
      }
      // A VRM spring joint on a root bone (操作中心) rests relative to the pelvis the root rides
      // with: under a turned far pose its tail stays where the turned body puts it.

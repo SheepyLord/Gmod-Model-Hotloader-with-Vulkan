@@ -424,16 +424,23 @@ FUNCTION(SubmitPresentationBatch) {
  LUA->PushBool(true);return 1;
 } END_FUNCTION
 FUNCTION(GetAlignmentProbe) {
- auto& p=world().get(number(LUA,1));p.requireCpuVertices();Json bones=Json::array(),vertices=Json::array();
+ auto& p=world().get(number(LUA,1));p.ensureSnapshot();
+ // The drawn vertex farthest from every presentation bone and the one nearest the world origin.
+ // Partly weighted vertices the samples below skip still show: one left behind at the world
+ // origin (issue #6) lies far beyond the model's height from the skeleton. Read as drawn, under
+ // hardware skinning from the palette, before the samples force a CPU publish.
+ Json farthest=nullptr,nearest=nullptr;const char* skinning=p.snapshot->gpu?"hardware":"cpu";
+ {float spread=-1,closest=BT_LARGE_FLOAT;size_t farAt=0,nearAt=0;btVector3 farPos(0,0,0),nearPos(0,0,0);
+  p.drawnVertices([&](size_t i,const btVector3& v){
+   if(!p.presentationBones.empty()){float d=BT_LARGE_FLOAT;for(auto& bone:p.presentationBones)d=std::min(d,(bone.getOrigin()-v).length2());if(d>spread){spread=d;farAt=i;farPos=v;}}
+   if(v.length2()<closest){closest=v.length2();nearAt=i;nearPos=v;}});
+  if(spread>=0)farthest={{"index",farAt},{"distance",std::sqrt(spread)},{"position",{farPos.x(),farPos.y(),farPos.z()}},{"modelHeight",(p.model->maximum.y()-p.model->minimum.y())*p.scale/Inch}};
+  if(closest<BT_LARGE_FLOAT)nearest={{"index",nearAt},{"distance",std::sqrt(closest)},{"position",{nearPos.x(),nearPos.y(),nearPos.z()}}};}
+ p.requireCpuVertices();Json bones=Json::array(),vertices=Json::array();
  if(p.sourceRig)for(size_t i=0;i<p.sourceRig->bones.size();i++){auto& b=p.sourceRig->bones[i];if(b.mmd<0)continue;auto t=p.placement*convert(p.snapshot->bones[b.mmd],p.scale);auto pos=t.getOrigin()/Inch;Json j={{"source",i},{"mmd",b.mmd},{"meshBone",{pos.x(),pos.y(),pos.z()}}};if(i<p.presentationBones.size()){auto v=p.presentationBones[i].getOrigin();j["sourceBone"]={v.x(),v.y(),v.z()};j["error"]=(pos-v).length();}bones.push_back(j);}
  // Independent rigidly weighted vertices detect skinning/bind errors that a bone-only comparison misses.
  for(size_t i=0;i<p.model->vertices.size();i++){auto& v=p.model->vertices[i];if(v.weights[0]<.9999f||v.bones[0]<0||!p.sourceRig)continue;int b=p.sourceControl[v.bones[0]];if(b<0||size_t(b)>=p.presentationBones.size())continue;if(i%37!=0)continue;auto facing=rigMeshBind(*p.sourceRig);auto expected=p.presentationBones[b]*p.sourceRig->bones[b].rest.inverse()*(facing*(toSource(v.position)*p.sourceRig->scale));auto& d=p.snapshot->vertices[i];auto rendered=btVector3(d.x,d.y,d.z);vertices.push_back({{"index",i},{"sourceBone",b},{"expected",{expected.x(),expected.y(),expected.z()}},{"rendered",{d.x,d.y,d.z}},{"error",(expected-rendered).length()}});if(vertices.size()>=128)break;}
- // The vertex farthest from every presentation bone. Partly weighted vertices the samples above
- // skip still show: one left at the world origin (issue #6) lies far beyond the model's height.
- Json farthest=nullptr;if(!p.presentationBones.empty()){float best=-1;size_t at=0;
-  for(size_t i=0;i<p.snapshot->vertices.size();i++){auto& d=p.snapshot->vertices[i];btVector3 v(d.x,d.y,d.z);float nearest=BT_LARGE_FLOAT;for(auto& bone:p.presentationBones)nearest=std::min(nearest,(bone.getOrigin()-v).length2());if(nearest>best){best=nearest;at=i;}}
-  if(best>=0){auto& d=p.snapshot->vertices[at];farthest={{"index",at},{"distance",std::sqrt(best)},{"position",{d.x,d.y,d.z}},{"modelHeight",(p.model->maximum.y()-p.model->minimum.y())*p.scale/Inch}};}}
- push(LUA,{{"frame",p.presentationFrame},{"time",p.sourceTimestamp},{"bones",bones},{"vertices",vertices},{"farthestVertex",farthest}});return 1;
+ push(LUA,{{"frame",p.presentationFrame},{"time",p.sourceTimestamp},{"bones",bones},{"vertices",vertices},{"farthestVertex",farthest},{"nearestToOrigin",nearest},{"skinning",skinning}});return 1;
 } END_FUNCTION
 FUNCTION(GetModelAnimationDiagnostics) {auto value=modelAnimationDiagnostics(stringArg(LUA,1));LUA->PushString(value.c_str());return 1;} END_FUNCTION
 FUNCTION(CreateEditorPreview) {auto m=asset(stringArg(LUA,1));if(!m)throw std::runtime_error("Asset not loaded");auto host=std::make_unique<World>();host->next=1000000000+context->sequence++;auto rig=json(LUA,2);auto id=host->create(m,{{"backend","source"},{"rigManifest",rig},{"frozen",true}});context->editors[id]=std::move(host);LUA->PushNumber(double(id));return 1;} END_FUNCTION

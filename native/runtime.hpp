@@ -309,6 +309,9 @@ struct Instance {
     std::vector<float> gpuMorphWeights;std::vector<unsigned> gpuTouched;
     // Deform every vertex in the next publish (Lua position queries), then return to hardware skinning.
     void requireCpuVertices(){if(snapshot&&snapshot->gpu){cpuRequest=true;poseDirty=true;}ensureSnapshot();}
+    // Every vertex of the parts the renderer draws, where the published snapshot draws it (Source
+    // units): under hardware skinning from the rest data and the palette, as the vertex shader does.
+    void drawnVertices(const std::function<void(size_t,const btVector3&)>& visit) const;
     Instance(World&,std::shared_ptr<Model>,uint64_t,const Json&);
     ~Instance();
     void evaluate(bool physics);

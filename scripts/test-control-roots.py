@@ -4,9 +4,18 @@ stay with the body far from the world origin, with hardware skinning on and off.
 Run inside an owned game-start.ps1 session with 2.3.0 natives, standing at least 500 units
 from the world origin (the gm_flatgrass spawn is 12,000 units below it):
   python scripts/test-control-roots.py [model.pmx ...]
-It imports tests/fixtures/native-control-root.pmx and the given models, spawns each one frozen
-in front of the player and, after rendering, measures every part's farthest vertex from the
-ragdoll and GetAlignmentProbe's farthest vertex from the skeleton. The report is written to
+It imports tests/fixtures/native-control-root.pmx and the given models, spawns each one fresh
+(no morph active) and frozen in front of the player and, after rendering, checks two things:
+- GetAlignmentProbe's drawn vertex nearest to the world origin is no nearer to it than the body
+  minus 1.5 model heights. The probe reads vertices as drawn: in the hardware pass from the rest
+  data and the palette the shader uses (the fixture must be hardware-skinned there), so both
+  skinning paths are checked.
+- Every part's vertex farthest from the ragdoll is within 1.5 model heights of it. These
+  positions come from GetMaterialPositions, which forces a CPU publish: the CPU deformation, in
+  both passes.
+The probe's farthest vertex from the skeleton is reported but does not decide the result: an
+active vertex morph, a part placed away from the body or exploded physics can put it beyond the
+model's height with nothing at the world origin. The report is written to
 validation/control-roots.json.
 """
 import json,pathlib,sys,time
@@ -28,21 +37,23 @@ def import_model(path):
     result=wait('client',"local s=mmdhl.Decode(mmdhl.native.PollJob(JOB)) if s.state~='running' then return s end".replace('JOB',str(job)),600)
     assert result['state']=='complete',result
     return result['asset']
-# After a rendered frame: the probe's farthest vertex, the floating-root counts and, per part,
-# the vertex farthest from the ragdoll's position (every vertex, CPU-deformed for the query).
+# After a rendered frame: the probe's drawn vertices farthest from the skeleton and nearest to the
+# world origin (read before the probe's CPU samples), the counts of bones Source does not drive
+# and, per part, the vertex farthest from the ragdoll's position (CPU-deformed for the query).
 MEASURE="""local e=Entity(ENTITY) if not IsValid(e) or mmdhl.GetInstance(e)<=0 then return end
 local inst=mmdhl.GetInstance(e) local probe=mmdhl.Decode(mmdhl.native.GetAlignmentProbe(inst))
 if not probe or not probe.farthestVertex or (probe.frame or 0)<=MMDHL_CR_FRAME then return end
 local d=mmdhl.GetDiagnostics(e) local origin=e:GetPos() local worst,part=0,-1
 for p=0,#mmdhl.GetMaterials(e)-1 do for _,v in ipairs(mmdhl.Decode(mmdhl.native.GetMaterialPositions(inst,p)) or {}) do
  local distance=origin:Distance(Vector(v[1],v[2],v[3])) if distance>worst then worst,part=distance,p end end end
-return {farthest=probe.farthestVertex,floating=d.floatingRoots,partDistance=worst,part=part,origin={origin:Unpack()},gpu=mmdhl.Decode(mmdhl.native.RenderStats()).gpuSkinning}"""
+return {farthest=probe.farthestVertex,nearest=probe.nearestToOrigin,skinning=probe.skinning,floating=d.floatingRoots,anchored=d.anchoredGoals,partDistance=worst,part=part,origin={origin:Unpack()},gpu=mmdhl.Decode(mmdhl.native.RenderStats()).gpuSkinning}"""
 report={'features':wait('client',"local s=mmdhl.GetInstallationStatus() if s.features.imports then return s.features end"),'models':{}}
 spot=call('server',"local p=player.GetHumans()[1] local at=p:GetPos()+Vector(0,0,64) local tr=util.TraceLine({start=at,endpos=at+p:GetAimVector()*160,filter=p}) return {(tr.HitPos+tr.HitNormal*40):Unpack()}")
 assert sum(v*v for v in spot)**.5>=500,'stand at least 500 units from the world origin'
 gpu=call('client',"return GetConVar('mmdhl_gpu_skinning'):GetString()")
 try:
-    for path in [ROOT/'tests/fixtures/native-control-root.pmx']+[pathlib.Path(a) for a in sys.argv[1:]]:
+    fixture=ROOT/'tests/fixtures/native-control-root.pmx'
+    for path in [fixture]+[pathlib.Path(a) for a in sys.argv[1:]]:
         asset=import_model(path)
         call('server',"for _,e in ipairs(mmdhl.Entities()) do e:Remove() end MMDHL_CR=nil mmdhl.Spawn(player.GetHumans()[1],'ASSET',{backend='source',position={SPOT},frozen=true},function(e,err) MMDHL_CR=IsValid(e) and e:EntIndex() or tostring(err) end) return true"
              .replace('ASSET',asset).replace('SPOT',','.join(repr(float(v)) for v in spot)))
@@ -54,11 +65,14 @@ try:
             time.sleep(1)
             call('client',"local e=Entity(ENTITY) MMDHL_CR_FRAME=IsValid(e) and mmdhl.GetInstance(e)>0 and (mmdhl.Decode(mmdhl.native.GetAlignmentProbe(mmdhl.GetInstance(e))) or {}).frame or 0 return true".replace('ENTITY',str(int(entity))))
             value=wait('client',MEASURE.replace('ENTITY',str(int(entity))))
-            height=value['farthest']['modelHeight']
-            value['ok']=value['partDistance']<1.5*height and value['farthest']['distance']<height
+            height=value['farthest']['modelHeight'];away=sum(v*v for v in value['origin'])**.5
+            # A model whose materials block hardware skinning is drawn on the CPU in both passes.
+            measured=mode=='0' or value['skinning']=='hardware' or path!=fixture
+            value['ok']=measured and value['nearest']['distance']>away-1.5*height and value['partDistance']<1.5*height
             result['hardware' if mode=='1' else 'cpu']=value
-            print(path.name,'hardware' if mode=='1' else 'CPU','skinning: farthest vertex',round(value['farthest']['distance'],2),'units from the skeleton, part',value['part'],
-                  round(value['partDistance'],2),'units from the ragdoll (model height',round(height,1),'), floating roots',value['floating'],'OK' if value['ok'] else 'FAIL',flush=True)
+            print(path.name,'hardware' if mode=='1' else 'CPU','skinning (probe read',value['skinning']+'): nearest vertex',round(value['nearest']['distance'],2),'units from the world origin, body',round(away,1),
+                  '; part',value['part'],round(value['partDistance'],2),'units from the ragdoll (model height',round(height,1),'); farthest from the skeleton',round(value['farthest']['distance'],2),
+                  '; bones Source does not drive',value['floating'],value['anchored'],'OK' if value['ok'] else 'FAIL',flush=True)
         report['models'][path.name]={'asset':asset,**result}
 finally:
     call('client',"RunConsoleCommand('mmdhl_gpu_skinning','MODE') return true".replace('MODE',gpu))

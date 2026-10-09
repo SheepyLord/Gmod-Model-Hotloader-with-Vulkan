@@ -501,6 +501,20 @@ void Instance::evaluate(bool physics){
     evaluateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 void Instance::ensureSnapshot(){if(!snapshot||poseDirty)publish(owner->time);}
+void Instance::drawnVertices(const std::function<void(size_t,const btVector3&)>& visit) const {
+    if(!snapshot)return;const auto& s=*snapshot;const auto& m=*model;std::vector<uint8_t> drawn(m.vertices.size(),0);
+    // The renderer skips hidden and fully transparent parts.
+    for(size_t part=0;part<m.materials.size()&&part<s.materials.size();part++){if((part<materialVisible.size()&&!materialVisible[part])||s.materials[part].alpha<=.0001f)continue;
+        const auto& r=m.materials[part];for(size_t i=r.first;i<size_t(r.first)+r.count&&i<m.indices.size();i++)drawn[m.indices[i]]=1;}
+    // A hardware-skinned snapshot deforms only GpuSkin::cpuVertices; the shader skins the rest
+    // with three renormalised weights.
+    auto plan=s.gpu?m.gpuSkin():nullptr;std::unique_lock<std::mutex> lock(gpuRest->mutex,std::defer_lock);if(plan)lock.lock();const auto& rest=gpuRest->positions;
+    for(size_t i=0;i<drawn.size()&&i<s.vertices.size();i++)if(drawn[i]){
+        if(plan&&!plan->cpuVertex[i]&&rest.size()>=i*3+3){btVector3 p(0,0,0);const float* r=&rest[i*3];
+            for(int k=0;k<3;k++){float w=plan->weights[i][k];if(w==0)continue;const float* row=&s.palette[size_t(plan->bones[i][k])*12];for(int a=0;a<3;a++)p[a]+=w*(row[a*4]*r[0]+row[a*4+1]*r[1]+row[a*4+2]*r[2]+row[a*4+3]);}
+            visit(i,p);}
+        else{const auto& d=s.vertices[i];visit(i,btVector3(d.x,d.y,d.z));}}
+}
 namespace {
 constexpr size_t Lanes=8;
 bool avx2FmaAvailable(){static const bool value=[]{int info[4];__cpuid(info,1);bool osxsave=(info[2]&(1<<27))!=0;
