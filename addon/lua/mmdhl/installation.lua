@@ -199,6 +199,12 @@ local function publicStatus()
  return {schema=1,realm='server',recommended=status.recommended,installed=status.installed,features=status.features,issues=status.issues,
   fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,unverifiedAccepted=status.unverifiedAccepted,update=status.update}
 end
+-- Whether release a (build ID ab) comes before release b (bb) in the update reminder's
+-- order; a build of the same label never does.
+local function releaseBefore(a,ab,b,bb)
+ if a:gsub('%+.*$','')==b:gsub('%+.*$','') then return false end
+ return olderBuild({release=a,build=ab},{release=b,build=bb})
+end
 -- Whether this realm's native module is release label or newer, in the update reminder's
 -- order: the release its files match, else (accepted unverified files) the loaded module's own.
 function M.NativeReleaseAtLeast(label)
@@ -207,13 +213,15 @@ function M.NativeReleaseAtLeast(label)
  local record=status and status.installed and releases[status.installed]
  local current,build=record and status.installed or loaded and loaded.release,record and record.build or loaded and loaded.build
  if type(label)~='string' or type(current)~='string' then return false end
- if current:gsub('%+.*$','')==label:gsub('%+.*$','') then return true end
- return not olderBuild({release=current,build=build},{release=label,build=releases[label] and releases[label].build})
+ return not releaseBefore(current,build,label,releases[label] and releases[label].build)
 end
 -- A loaded module this Lua cannot use: the update reminder offers the download, worded as
--- required. installed is the module's own label (the files on disk may say otherwise).
-local function requireUpdate(installed)
+-- required, when it is older than the recommended release (nil: too old to say which).
+-- installed is the module's own label (the files on disk may say otherwise). The same or
+-- a newer release needs a restart or another addon version: its problem says so.
+local function requireUpdate(installed,build)
  local recommended=(policy.releases or {})[policy.recommended] or {}
+ if installed~=nil and not (type(installed)=='string' and type(policy.recommended)=='string' and releaseBefore(installed,build,policy.recommended,recommended.build)) then return end
  status.update={installed=installed,recommended=policy.recommended,url=recommended.url,altUrl=recommended.altUrl,required=true}
 end
 local updateLogged
@@ -330,7 +338,12 @@ end
 local function checkLoaded(info)
  local ok,message,overridable=identitiesMatch(info)
  if ok then return true end
- if not overridable then issue(status,'restart_required','module',message) requireUpdate(info and info.module and info.module.release) return false end
+ if not overridable then
+  issue(status,'restart_required','module',message)
+  local module=type(info)=='table' and type(info.module)=='table' and info.module
+  if module and type(module.release)=='string' then requireUpdate(module.release,module.build) end
+  return false
+ end
  status.fingerprint=status.fingerprint..loadedFingerprint(info)
  status.unverifiedAccepted=acceptedFingerprints()[status.realm]==status.fingerprint or nil
  issue(status,'loaded_mismatch','module',message,nil,true)
@@ -408,13 +421,14 @@ local function startProbe()
   notifyChanged()
  end)
 end
--- A compatibility policy newer than this binary (a library or guard it does not know)
--- must not stop the addon. The binary validates the whole policy before taking it, once
--- per process, so it is offered whole, then without one library at a time, then without
--- libraries: the libraries left out run as unverified game builds behind the binary's own
--- interface, slot and class checks (releases before 2.1.0-native.6 turn the affected
--- engine features off instead). The order is fixed, so every later map finds the same
--- policy. Also returns the libraries left out.
+-- A compatibility policy newer than this binary (a library it does not know, or a profile
+-- it cannot validate: a guard it requires missing, another evidence format) must not stop
+-- the addon; guard names it does not know it ignores. The binary validates the whole
+-- policy before taking it, once per process, so it is offered whole, then without one
+-- library at a time, then without libraries: the libraries left out run as unverified
+-- game builds behind the binary's own interface, slot and class checks (releases
+-- before 2.1.0-native.6 turn the affected engine features off instead). The order is
+-- fixed, so every later map finds the same policy. Also returns the libraries left out.
 local function configureCompatibility(compat)
  local configured,err=decode(rawNative.ConfigureCompatibility(util.TableToJSON(compat)))
  if configured or not istable(compat) or not istable(compat.libraries) then return configured,err end

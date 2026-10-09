@@ -4,7 +4,9 @@ loads without issues and gets the update reminder (status.update); one no longer
 approved loads with a warning that disables nothing. A compatibility policy newer than
 the binary (a library it does not know) is offered without that library, then without
 any, so the module still configures. Modules this Lua cannot drive stay off, worded as
-a required update. Also: mmdhl.NativeReleaseAtLeast, the server's console line and
+a required update when they are older than the recommended release (a newer module, or
+the recommended one with another interface, is a problem without a download). Also:
+mmdhl.NativeReleaseAtLeast, the server's console line and
 status, and publish-native-release.py's evaluate() with a newer recommended release."""
 from pathlib import Path
 from copy import deepcopy
@@ -170,9 +172,15 @@ _, M, s, ok = session(newer_policy(), native="PY_NATIVE={GetCapabilities=functio
 assert ok is False and codes(s) == ['outdated'] and s.update.required and s.update.installed == '2.0.0-preview' and s.update.recommended == '9.9.9' and s.update.url.endswith('/tag/9.9.9')
 _, M, s, ok = session(POLICY, native='PY_NATIVE={}')
 assert ok is False and s.update.required and s.update.installed is None and s.update.recommended == CURRENT
-_, M, s, ok = session(POLICY, loaded={'api': 2, 'release': '3.0.0'})
-assert ok is False and codes(s) == ['restart_required'] and s.update.required and s.update.installed == '3.0.0'
-print('PASS: modules without verification or with another interface stay off as a required update')
+# A loaded module with another interface: older than the recommended release, a required update.
+_, M, s, ok = session(newer_policy(), loaded={'installApi': 0})
+assert ok is False and codes(s) == ['restart_required'] and s.update.required and s.update.installed == CURRENT and s.update.recommended == '9.9.9'
+# A newer one needs a newer addon, and the recommended release itself (any build of it) a restart
+# or repair: no download of the same or an older package, the problem says what to do.
+for loaded in ({'api': 2, 'release': '3.0.0'}, {'api': 2}, {'installApi': 2, 'build': '0123456789ab-20000101T000000Z'}):
+    _, M, s, ok = session(POLICY, loaded=loaded)
+    assert ok is False and codes(s) == ['restart_required'] and s.update is None and not s.features.core, loaded
+print('PASS: modules without verification or with an older interface stay off as a required update; newer ones as a problem')
 
 # publish-native-release.py: with a newer recommended release appended, every approved
 # release still loads on client and server without issues.

@@ -70,13 +70,18 @@ recorded release, identified by the size and SHA-256 of its realm module.
   known problem. It still runs; the update window and banner line add that phrase
   (or a general one when the player's catalogue lacks it), and the advisory
   reminds again even where that release was skipped. Keep the policy ASCII; the
-  release scripts keep keys they do not know.
+  release scripts keep keys they do not know. A new phrase is an ordinary catalogue
+  key: add `install.advisory.<id>` to all seven catalogues and list it in an
+  `-- i18n-keys: install.advisory.<id>` comment in `installation_ui.lua`, or
+  `check-i18n.py` warns that no Lua file uses it.
 - Only modules this Lua cannot drive stay off: releases without installation
   verification (`installApi` 0), a module without
   `GetInstallationInfo`/`ConfigureCompatibility`/`CheckCompatibility`, and a loaded
   module with another interface (`api`, `installApi` or platform). Running them
-  has no ABI guards at all. They are offered as a **required update**, with the
-  same window and links.
+  has no ABI guards at all. Those older than `recommended` are offered as a
+  **required update**, with the same window and links. A loaded module of the
+  recommended release or newer with another interface keeps its plain problem
+  (restart, or update the addon): there is nothing newer to download.
 
 What players see:
 
