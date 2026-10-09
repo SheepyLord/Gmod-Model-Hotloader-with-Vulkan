@@ -85,9 +85,12 @@ mmdhl.ui.moved_items=Moved {count} item(s) to {folder}.
 - **Messages written by the native module.** The Lua shows them as they are. This includes
   import errors, conversion warnings and notes, and compatibility and installation checks
   reported by the DLL. Some sit inside translated sentences, for example
-  `Import failed: {reason}`. The library also recognises a few of them by their English
-  wording to offer a hint. Translating them means changing the native messages and those
-  hints together.
+  `Import failed: {reason}`. From 2.3.0 an import failure also carries an error code: the
+  failure window shows a translated cause, step, hint and Where line for it
+  (`library.cause.*`, `library.stage.*`, `library.hint.*`, `library.element.*`) and keeps
+  the native sentence in its details. Older native modules send no code; the library then
+  recognises a few messages by their English wording to offer a hint, so changing a
+  native message means checking those hints too.
 - **Console variable help text**, console commands, and developer diagnostics: the
   performance overlay, performance dumps and log lines. They are meant for bug reports.
 - **Product names**, and model, bone and morph names from the files themselves.
