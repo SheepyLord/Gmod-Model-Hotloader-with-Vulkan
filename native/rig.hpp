@@ -18,7 +18,16 @@ inline btTransform rigMeshBind(const Rig& rig){
  return btTransform(btQuaternion(btVector3(0,0,1),rig.manifest.value("meshYaw",0.f)*SIMD_RADS_PER_DEG),
                     btVector3(0,0,rig.manifest.value("actorOrigin",0.f)));
 }
+// options.boneMap pins carrier bones: {"ValveBiped.Bip01_Spine4": PMX bone index, or -1 for none},
+// over a converted character's own map (Model::conversionBoneMap). Bad pins throw
+// ImportError "fit.bone_map", missing landmarks "fit.landmarks" (details: missing, searched).
 Rig fitRig(const Model&,const Json& options);
+// Whether fitRig rescales the model's cached fit instead of fitting again.
+bool cachedFitApplies(const Model&,const Json& options);
+// native.GetBoneMapProposal: fitRig's bone choice for these options, without bodies:
+// {version, asset, bones:[{name, mmd, aliases, provenance, required}], missing, searched,
+//  issues:[{code, severity, slot, text}], torso:{method, repairs:[{code, bones, text}]}, error?, errorCode?}.
+Json boneMapProposal(const Model&,const Json& options);
 Rig rigFromManifest(const Json&);
 // Throws unless every index and transform of the rig is usable with this model.
 void validateRig(const Rig&,const Model&);
