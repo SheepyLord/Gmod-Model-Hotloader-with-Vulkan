@@ -341,15 +341,23 @@ concommand.Add('mmdhl_physics_editor_open',function()
  local ent=LocalPlayer():GetEyeTrace().Entity
  if editable(ent) and mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) else notification.AddLegacy(L'physics_editor.error.not_ragdoll',NOTIFY_ERROR,5) end
 end,nil,'Open the ragdoll physics editor for the Model Hotloader ragdoll you are looking at.')
--- Test copies say so above their head.
+-- Test copies say so above their head. The hook runs for every view rendered (reflections,
+-- cameras): they are looked up once a frame among the addon's own characters.
+local testCopies,testCopiesFrame={},nil
+local function findTestCopies()
+ local frame=FrameNumber() if frame==testCopiesFrame then return testCopies end
+ testCopiesFrame=frame for i=#testCopies,1,-1 do testCopies[i]=nil end
+ for _,ent in ipairs(mmdhl.Entities and mmdhl.Entities() or {}) do
+  if IsValid(ent) and ent:GetClass()=='prop_ragdoll' and ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) then testCopies[#testCopies+1]=ent end
+ end
+ return testCopies
+end
 hook.Add('PostDrawTranslucentRenderables','MMDHL.PhysicsTestCopy',function(depth,sky)
  if depth or sky then return end
- for _,ent in ipairs(ents.FindByClass('prop_ragdoll')) do
-  if ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) then
-   local rig=mmdhl.GetRig(ent) local head=rig and rig.bodies and rig.bodies[4] local matrix=head and ent:GetBoneMatrix(head.bone)
-   if matrix then local m=(tonumber(rig.scale) or 3.23656)/3.23656 local ang=EyeAngles() ang:RotateAroundAxis(ang:Up(),-90) ang:RotateAroundAxis(ang:Forward(),90)
-    cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(L'physics_editor.test_copy_label','DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
-  end
+ for _,ent in ipairs(findTestCopies()) do
+  local rig=IsValid(ent) and mmdhl.GetRig(ent) local head=rig and rig.bodies and rig.bodies[4] local matrix=head and ent:GetBoneMatrix(head.bone)
+  if matrix then local m=(tonumber(rig.scale) or 3.23656)/3.23656 local ang=EyeAngles() ang:RotateAroundAxis(ang:Up(),-90) ang:RotateAroundAxis(ang:Forward(),90)
+   cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(L'physics_editor.test_copy_label','DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
  end
 end)
 include('mmdhl/physics_editor_ui.lua')

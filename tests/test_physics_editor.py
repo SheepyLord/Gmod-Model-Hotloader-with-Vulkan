@@ -832,8 +832,9 @@ print('PASS: packages accept fit files with physics, dedicated servers install t
 UI_HEAD = read('addon/lua/mmdhl/ui.lua')
 UI_HEAD = UI_HEAD[:UI_HEAD.index('\n', UI_HEAD.index('mmdhl.UI={')) + 1]
 CLIENT_MOCKS = r'''
-SERVER=false CLIENT=true NOW=10 RealTime=function() return NOW end CurTime=RealTime FrameNumber=function() return 1 end
-IsValid=function(v) return type(v)=='table' and rawget(v,'removed')~=true and rawget(v,'invalid')~=true end
+SERVER=false CLIENT=true NOW=10 RealTime=function() return NOW end CurTime=RealTime FRAME=1 FrameNumber=function() return FRAME end
+-- As in GMod: a table is valid only through its own IsValid method.
+IsValid=function(v) if type(v)~='table' then return false end local f=v.IsValid if not f then return false end return f(v) end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
 -- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
@@ -845,7 +846,7 @@ CONVARS={} local function convar(name,default) local c={value=tostring(default)}
 CreateClientConVar=function(name,default) return CONVARS[name] or convar(name,default) end CreateConVar=function(name,default) return CONVARS[name] or convar(name,default) end
 GetConVar=function(name) return CONVARS[name] end RunConsoleCommand=function(name,value) (CONVARS[name] or convar(name,0)).value=tostring(value) end
 FCVAR_ARCHIVE=1 FCVAR_REPLICATED=2 FCVAR_NOTIFY=4
-game={IsDedicated=function() return false end,SinglePlayer=function() return true end} ents={FindByClass=function() return {} end}
+game={IsDedicated=function() return false end,SinglePlayer=function() return true end} ents={FindByClass=function() FOUND_BY_CLASS=(FOUND_BY_CLASS or 0)+1 return {} end}
 GLOBALS={MMDHLPhysicsEditor=1} GetGlobal2Int=function(k,d) local v=GLOBALS[k] if v==nil then return d end return v end
 HOOKS={} hook={Add=function(e,n,f) HOOKS[e]=HOOKS[e] or {} HOOKS[e][n]=f end,Remove=function(e,n) if HOOKS[e] then HOOKS[e][n]=nil end end,Run=function() end}
 function fire(e,...) for _,f in pairs(HOOKS[e] or {}) do f(...) end end
@@ -873,16 +874,23 @@ TEXT_ALIGN_CENTER=1 TEXT_ALIGN_LEFT=0
 local function noop() end
 draw={RoundedBox=noop,RoundedBoxEx=noop,SimpleText=noop,SimpleTextOutlined=noop,NoTexture=noop}
 surface={SetFont=noop,GetTextSize=function(t) return #tostring(t or '')*7,14 end,CreateFont=noop,SetDrawColor=noop,DrawRect=noop,DrawLine=noop,DrawOutlinedRect=noop}
-render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=noop,End3D2D=noop,IgnoreZ=function(on) IGNOREZ=on end}
+render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=function() LABELS=(LABELS or 0)+1 end,End3D2D=noop,IgnoreZ=function(on) IGNOREZ=on end}
 util={AddNetworkString=noop,TableToJSON=function(t) return py_encode(t) end,JSONToTable=function(s) if type(s)~='string' then return nil end return py_decode(s) end,Compress=function(s) return 'Z'..s end,Decompress=function(s) if type(s)=='string' and s:sub(1,1)=='Z' then return s:sub(2) end end,
  GetSurfaceIndex=function(n) return ({flesh=1,metal=2,wood=3,ice=4})[n] or -1 end,GetSurfaceData=function() return {density=1000} end,IsValidModel=function(m) return m=='models/alyx.mdl' end,GetModelInfo=function() return {KeyValues=TEMPLATE} end,
  AimVector=function() return Vector(1,0,0) end,IntersectRayWithOBB=function(o) return o+Vector(1,0,0) end,TraceLine=function() return {} end}
-gui={ScreenToVector=function() return Vector(1,0,0) end} EyePos=function() return Vector() end EyeAngles=function() return Angle() end
+gui={ScreenToVector=function() return Vector(1,0,0) end,MouseX=function() return MOUSE_X or 0 end,MouseY=function() return MOUSE_Y or 0 end} EyePos=function() return Vector() end EyeAngles=function() return Angle() end
 SENT={} local inbox={} local writing function feed(list) inbox=list end local function read() return table.remove(inbox,1) end
 RECEIVERS={} net={Receive=function(n,f) RECEIVERS[n]=f end,Start=function(n) writing={name=n,fields={}} end,SendToServer=function() SENT[#SENT+1]=writing end,ReadUInt=read,ReadString=read,ReadData=read,ReadEntity=read}
 for _,name in ipairs({'WriteUInt','WriteString','WriteEntity','WriteData','WriteFloat','WriteBool'}) do net[name]=function(v) writing.fields[#writing.fields+1]=v end end
 -- Panels: every method the editor calls, recorded loosely; ALL lists them for the walk below.
+-- CONTROLS holds the built-in methods a class's instances inherit, as GMod's vgui files do.
 ALL={} local Panel={}
+CONTROLS={
+ -- dtextentry.lua: Enter in a single-line entry moves the focus on, then calls OnEnter.
+ DTextEntry={Think=function(self) self.convarThinks=(self.convarThinks or 0)+1 end,OnLoseFocus=function() end,OnGetFocus=function() end,
+  OnKeyCodeTyped=function(self,code) if code==KEY_ENTER and not self.multiline then self:FocusNext() if self.OnEnter then self:OnEnter(self:GetText()) end end end},
+ -- dframe.lua: Think moves the frame while its title bar is dragged.
+ DFrame={Think=function(self) if self.Dragging then self:SetPos(gui.MouseX()-self.Dragging[1],gui.MouseY()-self.Dragging[2]) end end}}
 local function panel(class,parent)
  local p=setmetatable({class=class,children={},w=100,h=20,visible=true,enabled=true,text='',parent=parent,choices={}},Panel) ALL[#ALL+1]=p
  if parent then parent.children[#parent.children+1]=p end
@@ -891,19 +899,24 @@ local function panel(class,parent)
  return p
 end
 local loose={'^Set','^Dock','^Make','^SizeTo','^Center','^Invalidate','^Request','^Kill','^Mouse','^Move','^Hide','^Show$','^Open$','^PerformLayout$','^Paint','^Think$'}
-Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
+Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end local control=CONTROLS[rawget(t,'class')] if control and control[k] then return control[k] end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
+function Panel:IsValid() return rawget(self,'removed')~=true end
+function Panel:SetMultiline(v) self.multiline=v end
+-- FocusNext moves the keyboard focus on: this entry loses it (at once here; the game may do it later).
+function Panel:FocusNext() if self.OnLoseFocus then self:OnLoseFocus() end end
 function Panel:Add(class) return panel(class,self) end function Panel:SetParent(p) self.parent=p end function Panel:GetChildren() return self.children end
 function Panel:SetTall(h) self.h=h end function Panel:GetTall() return self.h end function Panel:SetWide(w) self.w=w end function Panel:GetWide() return self.w end
 function Panel:SetSize(w,h) self.w,self.h=w,h end function Panel:GetSize() return self.w,self.h end function Panel:SetPos(x,y) self.x,self.y=x,y end function Panel:GetPos() return self.x or 0,self.y or 0 end
 function Panel:SetVisible(v) self.visible=v end function Panel:IsVisible() return self.visible end function Panel:SetEnabled(v) self.enabled=v end function Panel:IsEnabled() return self.enabled end
-function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end function Panel:SetValue(v) self.text=v end
+function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end
+function Panel:SetValue(v) if self.class=='DCheckBoxLabel' then self.checked=v==true or v==1 if self.OnChange then self:OnChange(self.checked) end else self.text=v end end
 function Panel:SetFont(f) self.font=f end function Panel:GetFont() return self.font end function Panel:Remove() self.removed=true end function Panel:Clear() for _,c in ipairs(self.children) do c.removed=true end self.children={} end
 function Panel:SetChecked(v) self.checked=v end function Panel:GetChecked() return self.checked==true end function Panel:CursorPos() return 0,0 end function Panel:HasFocus() return false end function Panel:IsHovered() return false end
 function Panel:AddChoice(text,data,selected) self.choices[#self.choices+1]={text,data} end
 function Panel:ChooseOptionID(i) local c=self.choices[i] if c then self.text=c[1] if self.OnSelect then self:OnSelect(i,c[1],c[2]) end end end
 function Panel:AddColumn() return panel('DListView_Column',self) end function Panel:AddLine(...) local l=panel('DListView_Line',self) l.columns={...} self.lines=self.lines or {} self.lines[#self.lines+1]=l return l end function Panel:GetLines() return self.lines or {} end
 function Panel:Close() if self.OnClose then self:OnClose() end self.removed=true end
-vgui={Create=function(class) return panel(class) end,GetControlTable=function() return {OnLoseFocus=function() end} end}
+vgui={Create=function(class) return panel(class) end,GetControlTable=function(class) return CONTROLS[class] end}
 DermaMenu=function() local m={options={}} function m:AddOption(t,f) self.options[#self.options+1]={t,f} return m end function m:Open() MENU=self end return m end
 function walk(root) for _,p in ipairs(ALL) do if not p.removed and p.visible~=false then
  if p.PerformLayout then p:PerformLayout(p.w,p.h) end if p.Paint then p:Paint(p.w,p.h) end if p.PaintOver then p:PaintOver(p.w,p.h) end if p.Think and p.class~='DFrame' then p:Think() end end end end
@@ -915,10 +928,10 @@ for i=0,17 do local names=mmdhl_body_names RIG.bones[i+1]={name=names[i+1],posit
   hull={{-1,-1,-1},{3,-1,-1},{-1,1,-1},{3,1,-1},{-1,-1,1},{3,-1,1},{-1,1,1},{3,1,1}},faces={{0,1,3,2},{4,6,7,5},{0,4,5,1},{2,3,7,6},{0,2,6,4},{1,5,7,3}}} end
 local M={} M.__index=M function M:GetTranslation() return Vector(0,0,0) end function M:GetAngles() return Angle() end
 local Ent={} Ent.__index=function(t,k) local f=rawget(Ent,k) if f then return f end if type(k)=='string' and k:match('^%u') and not k:match('^MMD') then return function() end end end
-function Ent:GetClass() return 'prop_ragdoll' end function Ent:GetNW2Int(k,d) return k=='MMDHLNativeBodyCount' and 18 or d end function Ent:GetNW2String(k,d) return k=='MMDHLRig' and self.key or d end
+function Ent:IsValid() return rawget(self,'removed')~=true end function Ent:GetClass() return 'prop_ragdoll' end function Ent:GetNW2Int(k,d) return k=='MMDHLNativeBodyCount' and 18 or d end function Ent:GetNW2String(k,d) return k=='MMDHLRig' and self.key or d end
 function Ent:GetBoneMatrix() return setmetatable({},M) end function Ent:OBBMins() return Vector(-10,-10,0) end function Ent:OBBMaxs() return Vector(10,10,70) end function Ent:WorldSpaceCenter() return Vector(0,0,35) end
 function Ent:EntIndex() return self.index end function Ent:GetModel() return 'models/mmd/x/m.mdl' end
-RAGDOLL=setmetatable({key=RIG.key,index=33},Ent) ENTS={[33]=RAGDOLL} Entity=function(i) return ENTS[i] or {invalid=true} end NULL={invalid=true}
+RAGDOLL=setmetatable({key=RIG.key,index=33},Ent) ENTS={[33]=RAGDOLL} NULL={IsValid=function() return false end} Entity=function(i) return ENTS[i] or NULL end
 LocalPlayer=function() return {EyeAngles=function() return Angle() end,GetFOV=function() return 75 end,GetEyeTrace=function() return {Entity=RAGDOLL} end} end
 '''
 CLIENT_SETUP = r'''
@@ -1015,7 +1028,7 @@ e:Close(true) assert(mmdhl.GetPhysicsEditor()==nil and HOOKS.CalcView['MMDHL.Phy
     print(f'PASS: with {label} on the client the editor opens, previews approximately, edits, undoes and applies without errors')
 
 # A current module: the exact preview drives checks, overlaps and the .phy view; Apply rebinds to the new ragdoll.
-c = client_runtime(r'''
+CURRENT_NATIVE = r'''
 mmdhl.native={GetCapabilities=function() return py_encode({physicsEditor=1,version='2.3.0'}) end,RequestAsset=function() return true end}
 PREVIEWS=0
 function mmdhl.native.PreviewCarrierFit(asset,json)
@@ -1027,7 +1040,8 @@ function mmdhl.native.PreviewCarrierFit(asset,json)
  local overlap=on and o.collisionOverrides and o.collisionOverrides['ValveBiped.Bip01_Head1'] and {{a=3,b=4,depth=1}} or {}
  return py_encode({status='ready',key=PREVIEWS==1 and RIG.key or string.rep('f',32),scale=3.23656,m=1,unit=1.1,mass=70,canonical=o.physicsOverrides or {},bodies=bodies,pairs={mode='all',count=136},penetrations=overlap,phyText='solid {\n}\n'})
 end
-''')
+'''
+c = client_runtime(CURRENT_NATIVE)
 c.execute(r'''
 -- Until the server's state arrives (or when it never does) the overlay draws nothing and raises nothing.
 SENT={} mmdhl.OpenPhysicsEditor(RAGDOLL) local waiting=mmdhl.GetPhysicsEditor()
@@ -1091,3 +1105,53 @@ assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 e:Edit(function(d) d.mass=90 end) e:Close() assert(#QUERIES==1 and mmdhl.GetPhysicsEditor()==e) QUERIES[1].args[2]() assert(mmdhl.GetPhysicsEditor()==nil)
 ''')
 print('PASS: with a current module the exact preview drives overlap checks, fixes and the .phy view; Apply rebinds and keeps the draft, Reset shows the factory physics clean; pending refits hold Checks and Apply; picking from the world cancels; notices name the model')
+
+# The editor's widgets keep GMod's built-in panel behaviour and follow the draft; the preview
+# fits with the server's pins; test copies are found once a frame.
+c = client_runtime(CURRENT_NATIVE)
+c.execute(r'''
+local calf='ValveBiped.Bip01_L_Calf'
+STATE.fitOptions.boneMap={[calf]=7}
+local e=openEditor() STATE.fitOptions.boneMap=nil
+assert(LAST_PREVIEW.boneMap and LAST_PREVIEW.boneMap[calf]==7,'the preview was fitted without the pins the server builds with')
+walk()
+-- Enter in a number field commits it: DTextEntry's own Enter moves the focus on and calls OnEnter.
+local weight for _,p in ipairs(ALL) do if not weight and p.class=='DTextEntry' and rawget(p,'Show') and not p.removed then weight=p end end
+local steps=#e.undo
+weight:OnGetFocus() weight:SetText('82,5') weight:OnKeyCodeTyped(KEY_ENTER)
+assert(e.draft.mass==82.5,'Enter in a number field did not commit it')
+assert(#e.undo==steps+1 and weight:GetText()=='82.5','Enter committed the value twice')
+weight:OnGetFocus() weight:SetText('90') weight:OnLoseFocus() assert(e.draft.mass==90 and #e.undo==steps+2,'leaving the field no longer commits')
+weight:OnGetFocus() weight:OnKeyCodeTyped(KEY_UP) SHIFT=true weight:OnKeyCodeTyped(KEY_UP) SHIFT=false assert(e.draft.mass==101,'the arrow keys do not step the value')
+weight:Think() assert((rawget(weight,'convarThinks') or 0)>0,'the number field replaced DTextEntry:Think')
+-- The QC paste dialog keeps DFrame's Think, which moves it while its title bar is dragged.
+e:PasteDialog() local d=e.dialog
+d.Dragging={10,20} MOUSE_X,MOUSE_Y=300,400 d:Think() d.Dragging=nil
+assert(d.x==290 and d.y==380,'the QC paste dialog cannot be dragged')
+d:Close()
+-- Fit to model parts: the boxes and the set they edit follow Undo (and Discard, versions, Reset).
+e:ShowTab('collisions') walk()
+local skin,skirt=find('0  skin','DCheckBoxLabel'),find('1  skirt','DCheckBoxLabel')
+assert(skin and skirt and skin:GetChecked() and skirt:GetChecked())
+skirt:SetValue(false) assert(#e.draft.excludedMaterials==1 and e.draft.excludedMaterials[1]==1)
+CTRL=true e:Key(KEY_Z) CTRL=false
+assert(#e.draft.excludedMaterials==0 and skirt:GetChecked(),'Undo left the material box unticked')
+skin:SetValue(false)
+assert(#e.draft.excludedMaterials==1 and e.draft.excludedMaterials[1]==0,'an undone exclusion came back with the next box')
+e:Close(true)
+-- Test copies are labelled; the label hook looks them up once a frame among the addon's
+-- characters, never by searching every ragdoll on each render pass.
+NEWRIG=RIG
+local copy=setmetatable({key=RIG.key,index=50},getmetatable(RAGDOLL)) ENTS[50]=copy
+function copy:GetNW2Bool(k,d) if k=='MMDHLPhysicsTestCopy' then return true end return d end
+local listed=0 mmdhl.Entities=function() listed=listed+1 return {RAGDOLL,copy} end
+local label=HOOKS.PostDrawTranslucentRenderables['MMDHL.PhysicsTestCopy']
+FOUND_BY_CLASS=nil LABELS=0 FRAME=FRAME+1
+for pass=1,3 do label(false,false) end
+assert(FOUND_BY_CLASS==nil,'every render pass searched all ragdolls')
+assert(listed==1 and LABELS==3,'the test copy was not labelled on every pass from one lookup a frame')
+label(true,false) label(false,true) assert(LABELS==3,'a depth or skybox pass was labelled')
+FRAME=FRAME+1 copy.removed=true label(false,false) assert(listed==2 and LABELS==3,'a removed test copy is still labelled')
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+''')
+print('PASS: the preview fits with the server\'s pins; Enter commits a number field once and its Think stays DTextEntry\'s; the QC paste dialog drags; the material boxes follow Undo; test copies are labelled from one lookup a frame')
