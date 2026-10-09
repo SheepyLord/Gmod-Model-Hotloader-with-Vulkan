@@ -375,7 +375,11 @@ BM.IssueText=issueText
 function BM.ShowWindow(state,opts)
  opts=opts or {}
  -- A window still open (an edit started from the library while an import came back) closes.
- if IsValid(BM.frame) then local old=BM.frame.Window BM.frame.closing=true BM.frame.replaced=true BM.frame:Remove() if old then hook.Run('MMDHL.BoneMapClosed',old.state,'cancelled') end end
+ if IsValid(BM.frame) then
+  local oldFrame=BM.frame local old=oldFrame.Window oldFrame.closing=true oldFrame.replaced=true
+  if old and old.release then old.release() end oldFrame:Remove()
+  if old then hook.Run('MMDHL.BoneMapClosed',old.state,'cancelled') end
+ end
  local UI=mmdhl.UI local s,f=UI.metrics()
  local frame=vgui.Create('DFrame') BM.frame=frame BM.state=state
  local W,H=math.min(s(1400),ScrW()-s(40)),math.min(s(860),ScrH()-s(60))
@@ -388,11 +392,20 @@ function BM.ShowWindow(state,opts)
  frame.Window=win
  local accent=function() return state.reason=='rescue' and Colors.check or Colors.accent end
  frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Colors.window) draw.RoundedBoxEx(6,0,0,w,s(6),accent(),true,true,false,false) end
+ -- A closing window lets go of BM.frame and its timers at once: VGUI deletes a removed
+ -- panel, and runs its OnRemove, on a later frame, when a window opened in its place
+ -- (Try again) already owns them. OnRemove still covers a window removed otherwise.
+ local function release()
+  if win.released then return end win.released=true
+  if BM.frame==frame or not IsValid(BM.frame) then BM.frame=nil timer.Remove('MMDHL.BoneMapRefresh') timer.Remove('MMDHL.BoneMapLoad') end
+  if IsValid(win.picker) then win.picker:Remove() end
+ end
+ win.release=release
  -- Closing never discards silently.
  local function finishClose(outcome)
   frame.closing=true
   if state.mode=='convert' and outcome=='cancelled' then mmdhl.library.status=L'library.import.cancelled' hook.Run('MMDHL.ImportChanged') end
-  hook.Run('MMDHL.BoneMapClosed',state,outcome) frame:Remove()
+  hook.Run('MMDHL.BoneMapClosed',state,outcome) release() frame:Remove()
  end
  win.finish=finishClose
  local function askClose()
@@ -402,7 +415,7 @@ function BM.ShowWindow(state,opts)
   else finishClose('cancelled') end
  end
  frame.Close=function() askClose() end
- frame.OnRemove=function() if BM.frame==frame then BM.frame=nil end timer.Remove('MMDHL.BoneMapRefresh') timer.Remove('MMDHL.BoneMapLoad') if IsValid(win.picker) then win.picker:Remove() end if not frame.replaced then BM.RunQueued() end end
+ frame.OnRemove=function() release() if not frame.replaced then BM.RunQueued() end end
  -- ---- layout ----
  local title=frame:Add('DPanel') title:Dock(TOP) title:SetTall(s(34)) title:SetPaintBackground(false)
  local titleLabel=UI.label(title,'',f.Title,s(34)) titleLabel:Dock(FILL)
@@ -541,7 +554,7 @@ function BM.ShowWindow(state,opts)
   if state.mode=='convert' then
    -- The session stays until the import completes (MMDHL.BoneMapClosed 'imported') or comes back.
    BM.SaveMemory(state) BM.sessions[state.source]=state
-   frame.closing=true frame:Remove()
+   frame.closing=true release() frame:Remove()
    local ok,err=startConversion(state)
    if not ok then notification.AddLegacy(tostring(err or L'library.import.start_failed'),NOTIFY_ERROR,8) end
   else
@@ -593,7 +606,12 @@ function BM.ShowWindow(state,opts)
   content:Clear()
   local box=content:Add('DPanel') box:Dock(FILL) box:SetPaintBackground(false)
   local text=UI.label(box,L('bonemap.load_failed',{error=tostring(message or '')}),f.Body,s(60)) text:Dock(TOP) text:SetWrap(true) text:SetAutoStretchVertical(true) text:DockMargin(s(20),s(40),s(20),s(10))
-  local again=UI.button(box,L'bonemap.try_again',function() local id,reason,name=state.asset,state.reason,state.name finishClose('cancelled') BM.OpenFit(id,reason,name) end,s(36),f.Strong,true) again:Dock(TOP) again:SetWide(s(200)) again:DockMargin(s(20),0,s(20),0)
+  -- A new window takes this one's place; one queued behind this window waits for it instead.
+  local again=UI.button(box,L'bonemap.try_again',function()
+   local id,reason,name=state.asset,state.reason,state.name
+   frame.replaced=true finishClose('cancelled')
+   if not BM.OpenFit(id,reason,name) and not IsValid(BM.frame) then BM.RunQueued() end
+  end,s(36),f.Strong,true) again:Dock(TOP) again:SetWide(s(200)) again:DockMargin(s(20),0,s(20),0)
  end
  function win:SetState(s2)
   state=s2 win.state=s2 BM.state=s2 frame.Window=win

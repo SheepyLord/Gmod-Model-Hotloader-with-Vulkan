@@ -739,7 +739,10 @@ local methods={
  GetSelected=function() return 'Hips','ValveBiped.Bip01_Pelvis' end, GetClassName=function() return 'Panel' end,
  GetChildren=function(self) return self._children end, GetParent=function(self) return self._parent end, HasParent=function() return false end,
  GetScroll=function() return 0 end, GetFont=function(self) return self._font end, SetFont=function(self,v) self._font=v end,
- Remove=function(self) self.removed=true if rawget(self,'OnRemove') then self:OnRemove() end end, Clear=function(self) for _,c in ipairs(self._children) do c.removed=true end self._children={} end,
+ -- As GMod: Remove marks the panel for deletion and IsValid is false from then on (MARKED_INVALID;
+ -- false tries the other answer); VGUI deletes it and runs its OnRemove on a later frame (VGUI_FRAME).
+ Remove=function(self) if self.marked then return end self.marked=true if MARKED_INVALID then self.removed=true end DELETIONS[#DELETIONS+1]=self end,
+ Clear=function(self) for _,c in ipairs(self._children) do c.removed=true end self._children={} end,
  GetDockMargin=function() return 0,0,0,0 end,
 }
 for _,name in ipairs({'Add','AddNode','AddColumn','AddLine','AddSubMenu','GetCanvas','GetVBar'}) do methods[name]=function(self,...) local c=child(self,name) c._args={...} return c end end
@@ -772,7 +775,12 @@ GetConVar=function() return nil end
 LocalPlayer=function() return {IsListenServerHost=function() return false end,IsAdmin=function() return false end} end
 -- As GMod: a table is valid only through its own IsValid method (panels have one).
 IsValid=function(v) if not v or (type(v)=='table' and v.removed) then return false end local f=type(v)=='table' and v.IsValid if not f then return false end return f(v)~=false end
-TIMERS={} timer={Simple=function(_,fn) TIMERS[#TIMERS+1]=fn end,Create=function(name,_,_,fn) TIMERS[#TIMERS+1]=fn end,Remove=function() end}
+MARKED_INVALID=true DELETIONS={}
+function VGUI_FRAME() local list=DELETIONS DELETIONS={} for _,p in ipairs(list) do p.removed=true local fn=rawget(p,'OnRemove') if type(fn)=='function' then fn(p) end end end
+-- As GMod: a timer replaces the one of its name, and Remove stops it. Tests run TIMERS' callbacks once each.
+TIMERS={} NAMED={}
+timer={Simple=function(_,fn) TIMERS[#TIMERS+1]=fn end,Remove=function(name) NAMED[name]=nil end,Exists=function(name) return NAMED[name]~=nil end,
+ Create=function(name,_,_,fn) local entry entry=function() if NAMED[name]==entry then fn() end end NAMED[name]=entry TIMERS[#TIMERS+1]=entry end}
 ACTIONS={} mmdhl.Action=function(action,id,ent,value) ACTIONS[#ACTIONS+1]={action,id,value} end
 ''')
 lua.execute(UI_HELPERS[:UI_HELPERS.index('\nlocal PANEL={}')])
@@ -919,6 +927,104 @@ local band=false for _,i in ipairs(BM.IssuesOf(s,VB..'Spine4')) do band=band or 
 assert(band,'the refreshed band warning keeps its words')
 PAINT_ALL() win.finish('cancelled')
 SAY('PASS: the fitter\'s notes and warnings in the player\'s words (the reordered torso true to the skeleton), and a live refresh keeps a pin out of its own aliases')
+''')
+
+# ---- Try again after a load failure reopens the window. VGUI deletes the old frame, and runs
+# its OnRemove, only on a later frame: by then the new window owns BM.frame and the load timer.
+# Both answers GMod's IsValid could give for a panel marked for deletion are tried. ----
+lua.execute(r'''
+local BM,L=mmdhl.boneMapper,mmdhl.L
+local id=string.rep('6',64)
+mmdhl.library.entries[id]={id=id,name='Hero',source='C:/m/hero.pmx',settings={}}
+game={SinglePlayer=function() return true end}
+local bones=BONES()
+local proposal={bones={},missing={},issues={}}
+for _,s in ipairs(BM.Slots) do if not s.convertOnly then proposal.bones[#proposal.bones+1]={name=s.key,mmd=-1,provenance='synthesized',aliases={}} end end
+mmdhl.native.RequestAsset=function() return true end
+mmdhl.native.InspectBoneMap=function() return util.TableToJSON({skeleton={bones=bones,points={0,0,0,0},signature=string.rep('b',64),height=1.7},auto={slots={}}}) end
+mmdhl.native.GetBoneMapProposal=function() return util.TableToJSON(proposal) end
+local function inside(p,frame) while p and p~=frame do p=p._parent end return p==frame end
+local function button(frame,text) for _,p in ipairs(ALL) do if not p.removed and p._text==text and rawget(p,'DoClick') and inside(p,frame) then return p end end end
+local function runTimers() local list=TIMERS TIMERS={} for _,fn in ipairs(list) do fn() end end
+for _,markedInvalid in ipairs({true,false}) do
+ MARKED_INVALID=markedInvalid DELETIONS={} TIMERS={} NAMED={}
+ local loads=0
+ mmdhl.native.AssetInfo=function() loads=loads+1 if loads==1 then return nil,'The model is still being written' end return util.TableToJSON({name='Hero'}) end
+ assert(BM.OpenFit(id,'edit','Hero')) local first=BM.frame runTimers()
+ assert(BM.frame==first and first.Window.state.loading and loads==1,'the load failed')
+ local again=button(first,L'bonemap.try_again') assert(again,'Try again is shown')
+ again.DoClick()
+ assert(BM.frame and BM.frame~=first,'Try again opened no window (IsValid of a removed panel: '..tostring(not markedInvalid)..')')
+ VGUI_FRAME()
+ assert(NAMED['MMDHL.BoneMapLoad'],'deleting the old frame stopped the new window\'s load')
+ runTimers()
+ assert(BM.frame and not BM.state.loading and BM.state.mode=='fit' and BM.state.asset==id and loads==2,'the new window did not load the model')
+ BM.frame.Window.finish('cancelled') VGUI_FRAME()
+ assert(BM.frame==nil)
+end
+MARKED_INVALID=true
+SAY('PASS: Try again after a load failure opens a window that loads the model, whenever VGUI deletes the old one')
+''')
+
+# ---- a client whose server stopped at autorun's installation check (no working module there)
+# still gets the bone window: autorun sends its files before that check. The library window
+# also works with bone_mapper.lua alone (no rules, no window), as such a client had it. ----
+AUTORUN = (ROOT / 'addon/lua/autorun/mmdhl.lua').read_text(encoding='utf-8')
+gate = AUTORUN.index('if not mmdhl.CheckInstallation()')
+for name in ('bone_mapper.lua', 'bone_mapper_rules.lua', 'bone_mapper_ui.lua'):
+    assert 0 <= AUTORUN.find(f"AddCSLuaFile('mmdhl/{name}')") < gate, f'{name} reaches clients only when the server passes its installation check'
+assert 'AddCSLuaFile' not in SHARED, 'the server runs bone_mapper.lua after the installation check: files sent from there miss some clients'
+lua.execute('PANEL={}')
+lua.execute('local library,L=mmdhl.library,mmdhl.L local stackHeight=mmdhl.UI.stackHeight ' + definition(lua, UI_HELPERS, 'function PANEL:ShowFitStatus('))
+lua.execute('local library,L=mmdhl.library,mmdhl.L local function kindOf(mode) return mode=="static" and "static" or "character" end function INSTALL_ROW_MENU(self) '
+            + definition(lua, UI_HELPERS, 'self.Models.OnRowRightClick=function(_,_,row)') + '\nend')
+lua.execute(r'''
+local L=mmdhl.L
+local id=string.rep('5',64)
+ENTRY={id=id,name='Hero',source='C:/m/hero.fbx',info={conversion={}},settings={fit={ok=false,missing={'ValveBiped.Bip01_L_Thigh'}}}}
+mmdhl.library.entries[id]=ENTRY
+function LIBRARY_PANEL()
+ local p=setmetatable({mode='library',Models={},Actions=NEW_PANEL('actions'),Right=NEW_PANEL('right'),AssignBones=NEW_PANEL('assign'),
+  Choose=function() end,PopulateMoveMenu=function() end,Lib=function() return mmdhl.library end},{__index=PANEL})
+ p.AssignBones:SetVisible(false) INSTALL_ROW_MENU(p) return p
+end
+function ROW_MENU(p) OPTIONS={} p.Models.OnRowRightClick(nil,nil,{entry=ENTRY}) local t={} for _,o in ipairs(OPTIONS) do t[o.text]=o.fn or true end return t end
+-- With the whole bone window: Assign bones…, Import again with bones and the rescue button
+-- (this runtime's native has no character import: the FBX counts as convertible here).
+local convertible=mmdhl.boneMapper.Convertible mmdhl.boneMapper.Convertible=function() return true end
+local p=LIBRARY_PANEL() local t=ROW_MENU(p)
+assert(t[L'ui.menu.assign_bones'] and t[L'ui.menu.import_again_bones'])
+mmdhl.boneMapper.Convertible=convertible
+p:ShowFitStatus(ENTRY) assert(p.AssignBones:IsVisible())
+FULL_BONE_MAPPER=mmdhl.boneMapper mmdhl.boneMapper=nil
+-- GMod prints "Couldn't include file" for a file the server did not send, and goes on.
+CLIENT=true SERVER=false INCLUDED={} include=function(path) INCLUDED[#INCLUDED+1]=path end
+''')
+lua.execute(SHARED)
+lua.execute(r'''
+local L=mmdhl.L
+local BM=mmdhl.boneMapper
+assert(INCLUDED[1]=='mmdhl/bone_mapper_rules.lua' and istable(BM) and BM.Available==nil and BM.PartLabel==nil,'bone_mapper.lua stops quietly without its rules')
+local p=LIBRARY_PANEL() local t=ROW_MENU(p)
+assert(not t[L'ui.menu.assign_bones'] and not t[L'ui.menu.import_again_bones'] and t[L'common.rename'] and t[L'ui.menu.export'])
+p:ShowFitStatus(ENTRY) assert(not p.AssignBones:IsVisible())
+mmdhl.boneMapper=FULL_BONE_MAPPER include=function() end
+SAY('PASS: autorun sends the bone window\'s files before its installation check; without them the library window offers no bone actions and raises nothing')
+''')
+
+# ---- pins from outside: a save request or a Workshop package's fit ----
+lua.execute(r'''
+local BM,VB=mmdhl.boneMapper,'ValveBiped.Bip01_'
+local pins=BM.CleanPins({[VB..'L_Thigh']=12.0,[VB..'Spine2']=-1,[VB..'R_Calf']='7'})
+assert(pins[VB..'L_Thigh']==12 and pins[VB..'Spine2']==-1 and pins[VB..'R_Calf']==7)
+assert(next(BM.CleanPins({}))==nil,'no pins is a valid answer')
+for _,bad in ipairs({{Eye_L=3},{[VB..'L_Thigh']=1.5},{[VB..'L_Thigh']=-2},{[VB..'L_Thigh']=2^31},{[VB..'L_Thigh']=1/0},{[VB..'L_Thigh']=0/0},{[VB..'L_Thigh']=true},{Nonsense=1},{[1]=4}}) do
+ assert(BM.CleanPins(bad)==nil)
+end
+assert(BM.CleanPins('x')==nil and BM.CleanPins(nil)==nil)
+local many={} for i,s in ipairs(BM.Slots) do if not s.convertOnly then many[s.key]=i end end
+assert(BM.CleanPins(many),'every assignable part') many.Eye_R=1 assert(BM.CleanPins(many)==nil)
+SAY('PASS: pins from outside name assignable parts with whole bone numbers or -1')
 ''')
 
 # DScrollPanel calls its own Rebuild on every layout pass; a panel that defines Rebuild

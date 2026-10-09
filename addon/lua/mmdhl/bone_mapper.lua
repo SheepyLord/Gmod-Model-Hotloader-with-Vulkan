@@ -2,15 +2,17 @@
 -- are converted, and PMX, PMD or VRM models the fitter cannot map (their choices are
 -- saved as fitter pins in fit_overrides). The rules are shared, so the server checks
 -- a save with them; the window itself is client-only (bone_mapper_ui.lua).
+-- autorun sends bone_mapper_rules.lua and bone_mapper_ui.lua before its installation
+-- check: a client whose server stopped there still gets them. Without the rules this
+-- file stops quietly, and the library imports without the window.
 mmdhl.boneMapper=mmdhl.boneMapper or {}
 local BM=mmdhl.boneMapper
 if SERVER then
- AddCSLuaFile('mmdhl/bone_mapper_rules.lua')
- AddCSLuaFile('mmdhl/bone_mapper_ui.lua')
  util.AddNetworkString('mmdhl_bonemap_result')
  util.AddNetworkString('mmdhl_bonemap_pins')
 end
 include('mmdhl/bone_mapper_rules.lua')
+if not istable(BM.SlotByKey) or not isfunction(BM.CleanPins) then return end
 -- A part's name for messages: a token the client renders in its language.
 -- i18n-keys: bonemap.finger.left_thumb bonemap.finger.left_index bonemap.finger.left_middle bonemap.finger.left_ring bonemap.finger.left_little
 -- i18n-keys: bonemap.finger.right_thumb bonemap.finger.right_index bonemap.finger.right_middle bonemap.finger.right_ring bonemap.finger.right_little
@@ -51,12 +53,8 @@ if SERVER then
   if not valid(id) or not isstring(value) or #value>16384 then invalid(L'server.error.bonemap_request') return end
   local payload=util.JSONToTable(value)
   if not istable(payload) or tonumber(payload.version)~=1 or not istable(payload.boneMap) then invalid(L'server.error.bonemap_request') return end
-  local pins,count={},0
-  for key,v in pairs(payload.boneMap) do
-   count=count+1 local slot=BM.SlotByKey[key] local n=tonumber(v)
-   if count>52 or not slot or slot.convertOnly or not n or n~=math.floor(n) or n<-1 then invalid(L'server.error.bonemap_request') return end
-   pins[key]=n
-  end
+  local pins=BM.CleanPins(payload.boneMap)
+  if not pins then invalid(L'server.error.bonemap_request') return end
   local native=mmdhl.native
   if next(pins) and not isfunction(native.GetBoneMapProposal) then reply(false,L'server.error.bonemap_update') return end
   mmdhl.LoadAsset(id,function(info,err)

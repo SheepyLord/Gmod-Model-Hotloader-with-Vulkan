@@ -254,6 +254,43 @@ mmdhl.boneMapper=nil mmdhl.OpenBoneMapper=nil
 ''')
 print('PASS: a character imported without a ragdoll lists the missing parts; Assign bones… only with the bone window; other reasons are said; nothing for older natives')
 
+# ---- a client whose server stopped at autorun's installation check (no working module there)
+# had bone_mapper.lua without its rules and window: imports, hints and fit explanations work
+# without them. GMod prints "Couldn't include file" for a file the server did not send, and goes on.
+lua.execute('INCLUDED={} include=function(path) INCLUDED[#INCLUDED+1]=path end AddCSLuaFile=function() end mmdhl.boneMapper=nil')
+lua.execute((ROOT / 'addon/lua/mmdhl/bone_mapper.lua').read_text(encoding='utf-8'))
+lua.execute(r'''
+local L=mmdhl.L local library=mmdhl.library
+local VB='ValveBiped.Bip01_'
+assert(INCLUDED[1]=='mmdhl/bone_mapper_rules.lua' and istable(mmdhl.boneMapper) and mmdhl.OpenBoneMapper==nil)
+CALLS={} mmdhl.native.BeginImport=function(source,options) CALLS[#CALLS+1]={source=source,options=options} return 40+#CALLS end
+-- Picked files import as before: a PMX, and an FBX (no bone window to convert it with).
+for _,source in ipairs({'C:/m/hero.pmx','C:/m/hero.fbx'}) do
+ library.job=7 library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode({state='selected',source=source}) end
+ HOOKS['Think/MMDHL.LibraryImport']()
+ assert(CALLS[#CALLS].source==source and CALLS[#CALLS].options=='{}' and library.job==40+#CALLS,source)
+end
+-- The import finishes; the fit failure window names the parts itself and offers no Assign bones….
+local bones={} for _,n in ipairs({'頭','首','上半身','下半身','左腕','右腕','左ひじ','右ひじ','左足','右足','左ひざ','右ひざ'}) do bones[#bones+1]={name=n} end
+for i=1,8 do bones[#bones+1]={name='hair'..i} end
+local status={state='complete',asset=string.rep('e',64),source='C:/m/hero.pmx',filename='hero.pmx',info={name='Hero',boneList=bones},fit={ok=false,errorCode='fit.landmarks',error='No bone found for: left thigh',missing={VB..'L_Thigh'}}}
+library.Refresh=function() end FRAMES={} TIMERS={} library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode(status) end
+HOOKS['Think/MMDHL.LibraryImport']() RUN_TIMERS()
+assert(library.job==nil and library.lastImported==status.asset)
+local frame=FRAMES[#FRAMES]
+assert(frame and HAS(frame,L('library.fit_failed.missing',{name='Hero',parts='L_Thigh'})) and not FIND(frame,L'library.fit_failed.assign'))
+-- An older importer's phrase still finds its hint.
+assert(mmdhl.ImportHint('This file is not a PMX, PMD or VRM character. Static 3D models (OBJ, FBX, glTF, BLEND) belong in Static Props.')==L'library.hint.static_file')
+-- A rigged static prop is explained; a character imported as a prop imports again as a character.
+MESSAGES={} mmdhl.PromptCharacterInstead({asset=string.rep('f',64),source='C:/m/rig.fbx',info={name='Rig',skeleton={humanoid=true,bones=40}}})
+assert(#MESSAGES==1 and MESSAGES[1][1]==L('library.rigged_prop.text',{name='Rig',bones=40}))
+MESSAGES={} mmdhl.props={library={Delete=function(ids,done) done() end}} library.job=nil
+mmdhl.PromptCharacterInstead({asset=string.rep('f',64),source='C:/m/rig.fbx',info={name='Rig',classification={kind='character',bones=40,rigidBodies=12}}})
+MESSAGES[1][4]() assert(CALLS[#CALLS].source=='C:/m/rig.fbx' and CALLS[#CALLS].options=='{}')
+mmdhl.boneMapper=nil mmdhl.props=nil library.job=nil
+''')
+print('PASS: without the bone window\'s rules and window (a server that stopped at its installation check) imports, hints and fit explanations work as before')
+
 # ---- spawn: the fitter's reason inside a translated token ----
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)
 spawn.execute(r'''

@@ -234,9 +234,11 @@ function PANEL:Init()
   if self.mode=='library' then
    menu:AddOption(L'ui.spawn.ragdoll',function() self:Place('ragdoll') end)
    menu:AddOption(L'ui.bodygroups.edit',function() self:EditBodygroups() end)
+   -- The bone window may be missing or partly loaded (its files did not arrive).
    local BM=mmdhl.boneMapper local picked=row.entry
-   if BM and picked and BM.Available('fit') then menu:AddOption(L'ui.menu.assign_bones',function() BM.OpenFit(picked.id,'edit',picked.name) end):SetIcon('icon16/user_edit.png') end
-   if BM and picked and istable(picked.info.conversion) and picked.source~='' and not picked.shared and BM.Convertible(picked.source) then
+   if not istable(BM) or not isfunction(BM.Available) then BM=nil end
+   if BM and picked and BM.Available('fit') and isfunction(BM.OpenFit) then menu:AddOption(L'ui.menu.assign_bones',function() BM.OpenFit(picked.id,'edit',picked.name) end):SetIcon('icon16/user_edit.png') end
+   if BM and picked and istable(picked.info.conversion) and picked.source~='' and not picked.shared and isfunction(BM.Convertible) and isfunction(BM.Probe) and isfunction(BM.BringToFront) and BM.Convertible(picked.source) then
     menu:AddOption(L'ui.menu.import_again_bones',function() if library.job then self:SetStatus(L'library.import.busy',true) elseif not BM.BringToFront() then BM.Probe(picked.source) end end):SetIcon('icon16/arrow_refresh.png')
    end
    self:PopulateMoveMenu(menu:AddSubMenu(L'ui.menu.move_selected'))
@@ -296,7 +298,7 @@ end
 function PANEL:BuildCharacterActions()
  local s,f=self.S,self.Fonts
  local actions=self.Right:Add('DPanel') self.Actions=actions actions:Dock(BOTTOM) actions:SetPaintBackground(false) actions:DockMargin(0,s(8),0,0)
- self.AssignBones=button(actions,'',function() local BM=mmdhl.boneMapper local entry=self.selected and library.entries[self.selected] if BM and entry then BM.OpenFit(entry.id,'rescue',entry.name) end end,s(36),f.Strong,'warning')
+ self.AssignBones=button(actions,'',function() local BM=mmdhl.boneMapper local entry=self.selected and library.entries[self.selected] if istable(BM) and isfunction(BM.OpenFit) and entry then BM.OpenFit(entry.id,'rescue',entry.name) end end,s(36),f.Strong,'warning')
  self.AssignBones:Dock(TOP) self.AssignBones:DockMargin(0,0,0,s(6)) self.AssignBones:SetVisible(false)
  self.ScaleMultiplier=actions:Add('DNumSlider') self.ScaleMultiplier:Dock(TOP) self.ScaleMultiplier:SetTall(s(32)) self.ScaleMultiplier:SetText(L'ui.character.size') self.ScaleMultiplier:SetMinMax(.1,4) self.ScaleMultiplier:SetDecimals(2) self.ScaleMultiplier:SetValue(1) self.ScaleMultiplier:SetDark(true) self.ScaleMultiplier.Label:SetFont(f.Body)
  self.ScaleMultiplier.OnValueChanged=function() releasePreview(self) self:ResetCamera(false) end
@@ -671,7 +673,7 @@ end
 function PANEL:ShowFitStatus(entry)
  local fit=entry and istable(entry.settings.fit) and entry.settings.fit
  local BM=mmdhl.boneMapper
- local show=fit and fit.ok==false and BM~=nil and BM.Available('fit') or false
+ local show=fit and fit.ok==false and istable(BM) and isfunction(BM.Available) and isfunction(BM.OpenFit) and BM.Available('fit') or false
  if show then self.AssignBones:SetText(L('bonemap.library.assign_button',{count=istable(fit.missing) and #fit.missing or 0})) end
  if self.AssignBones:IsVisible()~=show then self.AssignBones:SetVisible(show) self.Actions:SetTall(stackHeight(self.Actions)) self.Right:InvalidateLayout() end
 end

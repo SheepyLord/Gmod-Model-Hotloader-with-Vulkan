@@ -802,7 +802,7 @@ print('PASS: spawns take the saved shapes, physics and mass unless the request s
 w = lua51.LuaRuntime(unpack_returned_tuples=True)
 json_bridge(w)
 w.execute(r'''
-SERVER=true CLIENT=false istable=function(v) return type(v)=='table' end
+SERVER=true CLIENT=false istable=function(v) return type(v)=='table' end isnumber=function(v) return type(v)=='number' end isfunction=function(v) return type(v)=='function' end
 util={TableToJSON=function(t) return py_encode(t) end,JSONToTable=function(s) return py_decode(s) end}
 W={} game={IsDedicated=function() return DEDICATED end} DEDICATED=true
 WRITTEN={} function writeIfMissing(path,value) WRITTEN[path]=value end function remember(key,item) REMEMBERED=key end installedHandlers={}

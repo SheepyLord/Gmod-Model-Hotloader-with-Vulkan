@@ -754,6 +754,18 @@ function BM.SamePins(a,b)
  for k,v in pairs(b or {}) do if (a or {})[k]~=v then return false end end
  return true
 end
+-- Pins from outside (a save request, a Workshop package's fit): {part: bone index, or -1
+-- for none} for assignable parts only. The pins as numbers, or nil when any entry is wrong.
+function BM.CleanPins(map)
+ if not istable(map) then return nil end
+ local pins,count={},0
+ for key,v in pairs(map) do
+  count=count+1 local slot=BM.SlotByKey[key] local n=tonumber(v)
+  if count>52 or not slot or slot.convertOnly or not n or n~=math.floor(n) or n<-1 or n>=2^31 then return nil end
+  pins[key]=n
+ end
+ return pins
+end
 -- {"<field>":{"<part>":<bone>}} for the native readers, with whole numbers written as
 -- such: util.TableToJSON may write 12 as 12.0. Unknown parts are left out.
 function BM.IndexJSON(field,map)
