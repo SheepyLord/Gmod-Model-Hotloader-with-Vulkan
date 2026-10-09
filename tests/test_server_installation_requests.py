@@ -78,11 +78,13 @@ file={Exists=function(path,search) return FILES[search..'/'..path]~=nil end,
  Open=function(path,_,search) local bytes=FILES[search..'/'..path] return {Size=function() return #bytes end,Read=function() return bytes end,Close=function() end} end,
  Read=function(path) if path=='mmd_hotloader/unverified_native.json' and ACCEPTED then return 'accepted' end end,CreateDir=function() end,Write=function() end}
 system={IsWindows=function() return true end} game={IsDedicated=function() return true end}
-util={AddNetworkString=function() end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,
+-- As in GMod: net.Start refuses a name util.AddNetworkString never pooled.
+POOLED={}
+util={AddNetworkString=function(name) POOLED[name]=true end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,
  JSONToTable=function(s) if s=='accepted' then return {server=ACCEPTED} end local n=tostring(s):match('"request":(%d+)') if n then return {request=tonumber(n)} end end}
 HANDLERS={} READ={} SENT={}
 net={Receive=function(name,f) HANDLERS[name]=f end,ReadString=function() return table.remove(READ,1) end,ReadUInt=function() return table.remove(READ,1) end,
- Start=function(name) SENT[#SENT+1]={name=name,values={}} end,WriteString=function(v) table.insert(SENT[#SENT].values,v) end,
+ Start=function(name) if not POOLED[name] then error('Calling net.Start with unpooled message name "'..name..'"',2) end SENT[#SENT+1]={name=name,values={}} end,WriteString=function(v) table.insert(SENT[#SENT].values,v) end,
  WriteUInt=function(v) table.insert(SENT[#SENT].values,v) end,Send=function(p) SENT[#SENT].to=p end,Broadcast=function() SENT[#SENT].broadcast=true end}
 concommand={Add=function() end} hook={Add=function() end,Run=function() end} timer={Create=function() end,Remove=function() end}
 NOW=100 CurTime=function() return NOW end MsgN=function() end
