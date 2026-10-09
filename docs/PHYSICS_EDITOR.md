@@ -255,7 +255,9 @@ The editor never refuses to open:
 * Ragdolls and dupes made without physics edits get exactly the carrier of a
   model nobody edited. (2.3.0 fits every model once more for its chest, see
   [TORSO_FIT.md](TORSO_FIT.md); the physics editor itself changes nothing
-  there.) A dupe whose physics cannot be built is restored without them.
+  there. Ragdolls, saves and dupes made with 2.2 keep their 2.2 carrier until
+  they are spawned again; an edit applied to one builds a new 2.3.0 carrier.) A
+  dupe whose physics cannot be built is restored without them.
 
 ## Limitations
 

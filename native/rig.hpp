@@ -4,7 +4,13 @@
 namespace mmd {
 // The on-disk formats use 32-bit offsets even in the 64-bit engine.
 constexpr int RigVersion=3;
+// The generator of every fit made now (new spawns, the fits cache). 31 chose the torso
+// from the PMX hierarchy (issue #9) and added optional manifest fields; the carrier and
+// rig.json format did not change, so rigFromManifest still loads the carriers of
+// RigGeneratorMinLoadable (2.2's 30) and later: saves, dupes, published actors and
+// clients keep such a carrier as it was. GetCapabilities: rigGenerator, rigGeneratorMin.
 constexpr int RigGenerator=31;
+constexpr int RigGeneratorMinLoadable=30;
 struct RigBone { std::string name; int parent=-1,mmd=-1,physics=-1; std::vector<int> aliases; btTransform rest=btTransform::getIdentity(); };
 struct RigBody { int bone=-1,parent=-1; std::vector<btVector3> hull; float confidence=0,massBias=1,rotationDamping=3; btVector3 lower{0,0,0},upper{0,0,0};
                  btVector3 friction{0,0,0};                     // .phy units (QC friction / 5)
@@ -30,6 +36,8 @@ bool cachedFitApplies(const Model&,const Json& options);
 //  issues:[{code, severity, slot, text}], torso:{method, repairs:[{code, bones, text}]}, error?, errorCode?};
 // bones: the 56 reference bones, then Eye_L/Eye_R when the carrier appends them.
 Json boneMapProposal(const Model&,const Json& options);
+// A carrier of RigVersion and a generator from RigGeneratorMinLoadable to RigGenerator;
+// throws "Incompatible carrier fit" for any other.
 Rig rigFromManifest(const Json&);
 // Throws unless every index and transform of the rig is usable with this model.
 void validateRig(const Rig&,const Model&);

@@ -73,7 +73,9 @@ static void identify(Rig& r){
  r.manifest.erase("key");r.manifest.erase("model");r.manifest.erase("gma");auto encoded=r.manifest.dump();r.key=hash(std::span(reinterpret_cast<const unsigned char*>(encoded.data()),encoded.size())).substr(0,32);r.path="models/mmd/"+r.key.substr(0,16)+"/"+readableName(r.manifest.value("name",std::string("model")),28)+".mdl";r.manifest["key"]=r.key;r.manifest["model"]=r.path;
 }
 Rig rigFromManifest(const Json& j){
- if(j.value("version",0)!=RigVersion||j.value("generator",0)!=RigGenerator||j.value("shapeAtlasHash","")!=shapeAtlasHash())throw std::runtime_error("Incompatible carrier fit");
+ // 2.2's carriers (generator 30) load as they are: 31 changed which torso bones a fit picks, not this format.
+ const int generator=j.value("generator",0);
+ if(j.value("version",0)!=RigVersion||generator<RigGeneratorMinLoadable||generator>RigGenerator||j.value("shapeAtlasHash","")!=shapeAtlasHash())throw std::runtime_error("Incompatible carrier fit");
  Rig r;r.manifest=j;r.scale=j.at("scale");r.mass=j.at("mass");r.morphs=j.at("morphs");
  for(auto& item:j.at("bones")){RigBone b;b.name=item.at("name");b.parent=item.at("parent");b.mmd=item.at("mmd");b.physics=item.at("physics");b.aliases=item.value("mmdAliases",std::vector<int>{});auto q=item.at("rotation");b.rest=btTransform(btQuaternion(q[0],q[1],q[2],q[3]),v3(item.at("position")));r.bones.push_back(b);}
  for(auto& item:j.at("bodies")){RigBody b;b.bone=item.at("bone");b.parent=item.at("parent");b.confidence=item.at("confidence");b.massBias=item.at("massBias");b.rotationDamping=item.at("rotationDamping");b.lower=v3(item.at("lower"));b.upper=v3(item.at("upper"));for(auto& v:item.at("hull"))b.hull.push_back(v3(v));
@@ -271,7 +273,8 @@ Json prepareModelFit(Model& model,const fs::path& cache){
  if(model.fittedRig)return ok;
  auto path=cache/L"fits"/wide("g"+std::to_string(RigGenerator)+"-"+shapeAtlasHash().substr(0,16)+"-"+model.id+".json");
  // A fit cached by a 2.3.0 build before the torso resolver lacks its diagnostics and is fitted again.
- try{auto stored=readJson(path);auto text=stored.at("fit").dump();if(stored.at("sha256")==hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))&&stored["fit"]["asset"]==model.id&&stored["fit"].contains("torso")){auto rig=rigFromManifest(stored["fit"]);validateRig(rig,model);model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}}catch(const std::exception&){}
+ // New carriers are made from it: only this generator's fit, although rigFromManifest loads older ones.
+ try{auto stored=readJson(path);auto text=stored.at("fit").dump();if(stored.at("sha256")==hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))&&stored["fit"]["asset"]==model.id&&stored["fit"].contains("torso")&&stored["fit"].value("generator",0)==RigGenerator){auto rig=rigFromManifest(stored["fit"]);validateRig(rig,model);model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}}catch(const std::exception&){}
  try{auto rig=fitRig(model,Json::object());auto text=rig.manifest.dump();writeJson(path,{{"fit",rig.manifest},{"sha256",hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))}});model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}
  catch(const std::exception& e){model.warnings.push_back(std::string("Native fit unavailable: ")+e.what());
   auto failure=dynamic_cast<const ImportError*>(&e);

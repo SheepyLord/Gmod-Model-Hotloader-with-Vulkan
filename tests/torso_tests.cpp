@@ -172,8 +172,23 @@ int main(int argc,char** argv){try{
  const int upper=boneNamed(*model,"upper body"),chest=boneNamed(*model,"upper body2"),neck=boneNamed(*model,"neck"),leftToe=boneNamed(*model,"left toe");
  check(rag.manifest["torso"]==Json({{"method","topology"},{"repairs",Json::array()}})&&rag.bones[carrier(rag,"Spine4")].mmd==chest&&rag.bones[carrier(rag,"Spine2")].mmd<0,"fit: the fixture's torso is found by its shape, with nothing to repair");
  fitted(*model,rag,"fit");
- {auto old=rag.manifest;old["generator"]=30;bool refused=false;try{rigFromManifest(old);}catch(const std::exception& e){refused=std::string(e.what())=="Incompatible carrier fit";}
-  check(refused&&rigFromManifest(rag.manifest).key==rag.key,"cache: a generator-30 fit is refused, a current one restored");}
+ // 2.2's carriers (generator 30) load as they are, for saves, dupes, published actors and
+ // clients: no manifest torso, and often Spine2 on the chest's bone (issue #9). Generator 29
+ // and generators newer than this build are refused.
+ {auto old=rag.manifest;old["generator"]=RigGeneratorMinLoadable;old.erase("torso");old["bones"][carrier(rag,"Spine2")]["mmd"]=chest;
+  auto loaded=rigFromManifest(old);bool valid=true;try{validateRig(loaded,*model);}catch(const std::exception&){valid=false;}
+  World host;auto id=host.create(model,{{"backend","source"},{"rigManifest",old}});const auto& instance=host.get(id);
+  check(RigGeneratorMinLoadable==30&&loaded.key==rag.key&&loaded.bones[carrier(rag,"Spine2")].mmd==chest&&valid&&instance.sourceRig->key==rag.key&&instance.sourceRig->manifest["generator"]==30,
+   "generations: a 2.2 carrier (generator 30) loads, validates and drives an instance under its own key");
+  auto refused=[&](int generator){auto j=rag.manifest;j["generator"]=generator;try{rigFromManifest(j);}catch(const std::exception& e){return std::string(e.what())=="Incompatible carrier fit";}return false;};
+  check(refused(29)&&refused(RigGenerator+1)&&rigFromManifest(rag.manifest).key==rag.key,"generations: generator 29 and newer ones are refused, a current one restored");}
+ // New carriers are made from the fits cache: it takes only this generator's fit, even from its own file.
+ {auto cache=std::filesystem::temp_directory_path()/"mmdhl_torso_generations";std::filesystem::remove_all(cache);
+  auto first=fixture();prepareModelFit(*first,cache);std::filesystem::path stored;for(auto& entry:std::filesystem::directory_iterator(cache/"fits"))stored=entry.path();
+  auto file=readJson(stored);file["fit"]["generator"]=30;auto text=file["fit"].dump();file["sha256"]=hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));writeJson(stored,file);
+  auto second=fixture();auto fit=prepareModelFit(*second,cache);
+  check(fit["ok"]==true&&second->fittedRig&&second->fittedRig->manifest["generator"]==RigGenerator&&readJson(stored)["fit"]["generator"]==RigGenerator,"generations: a generator-30 fit in the fits cache is fitted again for new carriers");
+  std::filesystem::remove_all(cache);}
  // A valid pin changes the mapping and the identity; 12.0 from Lua is 12.
  {auto pinned=fitRig(*model,pins({{VB+"L_Toe0",-1}}));int toe=carrier(pinned,"L_Toe0");
   check(pinned.bones[toe].mmd<0&&pinned.manifest["bones"][toe]["provenance"]=="user"&&pinned.key!=rag.key,"pins: a part pinned to none loses its bone and the carrier its identity");

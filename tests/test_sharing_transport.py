@@ -37,7 +37,7 @@ local function scenario(upload,cancelFirst,corrupt,deriveFails)
   e.hook={Add=function(n,id,f)e._hooks[n]=e._hooks[n] or {};e._hooks[n][id]=f end,Run=function()end}
   e.concommand={Add=function()end}
   -- Server text is a token; Localize renders it as the receiving client would.
-  e.mmdhl={L=server and mmdhl.I18n.Token or mmdhl.L,Localize=mmdhl.Localize,I18n=mmdhl.I18n,actorRegistrations={},Decode=function(s,err)return encoded[s],err end,LoadAsset=function(id,cb)cb({name='Fixture'})end,PublishActor=function()end,IsCurrentRig=function()return true end}
+  e.mmdhl={L=server and mmdhl.I18n.Token or mmdhl.L,Localize=mmdhl.Localize,I18n=mmdhl.I18n,actorRegistrations={},Decode=function(s,err)return encoded[s],err end,LoadAsset=function(id,cb)cb({name='Fixture'})end,PublishActor=function()end,IsLoadableRig=function()return true end}
   local native={} e.mmdhl.native=native
   function native.GetSharedManifest()
    local files,total={},0

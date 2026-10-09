@@ -7,7 +7,7 @@ local function carrierPath(path)
 end
 mmdhl.IsCarrierModel=carrierPath
 local function available(rig)
- if not rig or not mmdhl.IsCurrentRig(rig) then return nil,L'persistence.error.carrier_outdated' end
+ if not rig or not mmdhl.IsLoadableRig(rig) then return nil,L'persistence.error.carrier_outdated' end
  if SERVER and not mmdhl.CanUseAsset(nil,rig.asset) then return nil,L'persistence.error.asset_not_approved' end
  if rig.materialGma and not mmdhl.MountPackage(rig.materialGma) then return nil,L'persistence.error.mount_materials' end
  if not mmdhl.MountPackage('data/mmd_hotloader/rigs/'..rig.key..'/carrier.gma') then return nil,L'persistence.error.mount_carrier' end
