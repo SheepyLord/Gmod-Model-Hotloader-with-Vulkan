@@ -10,6 +10,7 @@
 #include <deque>
 #include <functional>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -105,6 +106,9 @@ struct Model {
     std::shared_ptr<Rig> fittedRig;
     // VRM avatars: spring bones simulated natively in place of PMX rigid bodies.
     std::shared_ptr<const SpringSetup> springs;
+    // Characters converted from other formats: their bone assignment (slot key ->
+    // bone index or -1, manifest.conversion.boneMap). Empty for PMX, PMD and VRM.
+    std::map<std::string,int> conversionBoneMap;
     // Vertices grouped by skinning type and bone set, padded to SIMD blocks; built once per model.
     struct SkinLayout {
         struct Group {int influences=0;std::array<int,4> bones{-1,-1,-1,-1};unsigned first=0,count=0;};
@@ -160,7 +164,9 @@ void writeJson(const fs::path&,const Json&);
 Json readJson(const fs::path&);
 std::string hash(std::span<const unsigned char>);
 bool validId(std::string_view);
-Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress={});
+struct CharacterConversion;
+// character: a model the worker converted from another format (assets.hpp).
+Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress={},CharacterConversion* character=nullptr);
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id);
 
 // Bone hierarchy, bone morphs and IK for one pose. The render thread evaluates

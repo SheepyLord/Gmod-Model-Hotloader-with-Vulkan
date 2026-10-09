@@ -181,6 +181,15 @@ int main(){try{
   check(c.vrm["humanoid"]["hips"]==bone(*m,"下半身"),tag+"the humanoid map points at PMX bones");
   if(!v0){latest=m;latestConversion=c;check(sb["colliders"][1]["shape"]=="capsule",tag+"capsule colliders survive");}
  }
+ // ---- identity: the converted PMX and the imported asset stay byte-identical ----
+ // (the PMX writer and humanoid names are shared with the character converter).
+ {auto cache=fs::temp_directory_path()/L"mmdhl_vrm_identity";std::error_code ec;fs::remove_all(cache,ec);
+  for(bool v0:{true,false}){auto file=synthetic(v0);auto source=cache/(v0?L"v0.vrm":L"v1.vrm");writeAtomic(source,file);
+   auto pmx=hash(convertVrm(file,"synthetic").pmx);auto id=importAsset(source,cache/L"cache",Json::object()).at("asset").get<std::string>();
+   std::string tag=v0?"VRM 0.x: ":"VRM 1.0: ";
+   check(pmx==(v0?"88f7a192111dc157aff8184975f52f0ffb12d4977b6d7ee56d486b2aac920978":"0cd5ddcd08e8a99fd381bbb2bebbd2aef7ef49e5563538965d7e46d01b1e8fad"),tag+"the converted PMX is byte-identical to 2.2's");
+   check(id==(v0?"0a2e882b8c66c7719abecabc28c4b5984267d298ad6e85d118f9b72a3748c1a5":"f03bc74c316fbbd22856c589f8c422a3df6af8560a0dbc5e945fe9327568ff52"),tag+"the imported asset keeps its identity");}
+  fs::remove_all(cache,ec);}
  auto& model=*latest;model.springs=SpringSetup::fromManifest(latestConversion.vrm,model);
  // KHR_texture_transform on the hair: scale (2, 0.5), a quarter turn, offset (0.1, 0.2).
  // As the Khronos Sample Renderer and three.js compute it, (u, v) becomes

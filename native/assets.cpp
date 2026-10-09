@@ -2,6 +2,8 @@
 #include "rig.hpp"
 #include "spring_bones.hpp"
 #include "vrm.hpp"
+#include "assets.hpp"
+#include "humanoid_slots.hpp"
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincodec.h>
@@ -153,21 +155,25 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
  }
  writeGma(package,files,"Model Hotloader materials "+id);
 }
-Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress){
+Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion* character){
     auto report=[&](const char* stage,float value){if(!progress.empty())writeJson(progress,{{"state","running"},{"stage",stage},{"progress",value},{"filename",utf8(source.filename().wstring())}});};
     report("Parsing skeleton, materials and physics",.05f);auto raw=readFile(source);
     // VRM avatars become a PMX in memory with their embedded textures; spring
     // bones and licence metadata travel in the manifest (and so in its identity).
-    const bool vrmSource=isVrmData(raw);std::map<std::string,Bytes> embedded;Json vrm;std::vector<std::string> converted;
+    const bool vrmSource=!character&&isVrmData(raw);std::map<std::string,Bytes> embedded;Json vrm,conversion;std::vector<std::string> converted;
     if(vrmSource){report("Converting VRM avatar",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
-    if(!vrmSource&&(raw.size()<4||(std::memcmp(raw.data(),"PMX ",4)&&std::memcmp(raw.data(),"Pmd",3))))throw std::runtime_error("This file is not a PMX, PMD or VRM character. Static 3D models (OBJ, FBX, glTF, BLEND) belong in Static Props.");
+    // Characters in other formats arrive converted by the worker the same way (character_import.cpp).
+    if(character){report("Converting the character",.05f);conversion=std::move(character->conversion);conversion["sourceSha256"]=hash(raw);raw=std::move(character->pmx);embedded=std::move(character->textures);converted=std::move(character->warnings);}
+    const bool embeddedSource=vrmSource||character;
+    if(!embeddedSource&&(raw.size()<4||(std::memcmp(raw.data(),"PMX ",4)&&std::memcmp(raw.data(),"Pmd",3))))throw std::runtime_error("This file is not a character model this importer can read. Static 3D models (OBJ, BLEND) belong in Static Props.");
     auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource)model->springs=SpringSetup::fromManifest(vrm,*model);
-    Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
+    if(character){model->springs=SpringSetup::fromManifest(conversion,*model);auto map=conversion.value("boneMap",Json::object());for(auto& [key,value]:map.items())model->conversionBoneMap[key]=value.get<int>();}
+    Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;if(character)manifest["conversion"]=conversion;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
     std::map<std::wstring,std::pair<std::string,bool>> prepared;
     for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
         for(auto entry:std::array<std::pair<const char*,std::string>,3>{{{"base",material.base},{"sphere",material.sphere},{"toon",material.toon}}}){
             std::string id;bool localAlpha=false;if(!entry.second.empty())try{
-                if(vrmSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
+                if(embeddedSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
                     auto key=L"vrm:"+wide(entry.second);auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(found->second,entry.second,cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
                     textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;continue;}
                 auto file=resolveTexture(source.parent_path(),entry.second);
@@ -189,11 +195,18 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     model->id=id;report("Preparing Source materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy",.94f);prepareModelFit(*model,cache);
     return {{"state","complete"},{"asset",id},{"info",manifest}};
 }
+Json importConverted(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion&& converted){return importAsset(source,cache,options,progress,&converted);}
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     if(!validId(id))throw std::runtime_error("Invalid asset ID");auto directory=cache/L"assets"/wide(id);auto manifest=readJson(directory/L"manifest.json");if((manifest.value("version",0)!=1&&manifest.value("version",0)!=2)||manifest.value("id",std::string())!=id)throw std::runtime_error("Cache version or ID mismatch");
     auto identity=manifest;identity["id"]=manifest.at("sourceHash");auto encoded=identity.dump();if(hash(std::span(reinterpret_cast<const unsigned char*>(encoded.data()),encoded.size()))!=id)throw std::runtime_error("Cached manifest checksum mismatch");
     auto raw=readFile(directory/L"model.bin");if(hash(raw)!=manifest.at("sourceHash"))throw std::runtime_error("Cached model checksum mismatch");auto model=parse(raw);model->id=id;for(auto& warning:manifest.value("warnings",std::vector<std::string>{}))if(std::find(model->warnings.begin(),model->warnings.end(),warning)==model->warnings.end())model->warnings.push_back(warning);
     if(manifest.contains("vrm"))model->springs=SpringSetup::fromManifest(manifest["vrm"],*model);
+    else if(manifest.contains("conversion")){
+        auto& conversion=manifest["conversion"];model->springs=SpringSetup::fromManifest(conversion,*model);
+        // The converter's bone assignment is the fitter's default for this asset; check it like any cached index.
+        auto map=conversion.value("boneMap",Json::object());if(!map.is_object())throw std::runtime_error("Cached conversion map is invalid");
+        for(auto& [key,value]:map.items()){if(!mappedSlotKey(key)||!value.is_number_integer()||value.get<int64_t>()<-1||value.get<int64_t>()>=int64_t(model->bones.size()))throw std::runtime_error("Cached conversion map is invalid");model->conversionBoneMap[key]=value.get<int>();}
+    }
     if(manifest.at("textures").size()!=model->materials.size())throw std::runtime_error("Cached material count mismatch");
     std::set<std::string> verified;
     std::map<std::string,std::vector<size_t>> alphaParts;

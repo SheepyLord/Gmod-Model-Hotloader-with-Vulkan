@@ -5,6 +5,8 @@
 // become group/material/UV morphs. Spring bones and colliders are returned as
 // JSON for the native spring simulation (spring_bones.cpp).
 #include "vrm.hpp"
+#include "humanoid_slots.hpp"
+#include "pmx_writer.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -152,53 +154,12 @@ struct Axes {
  Vec3 unity(Vec3 p)const{return dir(Vec3(p.x,p.y,-p.z));}
 };
 
-// ---- humanoid names ----
-struct HumanName {const char* vrm;const char* jp;const char* en;};
-const HumanName humanNames[]={
- {"hips","下半身","lower body"},{"spine","上半身","upper body"},{"chest","上半身2","upper body2"},{"upperChest","上半身3","upper body3"},
- {"neck","首","neck"},{"head","頭","head"},{"jaw","顎","jaw"},{"leftEye","左目","eye_L"},{"rightEye","右目","eye_R"},
- {"leftShoulder","左肩","shoulder_L"},{"leftUpperArm","左腕","arm_L"},{"leftLowerArm","左ひじ","elbow_L"},{"leftHand","左手首","wrist_L"},
- {"rightShoulder","右肩","shoulder_R"},{"rightUpperArm","右腕","arm_R"},{"rightLowerArm","右ひじ","elbow_R"},{"rightHand","右手首","wrist_R"},
- {"leftUpperLeg","左足","leg_L"},{"leftLowerLeg","左ひざ","knee_L"},{"leftFoot","左足首","ankle_L"},{"leftToes","左つま先","toe_L"},
- {"rightUpperLeg","右足","leg_R"},{"rightLowerLeg","右ひざ","knee_R"},{"rightFoot","右足首","ankle_R"},{"rightToes","右つま先","toe_R"},
- {"leftThumbMetacarpal","左親指０","thumb0_L"},{"leftThumbProximal","左親指１","thumb1_L"},{"leftThumbDistal","左親指２","thumb2_L"},
- {"leftIndexProximal","左人指１","fore1_L"},{"leftIndexIntermediate","左人指２","fore2_L"},{"leftIndexDistal","左人指３","fore3_L"},
- {"leftMiddleProximal","左中指１","middle1_L"},{"leftMiddleIntermediate","左中指２","middle2_L"},{"leftMiddleDistal","左中指３","middle3_L"},
- {"leftRingProximal","左薬指１","third1_L"},{"leftRingIntermediate","左薬指２","third2_L"},{"leftRingDistal","左薬指３","third3_L"},
- {"leftLittleProximal","左小指１","little1_L"},{"leftLittleIntermediate","左小指２","little2_L"},{"leftLittleDistal","左小指３","little3_L"},
- {"rightThumbMetacarpal","右親指０","thumb0_R"},{"rightThumbProximal","右親指１","thumb1_R"},{"rightThumbDistal","右親指２","thumb2_R"},
- {"rightIndexProximal","右人指１","fore1_R"},{"rightIndexIntermediate","右人指２","fore2_R"},{"rightIndexDistal","右人指３","fore3_R"},
- {"rightMiddleProximal","右中指１","middle1_R"},{"rightMiddleIntermediate","右中指２","middle2_R"},{"rightMiddleDistal","右中指３","middle3_R"},
- {"rightRingProximal","右薬指１","third1_R"},{"rightRingIntermediate","右薬指２","third2_R"},{"rightRingDistal","右薬指３","third3_R"},
- {"rightLittleProximal","右小指１","little1_R"},{"rightLittleIntermediate","右小指２","little2_R"},{"rightLittleDistal","右小指３","little3_R"}};
-// VRM 1.0 renamed the thumb (0.x proximal/intermediate/distal = 1.0 metacarpal/proximal/distal).
-std::string humanName1(std::string name){
- for(auto side:{"left","right"}){auto s=std::string(side);
-  if(name==s+"ThumbProximal")return s+"ThumbMetacarpal";if(name==s+"ThumbIntermediate")return s+"ThumbProximal";}
- return name;
-}
 // VRM 0.x expression presets under their VRM 1.0 names.
 std::string presetName1(const std::string& p){
  static const std::map<std::string,std::string> names={{"a","aa"},{"i","ih"},{"u","ou"},{"e","ee"},{"o","oh"},{"joy","happy"},{"angry","angry"},{"sorrow","sad"},{"fun","relaxed"},
   {"blink","blink"},{"blink_l","blinkLeft"},{"blink_r","blinkRight"},{"lookup","lookUp"},{"lookdown","lookDown"},{"lookleft","lookLeft"},{"lookright","lookRight"},{"neutral","neutral"}};
  auto it=names.find(p);return it==names.end()?std::string():it->second;
 }
-
-// ---- PMX output ----
-struct PVertex {Vec3 p{0},n{0,1,0};Vec2 uv{0};std::array<int,4> bone{-1,-1,-1,-1};std::array<float,4> weight{};};
-struct PBone {std::string name,english;Vec3 position{0};int parent=-1,tail=-1,inherit=-1;float inheritWeight=0;Vec3 tailOffset{0},fixedAxis{0};bool movable=false,fixed=false;};
-struct PMaterial {std::string name,memo;Vec4 diffuse{1};Vec4 edgeColor{0,0,0,1};float edgeSize=1;int texture=-1,sphere=-1,sphereMode=0,queue=2000,source=-1;bool twoSided=false,edge=false;std::vector<uint32_t> indices;};
-struct MaterialOffset {int material=-1;Vec4 diffuse{0};};
-struct PMorph {std::string name,english;int panel=4,type=1;std::vector<std::pair<uint32_t,Vec3>> vertex;std::vector<std::pair<int,float>> group;std::vector<MaterialOffset> material;std::vector<std::pair<uint32_t,Vec4>> uv;};
-struct Writer {
- Bytes b;
- void u8(uint8_t v){b.push_back(v);}
- void u16(uint16_t v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+2);}
- void i32(int32_t v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+4);}
- void f32(float v){b.insert(b.end(),reinterpret_cast<uint8_t*>(&v),reinterpret_cast<uint8_t*>(&v)+4);}
- void v2(Vec2 v){f32(v.x);f32(v.y);}void v3(Vec3 v){f32(v.x);f32(v.y);f32(v.z);}void v4(Vec4 v){f32(v.x);f32(v.y);f32(v.z);f32(v.w);}
- void text(const std::string& s){i32(int32_t(s.size()));b.insert(b.end(),s.begin(),s.end());}
-};
 
 // Material alpha variants: glTF OPAQUE ignores texture alpha and MASK is a
 // hard cutoff, while the character renderer infers cutout/blending from the
@@ -630,41 +591,10 @@ VrmConversion convertVrm(std::span<const unsigned char> file,const std::string& 
  c.note("Source shading approximates VRM MToon materials; shade colour, rim light, outlines and emission are not drawn.");
 
  // ---- PMX 2.0 ----
- Writer w;w.b.insert(w.b.end(),{'P','M','X',' '});w.f32(2.f);w.u8(8);for(uint8_t v:{uint8_t(1),uint8_t(0),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4)})w.u8(v);
- std::string comment="Converted from VRM "+info["version"].get<std::string>()+" by Model Hotloader.";
- if(!m["authors"].empty())comment+="\nAuthor: "+m["authors"][0].get<std::string>();
- w.text(title);w.text(title);w.text(comment);w.text(comment);
- w.i32(int32_t(c.vertices.size()));
- for(auto& v:c.vertices){w.v3(v.p);w.v3(v.n);w.v2(v.uv);int n=0;for(int k=0;k<4;k++)n+=v.bone[k]>=0;
-  if(n<=1){w.u8(0);w.i32(v.bone[0]);}
-  else if(n==2){w.u8(1);w.i32(v.bone[0]);w.i32(v.bone[1]);w.f32(v.weight[0]);}
-  else{w.u8(2);for(int k=0;k<4;k++)w.i32(v.bone[k]);for(int k=0;k<4;k++)w.f32(v.bone[k]>=0?v.weight[k]:0);}
-  w.f32(1);}
- size_t indexCount=0;for(auto* mat:order)indexCount+=mat->indices.size();w.i32(int32_t(indexCount));for(auto* mat:order)for(auto i:mat->indices)w.i32(int32_t(i));
- w.i32(int32_t(c.texturePaths.size()));for(auto& p:c.texturePaths)w.text(p);
- w.i32(int32_t(order.size()));
- for(auto* mat:order){w.text(mat->name);w.text(mat->name);w.v4(mat->diffuse);w.v3(Vec3(0));w.f32(5);w.v3(Vec3(mat->diffuse)*.5f);
-  w.u8(uint8_t((mat->twoSided?0x01:0)|0x02|0x04|0x08|(mat->edge?0x10:0)));w.v4(mat->edgeColor);w.f32(mat->edgeSize);
-  w.i32(mat->texture);w.i32(mat->sphere);w.u8(uint8_t(mat->sphereMode));w.u8(0);w.i32(-1);w.text(mat->memo);w.i32(int32_t(mat->indices.size()));}
- w.i32(int32_t(c.bones.size()));
- for(auto& b:c.bones){w.text(b.name);w.text(b.english);w.v3(b.position);w.i32(b.parent);w.i32(0);
-  uint16_t flags=0x0002|0x0008|0x0010;if(b.tail>=0)flags|=0x0001;if(b.parent<0)flags|=0x0004;if(b.inherit>=0)flags|=0x0100;if(b.fixed)flags|=0x0400;w.u16(flags);
-  if(b.tail>=0)w.i32(b.tail);else w.v3(b.tailOffset);
-  if(b.inherit>=0){w.i32(b.inherit);w.f32(b.inheritWeight);}
-  if(b.fixed)w.v3(b.fixedAxis);}
- w.i32(int32_t(morphs.size()));
- for(auto& mo:morphs){w.text(mo.name);w.text(mo.english);w.u8(uint8_t(mo.panel));w.u8(uint8_t(mo.type));
-  if(mo.type==0){w.i32(int32_t(mo.group.size()));for(auto& [i,wt]:mo.group){w.i32(i);w.f32(wt);}}
-  else if(mo.type==1){w.i32(int32_t(mo.vertex.size()));for(auto& [i,dv]:mo.vertex){w.i32(int32_t(i));w.v3(dv);}}
-  else if(mo.type==3){w.i32(int32_t(mo.uv.size()));for(auto& [i,dv]:mo.uv){w.i32(int32_t(i));w.v4(dv);}}
-  else{w.i32(int32_t(mo.material.size()));for(auto& o:mo.material){w.i32(o.material);w.u8(1);w.v4(o.diffuse);w.v3(Vec3(0));w.f32(0);w.v3(Vec3(0));w.v4(Vec4(0));w.f32(0);w.v4(Vec4(0));w.v4(Vec4(0));w.v4(Vec4(0));}}}
- // Display frames: root, expressions, then every other bone.
- w.i32(3);
- w.text("Root");w.text("Root");w.u8(1);w.i32(1);w.u8(0);w.i32(0);
- w.text("表情");w.text("Exp");w.u8(1);w.i32(int32_t(morphs.size()));for(size_t i=0;i<morphs.size();i++){w.u8(1);w.i32(int32_t(i));}
- w.text("Bones");w.text("Bones");w.u8(0);w.i32(int32_t(c.bones.size()>0?c.bones.size()-1:0));for(size_t i=1;i<c.bones.size();i++){w.u8(0);w.i32(int32_t(i));}
- w.i32(0);w.i32(0); // no rigid bodies or joints: VRM physics is simulated natively
- out.pmx=std::move(w.b);out.textures=std::move(c.textures);out.vrm=std::move(info);
+ PmxData pmx;pmx.name=title;pmx.comment="Converted from VRM "+info["version"].get<std::string>()+" by Model Hotloader.";
+ if(!m["authors"].empty())pmx.comment+="\nAuthor: "+m["authors"][0].get<std::string>();
+ pmx.vertices=std::move(c.vertices);pmx.textures=c.texturePaths;pmx.materials.assign(order.begin(),order.end());pmx.bones=c.bones;pmx.morphs=std::move(morphs);
+ out.pmx=writePmx(pmx);out.textures=std::move(c.textures);out.vrm=std::move(info);
  for(auto& s:c.warnings)out.warnings.push_back(s);for(auto& s:c.notes)out.warnings.push_back(s);
  return out;
 }
