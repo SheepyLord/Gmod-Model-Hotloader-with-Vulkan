@@ -24,13 +24,14 @@
 #include <stdexcept>
 #include "jobs.hpp"
 #include "prop_bindings.hpp"
+#include "physics_profile.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
 struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;};
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;std::map<std::string,std::future<Json>> previewing;std::map<std::string,Json> previewed;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -82,10 +83,12 @@ static void forgetAssets(const std::vector<std::string>& ids){
   for(auto& [handle,p]:world().instances)if(p->model->id==id)throw std::runtime_error("Remove the model from the map before deleting it");
   if(auto it=context->loading.find(id);it!=context->loading.end()){if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready)throw std::runtime_error("Model is still loading; retry deletion in a moment");context->loading.erase(it);}
   for(auto& [key,future]:context->fitting)if(key.starts_with(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
+  for(auto& [key,future]:context->previewing)if(key.starts_with(id))throw std::runtime_error("Model is still being fitted; retry deletion in a moment");
  }
  for(auto& id:ids){
   context->assets.erase(id);
   for(auto it=context->fitted.begin();it!=context->fitted.end();)if(it->first.starts_with(id))it=context->fitted.erase(it);else ++it;
+  for(auto it=context->previewed.begin();it!=context->previewed.end();)if(it->first.starts_with(id))it=context->previewed.erase(it);else ++it;
  }
 }
 FUNCTION(ForgetAssets) {forgetAssets(json(LUA,1).get<std::vector<std::string>>());LUA->PushBool(true);return 1;} END_FUNCTION
@@ -129,7 +132,7 @@ FUNCTION(PollInstallationProbe) {
  if(installationProbe.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"pending",true}});return 1;}
  push(LUA,installationProbe.get());return 1;
 } END_FUNCTION
-FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform","win64"},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}}});return 1;} END_FUNCTION
+FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform","win64"},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}}});return 1;} END_FUNCTION
 FUNCTION(Browse) {auto kind=LUA->IsType(1,GarrysMod::Lua::Type::String)?stringArg(LUA,1):std::string();if(!kind.empty()&&kind!="static")throw std::runtime_error("Unknown import kind");LUA->PushNumber(double(launch(true,"",kind.empty()?Json::object():Json{{"kind",kind}})));return 1;} END_FUNCTION
 // Save a part preset of a cached static prop (materials and/or region cut).
 FUNCTION(PropDerive) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid prop ID");if(!fs::exists(context->cache/L"static"/L"assets"/wide(id+".gmdl")))throw std::runtime_error("The original prop is not in the local cache");auto options=json(LUA,2);options["kind"]="derive";options["parent"]=id;LUA->PushNumber(double(launch(false,"",options)));return 1;} END_FUNCTION
@@ -150,6 +153,28 @@ FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->j
 FUNCTION(RequestAsset) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid asset ID");if(!fs::exists(context->cache/L"assets"/wide(id)/L"manifest.json"))throw std::runtime_error("Model was deleted; import it again");if(!context->assets.contains(id)&&!context->loading.contains(id)){auto cache=context->cache;context->loading[id]=std::async(std::launch::async,[cache,id]{return loadAsset(cache,id);});}LUA->PushBool(true);return 1;} END_FUNCTION
 std::shared_ptr<Model> asset(const std::string& id){if(context->assets.contains(id))return context->assets.at(id);auto it=context->loading.find(id);if(it!=context->loading.end()&&it->second.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto pending=std::move(it->second);context->loading.erase(it);auto m=pending.get();for(auto old=context->assets.begin();old!=context->assets.end()&&context->assets.size()>=8;)if(old->second.use_count()==1)old=context->assets.erase(old);else ++old;context->assets[id]=m;return m;}return {};}
 FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}push(LUA,m->info());return 1;} END_FUNCTION
+// The physics editor's exact preview, in both realms: the carrier a build with
+// these options would produce (shapes, masses, overlaps, .phy text), without
+// writing anything. A cached fit answers at once; a refit runs off-thread and
+// reports "pending" until the same options are asked for again.
+FUNCTION(PreviewCarrierFit) {
+ auto id=stringArg(LUA,1);auto m=asset(id);if(!m){LUA->PushNil();LUA->PushString("Asset not loaded");return 2;}
+ auto options=json(LUA,2);if(!options.is_object())throw std::runtime_error("Invalid preview options");
+ if(options.value("role",std::string("ragdoll"))=="arms")options.erase("physicsOverrides");
+ else if(options.contains("physicsOverrides")){
+  auto canonical=canonicalPhysics(options["physicsOverrides"]);
+  if(!canonical.errors.empty()){Json errors=Json::array();for(auto& e:canonical.errors)errors.push_back({{"code",e.code},{"path",e.path},{"detail",e.detail}});push(LUA,{{"status","error"},{"errors",errors}});return 1;}
+  if(canonical.value.empty())options.erase("physicsOverrides");else options["physicsOverrides"]=canonical.value;
+ }
+ auto run=[m,options]{try{return previewCarrier(fitRig(*m,options));}catch(const std::exception& e){return Json{{"status","error"},{"errors",Json::array({{{"code","fit_failed"},{"path",""},{"detail",e.what()}}})}};}};
+ if(m->fittedRig&&!options.contains("height")&&options.value("excludedMaterials",Json::array()).empty()){push(LUA,run());return 1;}
+ auto key=carrierFitKey(id,options);
+ if(auto done=context->previewed.find(key);done!=context->previewed.end()){push(LUA,done->second);return 1;}
+ auto pending=context->previewing.find(key);
+ if(pending==context->previewing.end()){context->previewing.emplace(key,std::async(std::launch::async,run));push(LUA,{{"status","pending"}});return 1;}
+ if(pending->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"status","pending"}});return 1;}
+ auto result=pending->second.get();context->previewing.erase(pending);if(context->previewed.size()>=4)context->previewed.erase(context->previewed.begin());context->previewed.emplace(key,result);push(LUA,result);return 1;
+} END_FUNCTION
 FUNCTION(CreateInstance) {auto id=stringArg(LUA,1);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}LUA->PushNumber(double(world().create(m,json(LUA,2))));return 1;} END_FUNCTION
 FUNCTION(SubmitSourcePose) {requireServer();auto& p=world().get(number(LUA,1));if(!p.sourceRig)throw std::runtime_error("Instance has no Source carrier");
  auto read=[&](int table,size_t count){std::vector<btTransform> out;out.reserve(count);for(size_t i=0;i<count;i++){LUA->PushNumber(double(i*2+1));LUA->GetTable(table);auto pos=vector(LUA,-1);LUA->Pop();LUA->PushNumber(double(i*2+2));LUA->GetTable(table);auto a=LUA->GetAngle(-1);LUA->Pop();if(!std::isfinite(a.x)||!std::isfinite(a.y)||!std::isfinite(a.z))throw std::runtime_error("Invalid Source angle");btQuaternion q;q.setEulerZYX(a.y*SIMD_RADS_PER_DEG,a.x*SIMD_RADS_PER_DEG,a.z*SIMD_RADS_PER_DEG);out.emplace_back(q,pos);}return out;};
@@ -314,17 +339,17 @@ FUNCTION(UpdateGrab) {requireServer();world().updateGrab(vector(LUA,1)*Inch);ret
 FUNCTION(EndGrab) {requireServer();world().endGrab();return 0;} END_FUNCTION
 FUNCTION(Clear) {world().clear();return 0;} END_FUNCTION
 #ifdef MMDHL_SERVER
-static std::string fitKey(const std::string& id,const Json& options){Json geometry;for(auto key:{"scaleMultiplier","scale","height","mass","collisionOverrides","collisionOverrideScale","excludedMaterials","role","gender","animationSource","animationReference","armsParts"})if(options.contains(key))geometry[key]=options[key];return id+geometry.dump();}
 FUNCTION(ReadAnimationModel) {auto bytes=stringArg(LUA,1);push(LUA,readAnimationModel(std::span(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size())));return 1;} END_FUNCTION
 FUNCTION(RequestCarrierFit) {
- auto id=stringArg(LUA,1);auto options=json(LUA,2);auto key=fitKey(id,options);if(context->fitted.contains(key)){LUA->PushBool(true);return 1;}
+ // Canonical physics first: equal profiles share one fit, and a stale fit is never reused.
+ auto id=stringArg(LUA,1);auto options=normalizeCarrierOptions(json(LUA,2));auto key=carrierFitKey(id,options);if(context->fitted.contains(key)){LUA->PushBool(true);return 1;}
  auto m=asset(id);if(!m)throw std::runtime_error("Load the asset before requesting a fit");
  if(!context->fitting.contains(key)){context->fitting[key]=std::async(std::launch::async,[m,options]{return fitRig(*m,options);});LUA->PushBool(false);return 1;}
  auto& pending=context->fitting.at(key);if(pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready){LUA->PushBool(false);return 1;}
  auto ready=std::move(pending);context->fitting.erase(key);if(context->fitted.size()>=16)context->fitted.erase(context->fitted.begin());context->fitted.emplace(key,ready.get());LUA->PushBool(true);return 1;
 } END_FUNCTION
 FUNCTION(PrepareCarrier) {
- auto id=stringArg(LUA,1);auto options=json(LUA,2);auto key=fitKey(id,options);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}
+ auto id=stringArg(LUA,1);auto options=normalizeCarrierOptions(json(LUA,2));auto key=carrierFitKey(id,options);auto m=asset(id);if(!m){m=loadAsset(context->cache,id);context->assets[id]=m;}
  auto rig=context->fitted.contains(key)?context->fitted.at(key):fitRig(*m,options);auto cached=context->cache/L"rigs"/wide(rig.key)/L"carrier.gma";
  if(fs::is_regular_file(cached)){registerShortName(context->cache,"rigs",rig.key);retainCacheFiles(context->cache,{fs::path(L"rigs")/wide(rig.key)});auto result=rig.manifest;result["gma"]="data/mmd_hotloader/rigs/"+rig.key+"/carrier.gma";push(LUA,result);}else push(LUA,packageCarrier(context->cache,rig,carrierPhysics(rig)));return 1;
 } END_FUNCTION
@@ -518,7 +543,7 @@ GMOD_MODULE_OPEN(){
         REGISTER(StartInstallationProbe);REGISTER(PollInstallationProbe);REGISTER(StartPackageExport);REGISTER(PollPackageExport);REGISTER(CancelPackageExport);REGISTER(RevealPackageExport);REGISTER(InspectModelNotes);
 #endif
         REGISTER(GetMountablePackage);REGISTER(StartAddonPackageScan);REGISTER(PollAddonPackageScan);
-        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(AssetInfo);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
+        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(AssetInfo);REGISTER(PreviewCarrierFit);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
         REGISTER(RebindSourceEntity);REGISTER(GetBounds);REGISTER(GetBoundsValues);REGISTER(GetState);REGISTER(SetState);REGISTER(SubmitSourcePose);REGISTER(StepSources);REGISTER(SetMorphs);REGISTER(GetMaterialState);
 #ifdef MMDHL_SERVER
         REGISTER(ReadAnimationModel);REGISTER(ProbePhysics);REGISTER(ProbeCarrierCollisions);REGISTER(CapturePhysics);REGISTER(CaptureSecondaryScene);REGISTER(SceneInterest);REGISTER(PrepareCarrier);REGISTER(RequestCarrierFit);
