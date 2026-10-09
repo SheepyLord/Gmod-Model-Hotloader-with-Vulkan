@@ -6,6 +6,7 @@
 #include "character_import.hpp"
 #include "humanoid_map.hpp"
 #include "import_error.hpp"
+#include "file_access.hpp"
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
 #include "props/core.hpp"
@@ -186,6 +187,8 @@ int wmain(int argc,wchar_t** argv){
             auto hr=dialog->Show(nullptr);shown=true;raise.join();
             Json result={{"state","cancelled"}};if(SUCCEEDED(hr)){IShellItem* item=nullptr;dialog->GetResult(&item);PWSTR p=nullptr;item->GetDisplayName(SIGDN_FILESYSPATH,&p);result={{"state","selected"},{"source",utf8(p)}};if(prop)result["kind"]="static";CoTaskMemFree(p);item->Release();}dialog->Release();CoUninitialize();writeJson(status,result);return 0;
         }
+        // File access for other addons: a picker or a consent window, answered into a private folder.
+        if(argc==3&&(std::wstring(argv[1])==L"--fa-pick"||std::wstring(argv[1])==L"--fa-consent"))return fileAccessDialog(std::wstring(argv[1])==L"--fa-pick",argv[2]);
         if(argc==3&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";auto j=readJson(request);auto options=j.value("options",Json::object());
             requestSource=j.value("source",std::string());requestKind=options.value("kind",std::string());
             // Before anything opens it (the VRM sniff included): a path to another computer

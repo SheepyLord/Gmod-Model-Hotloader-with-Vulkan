@@ -61,9 +61,13 @@ WorldScope::WorldScope(World* value):previous(boundWorld){boundWorld=value;}
 WorldScope::~WorldScope(){boundWorld=previous;}
 World& world(){if(boundWorld)return *boundWorld;if(!singleton)singleton=std::make_unique<World>();return *singleton;}
 void shutdownWorld(){singleton.reset();}
-static unsigned runtimeRealms=0;
-void acquireRuntimeRealm(){++runtimeRealms;}
-void releaseRuntimeRealm(){if(runtimeRealms&&--runtimeRealms==0){shutdownWorld();publishScene({});shutdownCompute();shutdownJobs();}}
+// Counted per realm: file access asks whether this process also runs the server
+// (single player or listen host), which a remote server's client scripts cannot change.
+static std::atomic<unsigned> clientRealms=0,serverRealms=0;
+void acquireRuntimeRealm(bool server){++(server?serverRealms:clientRealms);}
+void releaseRuntimeRealm(bool server){auto& count=server?serverRealms:clientRealms;unsigned value=count.load();while(value&&!count.compare_exchange_weak(value,value-1)){}
+ if(value&&clientRealms.load()+serverRealms.load()==0){shutdownWorld();publishScene({});shutdownCompute();shutdownJobs();}}
+bool localServerRealm(){return serverRealms.load()>0;}
 uint64_t World::create(std::shared_ptr<Model> m,const Json& options){auto id=next++;auto p=std::make_unique<Instance>(*this,std::move(m),id,options);instances.emplace(id,std::move(p));return id;}
 Instance& World::get(uint64_t id){auto it=instances.find(id);if(it==instances.end())throw std::runtime_error("Expired instance handle");return *it->second;}
 void World::remove(uint64_t id){if(impl->grabInstance==id)endGrab();instances.erase(id);}
