@@ -1,8 +1,8 @@
 local ent
-for _,e in ipairs(ents.FindByClass('prop_ragdoll')) do if e:GetModel():find('models/mmdhl/r1/',1,true) then ent=e break end end
+for _,e in ipairs(ents.FindByClass('prop_ragdoll')) do if e:GetModel():find('models/mmd/',1,true) and e:GetNW2String('MMDHLRig','')~='' then ent=e break end end
 assert(IsValid(ent),'No native carrier')
 local center=ent:WorldSpaceCenter()
-local key=ent:GetModel():match('/r1/([^/]+)/')
+local key=ent:GetNW2String('MMDHLRig','')
 local rig=util.JSONToTable(file.Read('mmd_hotloader/rigs/'..key..'/rig.json','DATA'))
 hook.Add('CalcView','MMDHL.CarrierProbeCamera',function() local pos=center+Vector(95,90,25) return {origin=pos,angles=(center-pos):Angle(),fov=40,drawviewer=true} end)
 hook.Add('PostDrawTranslucentRenderables','MMDHL.CarrierProbeOverlay',function(depth,sky)

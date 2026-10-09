@@ -186,7 +186,7 @@ if SERVER then
  -- Clients do not check the server's status first, so a spawn request gets this
  -- server's problem as its answer instead of waiting for the client's timeout.
  local spawnReplies={mmdhl_action='mmdhl_spawn_status',mmdhl_prop_action='mmdhl_prop_status'}
- for _,name in ipairs({'mmdhl_action','mmdhl_actor_registration','mmdhl_arms_preview','mmdhl_catalog','mmdhl_collision_mesh','mmdhl_forget_assets','mmdhl_material_visibility','mmdhl_native_morph','mmdhl_native_morphs','mmdhl_notice','mmdhl_physics_reset','mmdhl_player_clear','mmdhl_player_selection','mmdhl_prop_action','mmdhl_prop_attach','mmdhl_prop_attach_open','mmdhl_prop_catalog','mmdhl_prop_collision','mmdhl_prop_forget','mmdhl_prop_status','mmdhl_scene','mmdhl_scene_active','mmdhl_share','mmdhl_spawn_status'}) do
+ for _,name in ipairs({'mmdhl_action','mmdhl_actor_registration','mmdhl_arms_preview','mmdhl_catalog','mmdhl_collision_mesh','mmdhl_forget_assets','mmdhl_material_visibility','mmdhl_native_morph','mmdhl_native_morphs','mmdhl_notice','mmdhl_physics','mmdhl_physics_reset','mmdhl_player_clear','mmdhl_player_selection','mmdhl_prop_action','mmdhl_prop_attach','mmdhl_prop_attach_open','mmdhl_prop_catalog','mmdhl_prop_collision','mmdhl_prop_forget','mmdhl_prop_status','mmdhl_scene','mmdhl_scene_active','mmdhl_share','mmdhl_spawn_status'}) do
   util.AddNetworkString(name)
   net.Receive(name,function(_,p)
    if not status or status.features.core then return end
@@ -195,6 +195,11 @@ if SERVER then
     local settings=util.JSONToTable(net.ReadString()) or {}
     net.Start(spawnReplies[name]) net.WriteUInt(math.Clamp(math.floor(tonumber(settings.request) or 0),0,4294967295),32) net.WriteString('error')
     net.WriteString(M.ServerIssue('core',M.loadError or L'install.unavailable')) net.WriteUInt(0,16) net.Send(p)
+   end
+   -- The physics editor's request (protocol 1) waits for its own answer.
+   if name=='mmdhl_physics' and net.ReadUInt(8)==1 then
+    local request=net.ReadUInt(32)
+    if net.ReadString()~='close' then net.Start('mmdhl_physics_status') net.WriteUInt(request,32) net.WriteString('error') net.WriteString(L'physics_editor.error.server_core') net.WriteUInt(0,16) net.WriteUInt(0,16) net.Send(p) end
    end
    if (p.MMDHLNextFailure or 0)>CurTime() then return end p.MMDHLNextFailure=CurTime()+5
    net.Start('mmdhl_install_status') net.WriteString(util.TableToJSON(publicStatus())) net.Send(p)

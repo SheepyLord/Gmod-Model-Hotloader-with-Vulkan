@@ -224,7 +224,8 @@ if SERVER then
   end
   return rig
  end
- function mmdhl.SpawnNative(p,id,options,done)
+ -- flags.replace: the physics editor swaps it in for an existing ragdoll and moves that one's creator, undo and cleanup.
+ function mmdhl.SpawnNative(p,id,options,done,flags)
   options=mmdhl.WithSpawnDefaults(p,options)
   local raw,err=native.PrepareCarrier(id,util.TableToJSON(options)) if not raw then if done then done(nil,err) end return end local rig=util.JSONToTable(raw)
   if rig.materialGma and not mmdhl.MountPackage(rig.materialGma) then if done then done(nil,L'carrier.error.mount_materials') end return end
@@ -236,7 +237,7 @@ if SERVER then
   for i=0,17 do local body=ent:GetPhysicsObjectNum(i) body:EnableMotion(not options.frozen) if not options.frozen then body:Wake() end end
   -- Before the first duplicator snapshot, so dupes keep the chosen parts.
   if options.bodygroups then mmdhl.ApplyBodygroupState(ent,options.bodygroups) end
-  if IsValid(p) then
+  if IsValid(p) and not (flags and flags.replace) then
    -- Sandbox counts the ragdoll toward the player's limit (and prop protection
    -- takes ownership) in this completion hook, as for its own spawns.
    ent:SetCreator(p) gamemode.Call('PlayerSpawnedRagdoll',p,ent:GetModel(),ent)
@@ -274,10 +275,11 @@ end
 
 net.Receive('mmdhl_collision_mesh',function()
  local ent=net.ReadEntity() local key=net.ReadString() local count=net.ReadUInt(16) local decoded=util.JSONToTable(util.Decompress(net.ReadData(count)) or '')
- if IsValid(ent) and key==ent:GetNW2String('MMDHLRig','') and istable(decoded) then ent.MMDHLActualCollision=decoded end
+ if IsValid(ent) and key==ent:GetNW2String('MMDHLRig','') and istable(decoded) then ent.MMDHLActualCollision=decoded ent.MMDHLActualCollisionKey=key end
 end)
+-- A ragdoll rebound to another carrier asks again: its collision changed with the key.
 function mmdhl.RequestCollisionMesh(ent)
- if not IsValid(ent) or ent.MMDHLActualCollision or (ent.MMDHLMeshRequestAt or 0)>RealTime() then return end
+ if not IsValid(ent) or (ent.MMDHLActualCollision and ent.MMDHLActualCollisionKey==ent:GetNW2String('MMDHLRig','')) or (ent.MMDHLMeshRequestAt or 0)>RealTime() then return end
  ent.MMDHLMeshRequestAt=RealTime()+2 net.Start('mmdhl_collision_mesh') net.WriteEntity(ent) net.SendToServer()
 end
 include('mmdhl/native_render.lua')

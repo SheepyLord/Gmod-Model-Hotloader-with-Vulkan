@@ -12,7 +12,8 @@ local function characterItem(id,entry)
  local arms=mmdhl.GetArmsParts and mmdhl.GetArmsParts(id) or {}
  if next(arms) then item.arms={} for k,v in pairs(arms) do item.arms[tostring(k)]=v end end
  local fit=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
- if istable(fit) then item.fit=fit end
+ -- Who saved a physics default stays on this computer.
+ if istable(fit) then if istable(fit.editor) then fit.editor.savedBy=nil fit.editor.savedByName=nil end item.fit=fit end
  return item
 end
 local function propItem(id,entry) return {kind='static',asset=id,name=entry.name,settings={spawn=entry.settings and entry.settings.spawn},terms=mmdhl.terms and mmdhl.terms.ForPackage('static',id) or nil} end

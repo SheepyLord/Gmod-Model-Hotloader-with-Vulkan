@@ -1,8 +1,8 @@
 """Players on a server are never refused by the status the server reported: the
 client sends the request and the server checks its own installation. A server
-whose native module did not load answers a character or prop spawn at once with
-its problem, worded as the server's ("Server: …"), instead of letting the client
-wait for its timeout; a server whose physics is unavailable words its refusal the
+whose native module did not load answers a character or prop spawn (and the
+physics editor) at once with its problem, worded as the server's ("Server: …"),
+instead of letting the client wait for its timeout; a server whose physics is unavailable words its refusal the
 same way. Runs client.lua's and library.lua's request functions, installation.lua
 as a server without native files, and server.lua's spawn check."""
 from pathlib import Path
@@ -109,6 +109,12 @@ NOW=106 sent=request('mmdhl_action','remove','',3,'')
 assert(not sent.mmdhl_spawn_status and sent.mmdhl_install_status,'a removal was answered as a spawn, or the status was not sent')
 NOW=107 sent=request('mmdhl_share','spawn')
 assert(next(sent)==nil,'another channel was answered within five seconds')
+-- The physics editor's request is answered for itself, within the five seconds too; closing needs no answer.
+NOW=108 sent=request('mmdhl_physics',1,77,'open',{},0)
+reply=sent.mmdhl_physics_status
+assert(reply and reply.to==PLAYER and reply.values[1]==77 and reply.values[2]=='error' and reply.values[4]==0 and reply.values[5]==0,'the physics editor waited for its timeout')
+assert(mmdhl.Localize(reply.values[3])==mmdhl.Localize(mmdhl.L'physics_editor.error.server_core'),mmdhl.Localize(reply.values[3]))
+NOW=120 sent=request('mmdhl_physics',1,78,'close',{},0) assert(not sent.mmdhl_physics_status,'closing the editor was answered')
 ''')
 
 # A modified server module the administrator accepted, but no runtime: the answer
