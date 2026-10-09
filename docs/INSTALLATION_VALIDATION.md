@@ -46,12 +46,92 @@ that change an unavailable component require a full game restart. Native and
 game-library checks are cached, including failures; render/simulation hooks do
 not hash files. Diagnostics remain local unless the user copies them.
 
+## Update reminders
+
+The addon never refuses a native release only because it is old: the Workshop Lua
+keeps working with every published native release it can drive. In
+`native_policy.lua`, `recommended` is the release this Lua was built and tested
+with, `approved` the releases it accepts without a word, and `releases` every
+recorded release, identified by the size and SHA-256 of its realm module.
+
+- A recorded release **older** than `recommended` runs. Approved, it has no issue
+  at all (`publish-native-release.py` requires that of every approved release);
+  no longer approved, it gets one warning ("outdated and no longer approved …
+  runs anyway") that disables nothing and is not counted as a problem. Either way
+  the installation status carries `update`: `{installed, recommended, url,
+  altUrl, approved, advisory}`, with the recommended release's links.
+- Releases are ordered by the UTC time that ends their build ID
+  (`<commit>-YYYYMMDDTHHMMSSZ`) when both records have one, else by label: the
+  numbers first, a pre-release (`2.3.0-rc.1`, `2.1.0-native.12`) before its
+  release, `+metadata` ignored.
+- A recorded release **newer** than `recommended` that is not approved stays
+  unverified (**Use anyway…**, below), as before.
+- Optional `"revoked": {"<label>": "install.advisory.<id>"}` marks a release with a
+  known problem. It still runs; the update window and banner line add that phrase
+  (or a general one when the player's catalogue lacks it), and the advisory
+  reminds again even where that release was skipped. Keep the policy ASCII; the
+  release scripts keep keys they do not know. A new phrase is an ordinary catalogue
+  key: add `install.advisory.<id>` to all seven catalogues and list it in an
+  `-- i18n-keys: install.advisory.<id>` comment in `installation_ui.lua`, or
+  `check-i18n.py` warns that no Lua file uses it.
+- Only modules this Lua cannot drive stay off: releases without installation
+  verification (`installApi` 0), a module without
+  `GetInstallationInfo`/`ConfigureCompatibility`/`CheckCompatibility`, and a loaded
+  module with another interface (`api`, `installApi` or platform). Running them
+  has no ABI guards at all. Those older than `recommended` are offered as a
+  **required update**, with the same window and links. A loaded module of the
+  recommended release or newer with another interface keeps its plain problem
+  (restart, or update the addon): there is nothing newer to download.
+
+What players see:
+
+- **The update window**, a few seconds after joining a game, once per game run
+  (not again on the next map): the installed and the latest release, **Download
+  from GitHub** (the repository's releases page only), **Alternative download**
+  (the mirror, a plain https address only), **Remind me later** (closes; the next
+  game run reminds again), **Skip this version** and **Don't remind me again**.
+  Skip this version is stored in `data/mmd_hotloader/native_update.json`
+  (`{"schema":1,"skipped":"<label>","reminded":<time>}`); a newer recommended
+  release, or an advisory, reminds again. Don't remind me again sets the archived
+  client ConVar `mmdhl_native_update_reminder` to 0, for good; the checkbox in the
+  installation window and under Utilities > User > Character Models turns it back
+  on. A required update cannot be skipped. It opens once per game run in place of
+  the problem notice (later maps of that run get the notice), and **Dismiss** in
+  the banner silences both until the problems change.
+- It never opens beside the problem notice. While a problem the download fixes is
+  pending, the window stays closed: the notice already says to download (the banner
+  and the installation window still show the update). Other problems, such as a
+  game build no profile describes, get their notice when the window closes.
+- **The banners** of External Models and the library window show one line, "Native
+  update available: …", while the reminder is due. It is not a problem and counts
+  as nothing pending. **Dismiss** there hides the problems first; with none left,
+  it hides the line by skipping this version (its tooltip says so).
+- **The installation window** always shows the update, "(update available)" after
+  the recommended release, and the reminder checkbox. Administrators of a
+  dedicated server, and a listen-server host whose server files differ from the
+  game's, also see the server's update there; the server console prints one line.
+- `mmdhl_native_update` opens the window (the installation window when there is no
+  update).
+
+For features of the addon: `mmdhl.NativeReleaseAtLeast(label)` (both realms) says
+whether this realm's native module is that release or newer, in the order above:
+the release its files match, else (accepted unverified files) the loaded module's
+own label and build. `mmdhl.ShowNativeUpdateNeeded(feature, release)` (client)
+shows a small dialog, one per feature at a time: the feature (an already localized
+name) needs `release` or later, everything else keeps working, and **Download
+update…** opens the update window (the installation window while no newer release
+is known). Both exist even when the native module did not load. Every Lua use of a
+native function added after the oldest release this Lua supports is feature
+detected (`if mmdhl.native.NewFunction then … end`), with this dialog (or a
+notification) when it is missing; additive native changes keep `ApiVersion` 1.
+
 ## Using unverified native files anyway
 
 Hash and release mismatches no longer block the addon permanently. Files that
 do not match an approved release (another or newer version, a custom build,
-modified or damaged files, a mixed installation, or a known release that is no
-longer approved) are reported as *unverified*. The banner then offers
+modified or damaged files, or a mixed installation) are reported as
+*unverified*; a known release older than the recommended one is not (it runs,
+see Update reminders). The banner then offers
 **Use anyway…**, which explains the risk (crashes, damaged saves, unpredictable
 behaviour) and asks for confirmation. After the next map load or game restart
 the native module loads and every feature works. The accepted problems leave the
@@ -98,6 +178,21 @@ warning ("This Garry's Mod build has not been tested with this native release"),
 which disables nothing and which **Dismiss** hides until the builds change. Our own
 code never stops itself over a game build; only a real failure (a missing
 interface, a slot another module replaced) turns the affected feature off.
+
+A `compatibility_policy.lua` newer than the installed binary must not stop it
+either. The binary validates the whole policy before it takes it, once per process,
+and rejects a library it does not know, or a profile it cannot validate: one
+without a guard that binary requires (or with an RVA outside the image), another
+`sha256` or evidence format. Guard names it does not use are ignored. Lua therefore
+offers the policy whole; when it is rejected, without one library at a time (in
+policy order); then without libraries. The libraries left out run as unverified
+game builds behind the binary's own interface, slot and class checks (releases
+before 2.1.0-native.6 turn the affected engine features off instead), and the
+player gets one warning naming them, which disables nothing. While an update is
+known it is not counted as a problem either: the update reminder speaks for it. The
+order is fixed, so every later map of that game finds the same policy. Another ABI
+family is never forced on a binary: that policy still stops it. Keep new profiles
+additive anyway, so approved releases take them whole.
 
 Game updates can still change what the compiled modules call. The default branch's
 64-bit build of 2026-09-17 keeps the `VMaterialSystem080` and `VPhysics031`
@@ -181,8 +276,14 @@ implementation and a new binary release. New policy takes effect after restart.
 - Lua `GetInstallationStatus()` and `FeatureAvailable(feature)` expose
   diagnostics and availability; `ServerIssue(feature,message)` words a server
   problem in a reply to a player.
+- Lua `NativeReleaseAtLeast(label)`, and on the client `ShowNativeUpdateNeeded(feature,
+  release)`, `NativeUpdate()`, `NativeUpdateDue()`, `OpenNativeUpdate()`,
+  `SkipNativeUpdate()` and `StopNativeUpdateReminders()` (Update reminders).
 
 Tests: CTest `installation_and_abi_evidence`, `tests/test_installation.py`,
+`tests/test_native_update_session.py` (older releases load; the compatibility
+fallback; `publish-native-release.py` with a newer recommended release),
+`tests/test_native_update_notice.py` (the reminder window, banner and dialog),
 `tests/test_native_installer.py`, and the owned-game scripts
 `test-installation-game.py` / `test-installation-failures.py`. Fault injection
 only modifies disposable game roots and restores their files. Generated reports
