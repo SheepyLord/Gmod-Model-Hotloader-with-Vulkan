@@ -5,6 +5,7 @@
 #include "runtime.hpp"
 #include "import_error.hpp"
 #include "release.hpp"
+#include "rig.hpp"
 #include "spring_bones.hpp"
 #include "vrm.hpp"
 #include <windows.h>
@@ -178,13 +179,36 @@ int main(int argc,char** argv){try{
   check(e.details["where"].size()==2&&placed(e.details["where"],"mesh",1,"A")&&placed(e.details["where"],"accessor",2)&&e.context.size()==1,"an ImportError's places are its scopes plus its own");
   check(placeText(place("rigid_body",3,std::string(80,'x')))=="rigid body 3 “"+std::string(48,'x')+"…”"&&place("bone",1,"\xFF\xFE")["name"]=="\xEF\xBF\xBD\xEF\xBF\xBD","places shorten long names and keep valid UTF-8");}
 
- // ---- file errors say why ----
+ // ---- file errors say why: in the code and the report, while what() keeps 2.2's sentence ----
  {auto missing=temp/L"nothing here.pmx";auto e=failure([&]{readFile(missing);},"missing file");
-  check(e.code=="io.missing"&&e.details.value("path","")==utf8(missing.wstring())&&has(e.what(),"Cannot read ")&&has(e.what(),"does not exist"),"a missing file is io.missing with its path");
-  e=failure([&]{readFile(temp);},"folder");check(e.code=="io.missing"&&has(e.what(),"folder"),"a folder picked as a file says so");
+  check(e.code=="io.missing"&&e.details.value("path","")==utf8(missing.wstring())&&std::string(e.what())=="Cannot read "+utf8(missing.wstring()),"a missing file is io.missing with its path, and what() is 2.2's sentence");
+  auto d=describe([&]{readFile(missing);});check(d["error"]=="Cannot read "+utf8(missing.wstring())+": the file does not exist (it may have been moved, renamed or deleted)","the report adds why the file cannot be read");
+  e=failure([&]{readFile(temp);},"folder");d=describe([&]{readFile(temp);});check(e.code=="io.missing"&&has(d["error"],"folder"),"a folder picked as a file says so");
   auto locked=temp/L"locked.pmx";writeAtomic(locked,bytes("PMX "));
   HANDLE h=CreateFileW(locked.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-  e=failure([&]{readFile(locked);},"locked file");CloseHandle(h);check(e.code=="io.locked"&&has(e.what(),"another program is using it"),"a file another program holds open is io.locked");}
+  e=failure([&]{readFile(locked);},"locked file");d=describe([&]{readFile(locked);});CloseHandle(h);check(e.code=="io.locked"&&has(d["error"],"another program is using it"),"a file another program holds open is io.locked");
+  // Writes go to the cache: a denied or failed write is io.write, never the model file's io.denied or io.missing.
+  auto target=temp/L"read-only.png";writeAtomic(target,bytes("old"));SetFileAttributesW(target.c_str(),FILE_ATTRIBUTE_READONLY);
+  e=failure([&]{writeAtomic(target,bytes("new"));},"read-only target");d=describe([&]{writeAtomic(target,bytes("new"));});SetFileAttributesW(target.c_str(),FILE_ATTRIBUTE_NORMAL);
+  check(e.code=="io.write"&&std::string(e.what())=="Cannot commit output file: "+utf8(target.wstring())&&e.details.value("systemError",0)==ERROR_ACCESS_DENIED&&has(d["error"],"Windows denied access"),"a write Windows denies is io.write, with 2.2's sentence and the reason in the report");
+  auto plain=temp/L"plain.txt";writeAtomic(plain,bytes("x"));d=describe([&]{fs::create_directories(plain/L"sub");});
+  check(d["errorCode"]=="io.write"&&d["exceptionType"]=="filesystem"&&has(d["error"],"Cannot write "),"a folder that cannot be created is io.write (the library's message names the operation)");
+  d=describe([&]{writeAtomic(plain/L"sub"/L"x.png",bytes("y"));});
+  check(d["errorCode"]=="io.write"&&d["errorDetails"]["path"]==utf8((plain/L"sub").wstring())&&has(d["error"],"in the way"),"a cache file whose folder cannot be created is io.write, with the path as the player knows it");
+  d=describe([]{throw fs::filesystem_error("create_directories",fs::path(L"C:/cache/x"),std::error_code(ERROR_ACCESS_DENIED,std::system_category()));});check(d["errorCode"]=="io.write","a denied filesystem write is io.write");}
+
+ // ---- a missing texture keeps 2.2's warning text: warnings are part of the asset's identity ----
+ {auto folder=temp/L"textured";fs::create_directories(folder);fs::copy_file("tests/fixtures/textured21.pmx",folder/L"model.pmx");
+  auto result=importAsset(folder/L"model.pmx",temp/L"cache",Json::object(),{});auto expected="Cannot read "+utf8((folder/L"checker.dds").lexically_normal().wstring());size_t found=0;
+  for(auto& w:result["info"]["warnings"]){auto text=w.get<std::string>();if(has(text,"checker.dds")){found++;check(text==expected,"missing texture warning is 2.2's: "+text);}}
+  check(found>0,"the model without its texture imports with a warning");
+  // A damaged cached texture names its file, so the player can delete it.
+  fs::copy_file("tests/fixtures/checker.dds",folder/L"checker.dds");result=importAsset(folder/L"model.pmx",temp/L"cache2",Json::object(),{});auto id=result["asset"].get<std::string>();
+  size_t textured=0;while(textured+1<result["info"]["textures"].size()&&result["info"]["textures"][textured].value("base","").empty())textured++;
+  auto base=result["info"]["textures"][textured].value("base","");auto vtf=temp/L"cache2"/L"textures"/wide(base+".vtf");check(!base.empty()&&fs::is_regular_file(vtf),"the texture has its Source derivative");
+  writeAtomic(vtf,bytes("not a vtf"));fs::remove(temp/L"cache2"/L"assets"/wide(id)/L"materials-v5.gma");
+  auto e=failure([&]{prepareSourceMaterials(temp/L"cache2",id);},"damaged vtf");
+  check(e.code=="texture.derivative"&&e.details.value("path","")==utf8(vtf.wstring())&&placed(e.details["where"],"material",int64_t(textured),result["info"]["materials"][textured].value("name","")),"a damaged cached texture names the material and the file's path");}
 
  // ---- worker exits ----
  {auto x=describeWorkerExit(0xC0000005);check(x["cause"]=="access_violation"&&x["errorCode"]=="worker.crash"&&has(x["error"],"exited before completion")&&has(x["error"],"0xC0000005"),"0xC0000005 is an access violation (and keeps the word exited)");

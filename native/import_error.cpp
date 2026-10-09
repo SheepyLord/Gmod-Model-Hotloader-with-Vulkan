@@ -68,7 +68,11 @@ Json describeException(std::exception_ptr error){
     auto trail=std::move(unwound);unwound.clear();std::string domain;for(auto& s:trail)if(!s.domain.empty())domain=s.domain;
     auto where=places(trail);auto at=where.empty()?std::string():" (in "+placeText(where.back())+")";
     try{if(error)std::rethrow_exception(error);}
-    catch(const ImportError& e){r["error"]=e.what();r["errorCode"]=e.code;r["errorDetails"]=e.details;r["context"]=e.context;r["exceptionType"]="import";return r;}
+    catch(const ImportError& e){
+        // A file error's sentence is short and stable (fileFailure): the report adds why.
+        std::string text=e.what();auto field=[&](const char* key){auto it=e.details.find(key);return it!=e.details.end()&&it->is_string()?it->get<std::string>():std::string();};
+        if(auto why=field("why");!why.empty()){auto path=field("path");if(!path.empty()&&text.find(path)==std::string::npos)text+=" ("+path+")";text+=": "+why;}
+        r["error"]=text;r["errorCode"]=e.code;r["errorDetails"]=e.details;r["context"]=e.context;r["exceptionType"]="import";return r;}
     catch(const Json::exception& e){
         // nlohmann prefixes "[json.exception.out_of_range.403] "; the sentence after it is the useful part.
         std::string text=e.what();if(auto end=text.find("] ");text.starts_with("[json.exception.")&&end!=std::string::npos)text=text.substr(end+2);
@@ -78,10 +82,14 @@ Json describeException(std::exception_ptr error){
     catch(const fs::filesystem_error& e){
         auto value=uint32_t(e.code().value());bool system=e.code().category()==std::system_category();
         bool full=e.code()==std::errc::no_space_on_device||(system&&(value==ERROR_DISK_FULL||value==ERROR_HANDLE_DISK_FULL));
+        // The cache's long-path form (\\?\C:\…, \\?\UNC\server\…) is shown as the player knows it.
         std::string path=e.path1().empty()?std::string():utf8(e.path1().wstring());
+        if(path.starts_with("\\\\?\\UNC\\"))path="\\\\"+path.substr(8);else if(path.starts_with("\\\\?\\"))path=path.substr(4);
         std::string reason=system?systemErrorText(value):e.code().message();
-        r["error"]=full?"The disk is full: "+path:"Cannot access "+(path.empty()?std::string("a file"):path)+": "+reason;
-        r["errorCode"]=full?std::string("io.disk_full"):system&&systemErrorCode(value)!="io.read"?systemErrorCode(value):std::string("io.filesystem");r["exceptionType"]="filesystem";
+        // what() starts with the operation; one that changes files works on the cache.
+        std::string operation=e.what();bool writing=false;for(auto op:{"create_","rename","copy","remove","resize_file","permissions"})writing|=operation.starts_with(op);
+        r["error"]=full?"The disk is full: "+path:(writing?"Cannot write ":"Cannot access ")+(path.empty()?std::string("a file"):path)+": "+reason;
+        r["errorCode"]=full?std::string("io.disk_full"):writing?std::string("io.write"):system&&systemErrorCode(value)!="io.read"?systemErrorCode(value):std::string("io.filesystem");r["exceptionType"]="filesystem";
         r["errorDetails"]={{"path",path},{"systemError",e.code().value()},{"systemMessage",e.code().message()}};
     }
     catch(const std::bad_alloc&){r["error"]="The importer ran out of memory"+at;r["errorCode"]="memory";r["exceptionType"]="memory";}
@@ -171,11 +179,13 @@ std::string systemErrorText(uint32_t e){
   case ERROR_FILENAME_EXCED_RANGE:return "the path is too long";
   case ERROR_INVALID_NAME:return "the path is not valid";
   case ERROR_DIRECTORY:return "it is a folder, not a file";
+  case ERROR_ALREADY_EXISTS:case ERROR_FILE_EXISTS:return "a file of that name is in the way";
   case ERROR_VIRUS_INFECTED:case ERROR_VIRUS_DELETED:return "antivirus software blocked it";
  }
  return "Windows error "+std::to_string(e);
 }
-std::string systemErrorCode(uint32_t e){
+std::string systemErrorCode(uint32_t e,bool writing){
+ if(writing)return e==ERROR_DISK_FULL||e==ERROR_HANDLE_DISK_FULL?"io.disk_full":"io.write";
  switch(e){
   case ERROR_FILE_NOT_FOUND:case ERROR_PATH_NOT_FOUND:case ERROR_INVALID_NAME:case ERROR_DIRECTORY:case ERROR_BAD_NETPATH:return "io.missing";
   case ERROR_ACCESS_DENIED:case ERROR_WRITE_PROTECT:case ERROR_VIRUS_INFECTED:case ERROR_VIRUS_DELETED:return "io.denied";
@@ -185,9 +195,10 @@ std::string systemErrorCode(uint32_t e){
  }
  return "io.read";
 }
-void fileFailure(const std::string& what,const fs::path& path,uint32_t systemError,Json details){
- if(!details.is_object())details=Json::object();auto text=utf8(path.wstring());details["path"]=text;details["systemError"]=systemError;
- importFail(systemErrorCode(systemError),what+" "+text+": "+systemErrorText(systemError),details);
+void fileFailure(const std::string& message,const fs::path& path,uint32_t systemError,bool writing,Json details){
+ if(!details.is_object())details=Json::object();details["path"]=utf8(path.wstring());
+ if(systemError){details["systemError"]=systemError;details["why"]=systemErrorText(systemError);}
+ importFail(systemError?systemErrorCode(systemError,writing):writing?"io.write":"io.read",message,details);
 }
 Json describeWorkerExit(uint32_t code){
  struct Cause{uint32_t code;const char* id;const char* text;};

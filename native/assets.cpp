@@ -37,29 +37,32 @@ fs::path ioPath(const fs::path& path){
  return L"\\\\?\\"+value;
 }
 // A stream cannot say why it failed to open: ask Windows the same question (missing,
-// in use, denied...) so the message and its code say what to do.
+// in use, denied...) so the code and the report say what to do.
 static DWORD openError(const fs::path& io,bool writing){
  std::error_code ec;if(!writing&&fs::is_directory(io,ec))return ERROR_DIRECTORY;
  HANDLE h=CreateFileW(io.c_str(),writing?GENERIC_WRITE:GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,writing?CREATE_ALWAYS:OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(h==INVALID_HANDLE_VALUE)return GetLastError();CloseHandle(h);if(writing)DeleteFileW(io.c_str());return 0;
 }
+// The sentences stay 2.2's: a missing texture's is a manifest warning, part of the asset's
+// identity. Why it failed travels as the code and details.why, which a failure report adds.
 Bytes readFile(const fs::path& path){
  auto io=ioPath(path);std::ifstream f(io,std::ios::binary|std::ios::ate);auto name=utf8(path.wstring());
- if(!f){if(auto error=openError(io,false))fileFailure("Cannot read",path,error);importFail("io.read","Cannot read "+name,{{"path",name}});}
- auto size=f.tellg();if(size<0)importFail("io.read","Cannot read "+name+": its size cannot be determined",{{"path",name}});Bytes b(static_cast<size_t>(size));f.seekg(0);
- if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))importFail("io.device","Cannot read "+name+": reading stopped after "+thousands(uint64_t(f.gcount()))+" of "+thousands(uint64_t(size))+" bytes (the drive may have been disconnected)",{{"path",name},{"read",int64_t(f.gcount())},{"size",uint64_t(size)}});
+ if(!f)fileFailure("Cannot read "+name,path,openError(io,false));
+ auto size=f.tellg();if(size<0)importFail("io.read","Cannot determine file size",{{"path",name},{"why","its size cannot be determined"}});Bytes b(static_cast<size_t>(size));f.seekg(0);
+ if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))importFail("io.device","Incomplete file read",{{"path",name},{"read",int64_t(f.gcount())},{"size",uint64_t(size)},{"why","reading stopped after "+thousands(uint64_t(f.gcount()))+" of "+thousands(uint64_t(size))+" bytes (the drive may have been disconnected)"}});
  return b;
 }
 void writeAtomic(const fs::path& path,const std::function<void(std::ostream&)>& write){
  auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());
  // Data that stops short on a nearly full drive is a full disk; otherwise the open says why.
+ // Writes fail as io.write (or io.disk_full): the cache, not the model file, is at fault.
  auto failed=[&](DWORD error){std::error_code ec;fs::remove(tmp,ec);auto space=fs::space(output.parent_path(),ec);if(!error&&!ec&&space.available<(64ull<<20))error=ERROR_DISK_FULL;
-  if(error)fileFailure("Cannot write output file:",path,error);importFail("io.write","Cannot write output file: "+utf8(path.wstring()),{{"path",utf8(path.wstring())}});};
+  fileFailure("Cannot write output file: "+utf8(path.wstring()),path,error,true);};
  {std::ofstream f(tmp,std::ios::binary|std::ios::trunc);
   if(!f)failed(openError(tmp,true));
   try{write(f);}catch(...){f.close();std::error_code ec;fs::remove(tmp,ec);throw;}
   if(!f.flush()){f.close();failed(0);}}
- for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED)){std::error_code ec;fs::remove(tmp,ec);fileFailure("Cannot commit output file:",path,error);}Sleep(10);}
+ for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED)){std::error_code ec;fs::remove(tmp,ec);fileFailure("Cannot commit output file: "+utf8(path.wstring()),path,error,true);}Sleep(10);}
 }
 void writeAtomic(const fs::path& path,std::span<const unsigned char> b){writeAtomic(path,[&](std::ostream& f){f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));});}
 void writeJson(const fs::path& path,const Json& j){auto s=j.dump(2);writeAtomic(path,std::span(reinterpret_cast<const unsigned char*>(s.data()),s.size()));}
@@ -140,7 +143,7 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
    if(!fs::is_regular_file(derivative)){
     int width,height,channels;std::unique_ptr<unsigned char,decltype(&stbi_image_free)> decoded(nullptr,stbi_image_free);
     {auto png=readFile(cache/L"textures"/wide(base+".png"));decoded.reset(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4));}
-    if(!decoded)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its cached image "+base.substr(0,16)+".png cannot be decoded",{{"where",Json::array({at})},{"texture",base}});
+    if(!decoded)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its cached image "+base.substr(0,16)+".png cannot be decoded",{{"where",Json::array({at})},{"texture",base},{"path",utf8((cache/L"textures"/wide(base+".png")).wstring())}});
     // Caches from before 2.2 hold textures larger than 4096.
     Bytes scaled;const unsigned char* pixels=decoded.get();if(fitTexture(pixels,width,height,scaled))pixels=scaled.data();
     if(width>65535||height>65535)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its image is "+std::to_string(width)+" x "+std::to_string(height)+" pixels, more than the VTF format holds",{{"where",Json::array({at})},{"texture",base}});
@@ -158,7 +161,7 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
    std::string path="materials/"+texturePath+".vtf";
    if(!files.contains(path)){
     std::ifstream in(ioPath(derivative),std::ios::binary);unsigned char header[80]{};std::error_code ec;auto size=fs::file_size(ioPath(derivative),ec);
-    auto damaged=[&]{importFail("texture.derivative","The cached Source texture of "+placeText(at)+" is damaged ("+base.substr(0,16)+".vtf); delete it and import again",{{"where",Json::array({at})},{"texture",base}});};
+    auto damaged=[&]{importFail("texture.derivative","The cached Source texture of "+placeText(at)+" is damaged ("+base.substr(0,16)+".vtf); delete it and import again",{{"where",Json::array({at})},{"texture",base},{"path",utf8(derivative.wstring())}});};
     if(!in||!in.read(reinterpret_cast<char*>(header),80)||ec||std::memcmp(header,"VTF\0",4)!=0)damaged();
     uint16_t width=0,height=0;std::memcpy(&width,header+16,2);std::memcpy(&height,header+18,2);uint64_t count=uint64_t(width)*height*4;
     if(!width||!height||count>size-80)damaged();

@@ -47,7 +47,8 @@ public:
 std::vector<std::string> importScopes();
 Json importPlaces();
 // {error, errorCode, errorDetails, context, exceptionType} for any exception, so the
-// worker reports library errors (JSON, filesystem, memory) as readable sentences too.
+// worker reports library errors (JSON, filesystem, memory) as readable sentences too. An
+// ImportError's error is what() plus its details.why when it has one (fileFailure).
 Json describeException(std::exception_ptr);
 // The step being worked on as a short code ("parse", "textures"), kept in a fixed
 // buffer so a crash handler can read it without allocating.
@@ -64,11 +65,15 @@ FileFormat sniffFormat(std::span<const unsigned char> head,const fs::path& path=
 // (an archive, a motion, an image, an FBX file with the wrong extension...).
 [[noreturn]] void notCharacterFile(std::span<const unsigned char> head,const fs::path& path);
 // A Windows error (GetLastError) in English, and the code the Lua explains it with:
-// io.missing, io.denied, io.locked, io.disk_full, io.device or io.read.
+// io.missing, io.denied, io.locked, io.disk_full, io.device or io.read. A failed write is
+// io.write (or io.disk_full): the cache, not the model file, is at fault.
 std::string systemErrorText(uint32_t error);
-std::string systemErrorCode(uint32_t error);
-// "<what> <path>: <reason>" as an ImportError with {path, systemError} in its details.
-[[noreturn]] void fileFailure(const std::string& what,const fs::path& path,uint32_t systemError,Json details=Json::object());
+std::string systemErrorCode(uint32_t error,bool writing=false);
+// A file that cannot be read or written: an ImportError whose code says why, with {path,
+// systemError, why} in its details. message stays the short sentence 2.2 had ("Cannot
+// read <path>"), since a texture's becomes a manifest warning, part of the asset's
+// identity; describeException adds the why to the report.
+[[noreturn]] void fileFailure(const std::string& message,const fs::path& path,uint32_t systemError,bool writing=false,Json details=Json::object());
 // A worker process that ended without a final status: {exitCode, exitCodeHex, cause,
 // error, errorCode}. cause is access_violation, stack_overflow, fail_fast,
 // heap_corruption, out_of_memory (errorCode memory), cpp_exception, abort,
