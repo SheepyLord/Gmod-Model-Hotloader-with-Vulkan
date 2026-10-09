@@ -32,6 +32,7 @@
 #include <cstring>
 #include <numeric>
 #include <set>
+#include <unordered_set>
 namespace mmd {
 namespace {
 using Vec2=glm::vec2;using Vec3=glm::vec3;using Vec4=glm::vec4;using Mat3=glm::mat3;using Mat4=glm::mat4;
@@ -154,14 +155,17 @@ Collected collect(const Loaded& l,bool probe){
  // (the first ancestor that no mesh lists as a bone) splits one skeleton wherever an
  // unweighted bone sits between weighted ones.
  auto armatureOf=[&](const aiBone* b)->const aiNode*{auto n=nodeOf(b);if(!n)return s->mRootNode;while(n->mParent&&n->mParent!=s->mRootNode)n=n->mParent;return n;};
- // Armatures, with the vertices each one moves.
- std::map<const aiNode*,int> armatureIndex;
- for(auto n:all)for(unsigned k=0;k<n->mNumMeshes;k++){auto m=s->mMeshes[n->mMeshes[k]];std::map<int,uint64_t> moved;std::vector<uint8_t> weighted(m->mNumVertices,0);
+ // Armatures, with the vertices each one moves counted by position: the converter joins
+ // identical vertices and the probe does not (FBX writes one per polygon corner), and
+ // both must keep the same armature.
+ std::map<const aiNode*,int> armatureIndex;std::vector<std::unordered_set<uint64_t>> moved;
+ auto point=[](const aiVector3D& p){uint64_t h=1469598103934665603ull;for(float f:{p.x,p.y,p.z}){if(f==0)f=0;uint32_t u;std::memcpy(&u,&f,4);for(int k=0;k<4;k++){h^=(u>>(8*k))&255;h*=1099511628211ull;}}return h;};
+ for(auto n:all)for(unsigned k=0;k<n->mNumMeshes;k++){auto m=s->mMeshes[n->mMeshes[k]];
   for(unsigned b=0;b<m->mNumBones;b++){auto bone=m->mBones[b];auto a=armatureOf(bone);auto [it,fresh]=armatureIndex.emplace(a,int(c.armatures.size()));
-   if(fresh){Collected::Armature arm;arm.node=a;arm.name=sanitizeBoneName(a->mName.C_Str(),nullptr);c.armatures.push_back(arm);}
+   if(fresh){Collected::Armature arm;arm.node=a;arm.name=sanitizeBoneName(a->mName.C_Str(),nullptr);c.armatures.push_back(arm);moved.emplace_back();}
    if(auto bn=nodeOf(bone))c.armatures[it->second].bones.insert(bn);
-   for(unsigned w=0;w<bone->mNumWeights;w++){auto& vw=bone->mWeights[w];if(vw.mWeight>0&&vw.mVertexId<m->mNumVertices&&!weighted[vw.mVertexId]){weighted[vw.mVertexId]=1;moved[it->second]++;}}}
-  for(auto& [a,count]:moved)c.armatures[a].weighted+=count;}
+   for(unsigned w=0;w<bone->mNumWeights;w++){auto& vw=bone->mWeights[w];if(vw.mWeight>0&&vw.mVertexId<m->mNumVertices)moved[it->second].insert(point(m->mVertices[vw.mVertexId]));}}}
+ for(size_t a=0;a<c.armatures.size();a++)c.armatures[a].weighted=moved[a].size();
  if(c.armatures.empty())return c;
  c.chosen=0;for(size_t a=1;a<c.armatures.size();a++)if(c.armatures[a].weighted>c.armatures[c.chosen].weighted)c.chosen=int(a);
  auto& chosen=c.armatures[c.chosen];
@@ -461,7 +465,8 @@ void analyse(Analysis& a,const Loaded& l,bool samplePoints){
  if(a.frame.facingSource!="names"){Vec3 sum(0);int feet=0;auto up=Vec3(a.frame.rotation[0][1],a.frame.rotation[1][1],a.frame.rotation[2][1]);
   for(auto key:{"ValveBiped.Bip01_L_Foot","ValveBiped.Bip01_R_Foot"}){auto it=a.guess.slots.find(key);if(it==a.guess.slots.end()||it->second.bone<0)continue;int f=it->second.bone;
    for(size_t i=0;i<n;i++)if(c.parent[i]==f){Vec3 d=bones[i]-bones[f];d-=up*glm::dot(d,up);if(glm::length(d)>1e-5f){sum+=glm::normalize(d);feet++;}break;}}
-  if(feet&&glm::length(sum)>1e-4f){a.frame=frameFrom(bones,Picks{},glm::normalize(sum),true,hint,false);a.frame.facingSource="feet";}}
+  // The named hips and head still give up; only the facing comes from the feet.
+  if(feet&&glm::length(sum)>1e-4f){a.frame=frameFrom(bones,picks(a.guess),glm::normalize(sum),true,hint,false);a.frame.facingSource="feet";}}
  // Recentred: the hips over the origin, the lowest point on the floor.
  auto place=[&](Frame& f,int pelvis){Vec3 lo(1e30f);for(auto& s:a.verts)lo=glm::min(lo,f.apply(s.p));if(a.verts.empty())for(auto& b:bones)lo=glm::min(lo,f.apply(b));
   Vec3 centre=pelvis>=0?f.apply(bones[pelvis]):Vec3(0);f.offset-=Vec3(centre.x,lo.y,centre.z);};

@@ -281,3 +281,6 @@ target_compile_options(mmdhl_character_import_tests PRIVATE /utf-8)
 set_target_properties(mmdhl_character_import_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME character_import COMMAND mmdhl_character_import_tests)
 set_tests_properties(character_import PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+# The worker's status.json contract for the bone window, on models the tests generate.
+add_test(NAME character_import_worker COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/test-character-import.py" "$<TARGET_FILE:mmdhl_worker>" "$<TARGET_FILE:mmdhl_character_import_tests>" "$<TARGET_FILE:mmdhl_vrm_tests>")
+set_tests_properties(character_import_worker PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

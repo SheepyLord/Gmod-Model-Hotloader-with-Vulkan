@@ -17,12 +17,13 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <sstream>
 using namespace mmd;
 namespace {
 int checks=0;
 void check(bool ok,const std::string& name){if(!ok)throw std::runtime_error("FAIL "+name);++checks;std::cout<<"PASS "<<name<<"\n";}
-template<class F>void fails(F f,const std::string& code,const std::string& reason,const std::string& name){
- try{f();}catch(const ImportError& e){check(e.code==code&&(reason.empty()||e.details.value("reason",std::string())==reason),name+" ("+e.code+" "+e.details.value("reason",std::string())+": "+e.what()+")");return;}
+template<class F>void fails(F f,const std::string& code,const std::string& reason,const std::string& name,const std::string& slot=""){
+ try{f();}catch(const ImportError& e){check(e.code==code&&(reason.empty()||e.details.value("reason",std::string())==reason)&&(slot.empty()||e.details.value("slot",std::string())==slot),name+" ("+e.code+" "+e.details.value("reason",std::string())+" "+e.details.value("slot",std::string())+": "+e.what()+")");return;}
  catch(const std::exception& e){throw std::runtime_error("FAIL "+name+": "+e.what());}
  throw std::runtime_error("FAIL "+name+": no error");
 }
@@ -49,12 +50,14 @@ Bytes png(){unsigned char px[16]={255,255,255,0, 255,255,255,64, 255,255,255,200
  stbi_write_png_to_func([](void* c,void* d,int n){auto& b=*static_cast<Bytes*>(c);b.insert(b.end(),static_cast<unsigned char*>(d),static_cast<unsigned char*>(d)+n);},&out,2,2,4,px,8);return out;}
 
 struct BoneSpec {std::string name;int parent;btVector3 world;bool weighted=true;};
-enum class Names {Mixamo,Unreal,Nonsense};
+enum class Names {Mixamo,Unreal,Nonsense,Sparse};  // Sparse: only the hips, head, feet and toes are named
 struct Variant {
  Names names=Names::Mixamo;
  bool zUpCentimetres=false;  // the root node scales by 0.01 and turns Z-up into Y-up
+ bool zUp=false;             // written Z-up with no root transform (a file without axis information)
  bool mirrored=false;        // the root node has scale x -1 (a mirrored export)
  int second=0;               // 1: an outfit on a copy of the skeleton (rebound); 2: on a foreign skeleton (dropped)
+ int copies=1;               // the outfit's vertices repeated this often (identical, as FBX writes polygon corners)
  bool shiftJis=false;        // one bone name stored as Shift-JIS bytes
  bool duplicate=false;       // two bones share one name
 };
@@ -83,6 +86,9 @@ std::vector<BoneSpec> skeleton(Names style){
     {"RightShoulder","clavicle_r"},{"RightArm","upperarm_r"},{"RightForeArm","lowerarm_r"},{"RightForeArm_Twist","lowerarm_twist_01_r"},{"RightHand","hand_r"},{"RightUpLeg","thigh_r"},{"RightLeg","calf_r"},{"RightFoot","foot_r"},{"RightToeBase","ball_r"}};
    if(auto it=ue.find(bone.name);it!=ue.end())bone.name=it->second;
    else for(auto [from,to]:{std::pair{"LeftHand","_l"},{"RightHand","_r"}})if(bone.name.starts_with(from)&&bone.name.size()>std::strlen(from)+1){auto rest=bone.name.substr(std::strlen(from));std::string finger=rest.substr(0,rest.size()-1);for(auto& c:finger)c=char(std::tolower((unsigned char)c));if(finger=="pinky")finger="pinky";bone.name=finger+"_0"+rest.back()+to;}}
+  else if(style==Names::Sparse){static const std::set<std::string> named={"Hips","Head","LeftFoot","RightFoot","LeftToeBase","RightToeBase"};
+   if(named.contains(bone.name))bone.name="mixamorig:"+bone.name;
+   else if(!bone.name.starts_with("Hair")&&!bone.name.starts_with("Skirt")&&!bone.name.starts_with("Ribbon")){char text[32];std::snprintf(text,sizeof text,"Bone.%03d",int(&bone-b.data()));bone.name=text;}}
   else{static int counter=0;if(!bone.name.starts_with("Hair")&&!bone.name.starts_with("Skirt")&&!bone.name.starts_with("Ribbon")){char text[32];std::snprintf(text,sizeof text,"Bone.%03d",++counter%1000);bone.name=text;}}
  }
  return b;
@@ -95,7 +101,7 @@ Bytes humanoid(const Variant& v=Variant{}){
  if(v.zUpCentimetres){j["nodes"][0]["scale"]={.01f,.01f,.01f};j["nodes"][0]["rotation"]={-std::sqrt(.5f),0,0,std::sqrt(.5f)};}
  if(v.mirrored)j["nodes"][0]["scale"]={-1,1,1};
  // Positions under the armature node: undo its transform so the character lands at the same world place.
- auto local=[&](btVector3 p){if(v.zUpCentimetres)return btVector3(p.x()*100,-p.z()*100,p.y()*100);if(v.mirrored)return btVector3(-p.x(),p.y(),p.z());return p;};
+ auto local=[&](btVector3 p){if(v.zUpCentimetres)return btVector3(p.x()*100,-p.z()*100,p.y()*100);if(v.zUp)return btVector3(p.x(),-p.z(),p.y());if(v.mirrored)return btVector3(-p.x(),p.y(),p.z());return p;};
  for(int i=0;i<n;i++){auto& b=bones[i];auto t=local(b.world)-(b.parent>=0?local(bones[b.parent].world):btVector3(0,0,0));
   Json node={{"name",b.name},{"translation",{t.x(),t.y(),t.z()}}};Json children=Json::array();for(int c=0;c<n;c++)if(bones[c].parent==i)children.push_back(c+1);if(!children.empty())node["children"]=children;j["nodes"].push_back(node);
   if(b.parent<0)j["nodes"][0]["children"].push_back(i+1);}
@@ -111,7 +117,7 @@ Bytes humanoid(const Variant& v=Variant{}){
    position.insert(position.end(),{p.x(),p.y(),p.z()});normal.insert(normal.end(),{nn.x(),nn.y(),nn.z()});uv.insert(uv.end(),{(k&1)?1.f:0.f,(k&2)?1.f:0.f});
    joint.insert(joint.end(),{uint16_t(jointOf[b]),0,0,0});weight.insert(weight.end(),{1,0,0,0});
    bool head=bones[b].name.ends_with("Head")||bones[b].name=="head"||bones[b].name=="Bone.006";
-   btVector3 d=head?btVector3(0,-.01f,.005f):btVector3(0,0,0);if(v.zUpCentimetres)d=btVector3(d.x()*100,-d.z()*100,d.y()*100);if(v.mirrored)d.setX(-d.x());
+   btVector3 d=head?btVector3(0,-.01f,.005f):btVector3(0,0,0);if(v.zUpCentimetres)d=btVector3(d.x()*100,-d.z()*100,d.y()*100);if(v.zUp)d=btVector3(d.x(),-d.z(),d.y());if(v.mirrored)d.setX(-d.x());
    aa.insert(aa.end(),{d.x(),d.y(),d.z()});blink.insert(blink.end(),{0,head?.002f:0.f,0});}
   const int faces[6][4]={{0,2,6,4},{1,5,7,3},{0,4,5,1},{2,3,7,6},{0,1,3,2},{4,6,7,5}};
   for(auto& f:faces)for(int t=0;t<2;t++){uint32_t a=f[0],x=f[t+1],y=f[t+2];
@@ -127,9 +133,9 @@ Bytes humanoid(const Variant& v=Variant{}){
   int root=int(j["nodes"].size());j["nodes"].push_back({{"name","OutfitRig"},{"children",{root+1}}});
   j["nodes"].push_back({{"name",v.second==1?bones[0].name:"Foreign_Root"},{"translation",{0,local(bones[0].world).y(),0}}});
   int outfit=int(j["nodes"].size());j["nodes"].push_back({{"name","Hat"},{"mesh",1},{"skin",1}});roots.push_back(root);roots.push_back(outfit);
-  std::vector<float> p2,n2,w2;std::vector<uint16_t> j2;std::vector<uint32_t> i2{0,1,2,0,2,3};auto c=local(bones[0].world);
-  for(int k=0;k<4;k++){p2.insert(p2.end(),{c.x()+(k&1?.1f:-.1f),c.y(),c.z()+(k&2?.1f:-.1f)});n2.insert(n2.end(),{0,1,0});j2.insert(j2.end(),{0,0,0,0});w2.insert(w2.end(),{1,0,0,0});}
-  std::swap(i2[1],i2[2]);
+  std::vector<float> p2,n2,w2;std::vector<uint16_t> j2;std::vector<uint32_t> i2;auto c=local(bones[0].world);
+  for(int copy=0;copy<v.copies;copy++){uint32_t base=uint32_t(copy*4);for(uint32_t k:{0u,2u,1u,0u,2u,3u})i2.push_back(base+k);
+   for(int k=0;k<4;k++){p2.insert(p2.end(),{c.x()+(k&1?.1f:-.1f),c.y(),c.z()+(k&2?.1f:-.1f)});n2.insert(n2.end(),{0,1,0});j2.insert(j2.end(),{0,0,0,0});w2.insert(w2.end(),{1,0,0,0});}}
   float m[16]={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-c.y(),0,1};std::vector<float> ibm2(m,m+16);
   j["meshes"].push_back({{"name","Hat"},{"primitives",Json::array({{{"attributes",{{"POSITION",g.floats(p2,"VEC3",3)},{"NORMAL",g.floats(n2,"VEC3",3)},{"JOINTS_0",g.shorts(j2)},{"WEIGHTS_0",g.floats(w2,"VEC4",4)}}},{"indices",g.indices(i2)},{"material",0}}})}});
   j["skins"].push_back({{"joints",{root+1}},{"inverseBindMatrices",g.floats(ibm2,"MAT4",16)}});
@@ -139,6 +145,46 @@ Bytes humanoid(const Variant& v=Variant{}){
  j["materials"]=Json::array({{{"name","Body"},{"alphaMode","MASK"},{"alphaCutoff",.5f},{"pbrMetallicRoughness",{{"baseColorTexture",{{"index",0}}},{"baseColorFactor",{1,1,1,1}}}}}});
  // 左足 in Shift-JIS: 8D B6 91 AB.
  return g.file({{"@SJIS@",std::string("\x8D\xB6\x91\xAB",4)}});
+}
+// The same humanoid as COLLADA 1.4.1 (Unreal names, a box per weighted bone), in
+// centimetres with Z up as 3ds Max and Maya write it: Assimp applies <unit> and <up_axis>.
+Bytes daeHumanoid(){
+ auto bones=skeleton(Names::Unreal);int n=int(bones.size());
+ auto local=[](btVector3 p){return btVector3(p.x()*100,-p.z()*100,p.y()*100);};
+ std::vector<float> position,normal;std::vector<int> joint,index;
+ for(int b=0;b<n;b++){if(!bones[b].weighted)continue;auto c=local(bones[b].world);int base=int(joint.size());
+  for(int k=0;k<8;k++){btVector3 s((k&1)?1.f:-1.f,(k&2)?1.f:-1.f,(k&4)?1.f:-1.f);auto p=c+s*2.f;auto nn=s.normalized();position.insert(position.end(),{p.x(),p.y(),p.z()});normal.insert(normal.end(),{nn.x(),nn.y(),nn.z()});joint.push_back(b);}
+  const int faces[6][4]={{0,2,6,4},{1,5,7,3},{0,4,5,1},{2,3,7,6},{0,1,3,2},{4,6,7,5}};
+  auto at=[&](int i){return btVector3(position[i*3],position[i*3+1],position[i*3+2]);};
+  for(auto& f:faces)for(int t=0;t<2;t++){int a=base+f[0],x=base+f[t+1],y=base+f[t+2];if((at(x)-at(a)).cross(at(y)-at(a)).dot((at(a)+at(x)+at(y))/3-c)<0)std::swap(x,y);index.insert(index.end(),{a,x,y});}}
+ auto list=[](const auto& values){std::ostringstream o;o.precision(7);for(size_t i=0;i<values.size();i++)o<<(i?" ":"")<<values[i];return o.str();};
+ std::vector<float> inverse;for(auto& b:bones){auto c=local(b.world);inverse.insert(inverse.end(),{1,0,0,-c.x(),0,1,0,-c.y(),0,0,1,-c.z(),0,0,0,1});}  // row-major
+ std::string names,counts,weights;for(int b=0;b<n;b++)names+=(b?" ":"")+bones[b].name;
+ for(size_t i=0;i<joint.size();i++){counts+=i?" 1":"1";weights+=(i?" ":"")+std::to_string(joint[i])+" 0";}
+ std::function<std::string(int)> node=[&](int b){auto t=local(bones[b].world)-(bones[b].parent>=0?local(bones[bones[b].parent].world):btVector3(0,0,0));
+  std::string s="<node id=\""+bones[b].name+"\" name=\""+bones[b].name+"\" sid=\""+bones[b].name+"\" type=\"JOINT\"><translate>"+list(std::vector<float>{t.x(),t.y(),t.z()})+"</translate>";
+  for(int c=0;c<n;c++)if(bones[c].parent==b)s+=node(c);return s+"</node>";};
+ std::string roots;for(int b=0;b<n;b++)if(bones[b].parent<0)roots+=node(b);
+ auto source=[&](const std::string& id,const std::string& values,size_t count,const std::string& params,int stride){
+  return "<source id=\""+id+"\"><float_array id=\""+id+"-array\" count=\""+std::to_string(count*stride)+"\">"+values+"</float_array><technique_common><accessor source=\"#"+id+"-array\" count=\""+std::to_string(count)+"\" stride=\""+std::to_string(stride)+"\">"+params+"</accessor></technique_common></source>";};
+ const std::string xyzParams="<param name=\"X\" type=\"float\"/><param name=\"Y\" type=\"float\"/><param name=\"Z\" type=\"float\"/>";
+ std::string xml="<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">"
+  "<asset><unit name=\"centimeter\" meter=\"0.01\"/><up_axis>Z_UP</up_axis></asset>"
+  "<library_effects><effect id=\"body-fx\"><profile_COMMON><technique sid=\"common\"><lambert><diffuse><color>0.9 0.8 0.7 1</color></diffuse></lambert></technique></profile_COMMON></effect></library_effects>"
+  "<library_materials><material id=\"body-mat\" name=\"Body\"><instance_effect url=\"#body-fx\"/></material></library_materials>"
+  "<library_geometries><geometry id=\"body\" name=\"Body\"><mesh>"+source("body-pos",list(position),joint.size(),xyzParams,3)+source("body-nrm",list(normal),joint.size(),xyzParams,3)+
+  "<vertices id=\"body-vtx\"><input semantic=\"POSITION\" source=\"#body-pos\"/><input semantic=\"NORMAL\" source=\"#body-nrm\"/></vertices>"
+  "<triangles count=\""+std::to_string(index.size()/3)+"\" material=\"skin\"><input semantic=\"VERTEX\" source=\"#body-vtx\" offset=\"0\"/><p>"+list(index)+"</p></triangles></mesh></geometry></library_geometries>"
+  "<library_controllers><controller id=\"rig\"><skin source=\"#body\"><bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>"
+  "<source id=\"rig-joints\"><Name_array id=\"rig-joints-array\" count=\""+std::to_string(n)+"\">"+names+"</Name_array><technique_common><accessor source=\"#rig-joints-array\" count=\""+std::to_string(n)+"\" stride=\"1\"><param name=\"JOINT\" type=\"name\"/></accessor></technique_common></source>"+
+  source("rig-bind",list(inverse),bones.size(),"<param name=\"TRANSFORM\" type=\"float4x4\"/>",16)+source("rig-weights","1",1,"<param name=\"WEIGHT\" type=\"float\"/>",1)+
+  "<joints><input semantic=\"JOINT\" source=\"#rig-joints\"/><input semantic=\"INV_BIND_MATRIX\" source=\"#rig-bind\"/></joints>"
+  "<vertex_weights count=\""+std::to_string(joint.size())+"\"><input semantic=\"JOINT\" source=\"#rig-joints\" offset=\"0\"/><input semantic=\"WEIGHT\" source=\"#rig-weights\" offset=\"1\"/><vcount>"+counts+"</vcount><v>"+weights+"</v></vertex_weights>"
+  "</skin></controller></library_controllers>"
+  "<library_visual_scenes><visual_scene id=\"scene\"><node id=\"Armature\" name=\"Armature\">"+roots+"</node>"
+  "<node id=\"BodyNode\" name=\"Body\"><instance_controller url=\"#rig\"><skeleton>#"+bones[0].name+"</skeleton><bind_material><technique_common><instance_material symbol=\"skin\" target=\"#body-mat\"/></technique_common></bind_material></instance_controller></node>"
+  "</visual_scene></library_visual_scenes><scene><instance_visual_scene url=\"#scene\"/></scene></COLLADA>\n";
+ return Bytes(xml.begin(),xml.end());
 }
 fs::path temp(const std::wstring& name){auto p=fs::temp_directory_path()/L"mmdhl_character_import"/name;fs::create_directories(p.parent_path());return p;}
 fs::path writeFile(const std::wstring& name,const Bytes& bytes){auto p=temp(name);writeAtomic(p,bytes);return p;}
@@ -317,6 +363,15 @@ void conventionTests(){
   for(int k=0;k<=20;k++)v.points.insert(v.points.end(),{0,1.5f*k/20,0,0});
   auto g=guessHumanoid(v,classifyBones(v));
   check(g.slots["ValveBiped.Bip01_Spine1"].bone==3&&g.slots["ValveBiped.Bip01_Spine2"].bone==4&&g.slots["ValveBiped.Bip01_Spine4"].bone==5,"torso: Ganyu's inverted chain gives the chest to 上半身2 and the middle spine to 上半身3");}
+ // Numbered bones whose arm chains move nothing (the weights sit on a bone beside the
+ // hand): the shape gives no hand, so no arm part is guessed.
+ {std::vector<std::tuple<std::string,int,btVector3,uint32_t>> b={{"",-1,{0,.95f,0},50},{"",0,{0,1.2f,0},50},{"",1,{0,1.35f,0},50},{"",2,{0,1.45f,0},20},{"",3,{0,1.55f,0},100}};
+  for(float s:{1.f,-1.f}){int clav=int(b.size());b.push_back({"",2,{.06f*s,1.4f,0},0});b.push_back({"",clav,{.17f*s,1.4f,0},0});b.push_back({"",clav+1,{.43f*s,1.4f,0},0});b.push_back({"",clav+2,{.68f*s,1.4f,0},0});b.push_back({"",clav+3,{.5f*s,1.4f,0},30});
+   int thigh=int(b.size());b.push_back({"",0,{.09f*s,.9f,0},40});b.push_back({"",thigh,{.09f*s,.5f,0},40});b.push_back({"",thigh+1,{.09f*s,.08f,0},40});b.push_back({"",thigh+2,{.09f*s,.02f,.1f},20});}
+  for(size_t i=0;i<b.size();i++){char text[16];std::snprintf(text,sizeof text,"Bone.%03d",int(i));std::get<0>(b[i])=text;}
+  auto v=view(b);for(int k=0;k<=40;k++)v.points.insert(v.points.end(),{0,1.8f*k/40,0,0});auto g=guessHumanoid(v,classifyBones(v));
+  bool arms=true;for(auto part:{"L_UpperArm","L_Forearm","L_Hand","R_UpperArm","R_Forearm","R_Hand"})arms&=g.slots[std::string("ValveBiped.Bip01_")+part].bone<0;
+  check(arms&&g.slots["ValveBiped.Bip01_Pelvis"].bone==0,"topology: arm chains that move nothing are left for the player, not guessed");}
  // The signature ignores bone order, namespaces, units and rotation.
  {auto mixamo=styles()[0];std::map<std::string,int> index;auto v=build(mixamo,index);auto sig=skeletonSignature(v,classifyBones(v));
   auto moved=v;for(auto& b:moved.bones){b.position={-b.position[0]*100,b.position[1]*100,-b.position[2]*100};if(b.name.starts_with("mixamorig:"))b.name="rig1:"+b.name.substr(10);}
@@ -382,6 +437,17 @@ void converterTests(){
  {Variant v;v.second=1;auto p=probeCharacter(writeFile(L"rebound.glb",humanoid(v)),Json::object(),{});bool rebound=false;for(auto& m:p["meshes"])rebound|=m["name"]=="Hat"&&m["kept"]=="rebound";check(rebound&&p["warnings"].empty(),"probe: an outfit on a copy of the skeleton is rebound by bone names");}
  {Variant v;v.second=2;auto p=probeCharacter(writeFile(L"dropped.glb",humanoid(v)),Json::object(),{});bool dropped=false;for(auto& m:p["meshes"])dropped|=m["name"]=="Hat"&&m["kept"]=="dropped";
   check(dropped&&p["warnings"].size()==1&&p["warnings"][0].get<std::string>().find("Hat")!=std::string::npos,"probe: a mesh on a foreign skeleton is left out, with a warning");}
+ // An outfit rig whose few vertices the file repeats many times (FBX writes one per polygon corner):
+ // the probe and the converter must keep the same armature, or the window's bone names are gone at import.
+ {Variant v;v.second=2;v.copies=400;auto file=writeFile(L"repeated.glb",humanoid(v));auto p=probeCharacter(file,Json::object(),{});std::string chosen;for(auto& a:p["skeleton"]["armatures"])if(a["chosen"]==true)chosen=a["name"];
+  auto cv=convertCharacter(file,autoRequest(p),{});auto mm=parse(cv.pmx);bool same=mm->bones.size()==p["skeleton"]["bones"].size();
+  check(chosen=="Armature"&&same&&pmxBone(*mm,"下半身")==0,"probe: the probe and the converter keep the same armature however often the file repeats a vertex");}
+ // Z up without axis information, only the hips, head and feet named: up comes from the
+ // hips and head, the facing from the feet.
+ {Variant v;v.names=Names::Sparse;v.zUp=true;auto p=probeCharacter(writeFile(L"sparse-zup.glb",humanoid(v)),Json::object(),{});
+  auto& b=p["skeleton"]["bones"];int hips=boneNamed(p,"mixamorig:Hips"),head=boneNamed(p,"mixamorig:Head"),toe=boneNamed(p,"mixamorig:LeftToeBase"),foot=boneNamed(p,"mixamorig:LeftFoot");
+  check(p["units"]["up"]=="+z"&&p["units"]["upSource"]=="skeleton"&&p["units"]["facingSource"]=="feet"&&b[head]["position"][1].get<float>()>b[hips]["position"][1].get<float>()+.4f
+   &&b[toe]["position"][2].get<float>()>b[foot]["position"][2].get<float>()+.05f,"probe: feet give the facing without losing the up axis of the hips and head");}
  {Variant v;v.shiftJis=true;auto p=probeCharacter(writeFile(L"sjis.glb",humanoid(v)),Json::object(),{});int b=boneNamed(p,"左足");check(b>=0&&p["skeleton"]["bones"][b]["nameIssue"]=="cp932","probe: a Shift-JIS bone name is decoded and marked");}
  {Variant v;v.duplicate=true;auto p=probeCharacter(writeFile(L"duplicate.glb",humanoid(v)),Json::object(),{});check(boneNamed(p,"Hair_02 #2")>=0,"probe: duplicate names are numbered");}
 
@@ -411,8 +477,23 @@ void converterTests(){
   auto file=writeFile(variant?L"mirrored.glb":L"zup.glb",humanoid(v));auto p=probeCharacter(file,Json::object(),{});auto cv=convertCharacter(file,autoRequest(p),{});auto mm=parse(cv.pmx);
   check(mm->bones[pmxBone(*mm,"左腕")].position.x()>1&&mm->bones[pmxBone(*mm,"左つま先")].position.z()<mm->bones[pmxBone(*mm,"左足首")].position.z()&&winding(*mm)&&std::abs(mm->bones[pmxBone(*mm,"頭")].position.y()-1.55f*12.5f)<.15f,
    std::string("convert: a ")+label+" export lands upright, left arm +X, facing -Z, outward winding");}
+ {auto file=writeFile(L"humanoid.dae",daeHumanoid());auto p=probeCharacter(file,Json::object(),{});
+  check(p["format"]=="dae"&&slot(p,"Pelvis")=="pelvis"&&slot(p,"L_Forearm")=="lowerarm_l"&&slot(p,"R_Calf")=="calf_r"&&p["auto"]["humanoid"]==true&&std::abs(p["height"]["meters"].get<float>()-1.68f)<.03f,
+   "dae: a COLLADA humanoid in centimetres with Z up is probed like the glTF one");
+  auto cv=convertCharacter(file,autoRequest(p),{});auto mm=parse(cv.pmx);
+  check(mm->bones[pmxBone(*mm,"左腕")].position.x()>1&&mm->bones[pmxBone(*mm,"左つま先")].position.z()<mm->bones[pmxBone(*mm,"左足首")].position.z()&&winding(*mm)&&std::abs(mm->bones[pmxBone(*mm,"頭")].position.y()-1.55f*12.5f)<.15f,
+   "dae: it converts upright, left arm +X, facing -Z, outward winding");
+  check(fitRig(*mm,Json::object()).bodies.size()==18,"dae: the converted character fits the 18-body carrier");}
  // ---- the fitter ----
- {auto rig=fitRig(*m,Json::object());check(rig.bodies.size()==18,"fit: the converted character fits the 18-body carrier");}
+ {auto rig=fitRig(*m,Json::object());check(rig.bodies.size()==18,"fit: the converted character fits the 18-body carrier");
+  // Until the fitter takes the conversion map as its pins, the MMD names carry it.
+  std::vector<std::string> differ;for(auto& b:rig.bones){auto it=c.conversion["boneMap"].find(b.name);if(it!=c.conversion["boneMap"].end()&&it->get<int>()>=0&&b.mmd!=it->get<int>())differ.push_back(b.name);}
+  for(auto& d:differ)std::cout<<"  fitter differs: "<<d<<"\n";
+  check(differ.empty(),"fit: the fitter finds every assigned part by the MMD name the converter wrote");}
+ {auto renamed=parse(c.pmx);for(auto name:{"左ひざ","右ひじ"}){auto& bone=renamed->bones[pmxBone(*renamed,name)];bone.name=bone.english="renamed";}
+  bool listed=false;try{fitRig(*renamed,Json::object());}catch(const ImportError& e){auto missing=e.details.value("missing",Json::array());
+   listed=e.code=="fit.landmarks"&&missing==Json::array({"ValveBiped.Bip01_R_Forearm","ValveBiped.Bip01_L_Calf"})&&std::string(e.what())=="No bone found for: right forearm, left lower leg";}
+  check(listed,"fit: every missing landmark is listed, in words and by its carrier name");}
  // ---- a manual assignment overrides the automatic one ----
  {auto manual=request;manual["boneMap"]["ValveBiped.Bip01_L_Forearm"]="mixamorig:LeftForeArm_Twist";
   fails([&]{convertCharacter(mixamo,manual,{});},"character.bone_map","order","errors: a hand that is not below the forearm chosen for it is refused");
@@ -427,7 +508,7 @@ void converterTests(){
  fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_L_Hand"]="NoSuchBone";}),{});},"character.bone_map","missing","errors: a bone that is not in the file");
  fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_Head1"]="";}),{});},"character.bone_map","required","errors: a required part without a bone");
  fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_R_Hand"]="mixamorig:LeftHand";}),{});},"character.bone_map","duplicate","errors: one bone for two parts");
- fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_L_Calf"]="mixamorig:RightLeg";r["boneMap"]["ValveBiped.Bip01_R_Calf"]="";}),{});},"character.bone_map","","errors: a calf under the other thigh");
+ fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_L_Calf"]="mixamorig:RightLeg";r["boneMap"]["ValveBiped.Bip01_R_Calf"]="";}),{});},"character.bone_map","order","errors: a calf under the other thigh","ValveBiped.Bip01_L_Calf");
  fails([&]{convertCharacter(mixamo,with([](Json& r){r["boneMap"]["ValveBiped.Bip01_L_Thigh"]="Hair_01";}),{});},"character.bone_map","leg_on_spine","errors: a thigh hanging from the upper body");
  fails([&]{convertCharacter(mixamo,with([](Json& r){r["jiggle"]["groups"][0]["chains"][0]["root"]="mixamorig:LeftForeArm";}),{});},"character.jiggle","body","errors: a swinging part containing the hand");
  fails([&]{convertCharacter(mixamo,with([](Json& r){for(int k=0;k<70;k++)r["jiggle"]["groups"][0]["chains"].push_back({{"root","Hair_01"},{"enabled",true}});}),{});},"character.jiggle","too_many","errors: more than 64 swinging parts");
@@ -452,6 +533,7 @@ void converterTests(){
  auto second=importConverted(mixamo,cache,request,{},convertCharacter(mixamo,request,{}));
  auto stiffer=request;stiffer["jiggle"]=hairJiggle(1.5f);auto third=importConverted(mixamo,cache,stiffer,{},convertCharacter(mixamo,stiffer,{}));
  check(first["asset"]==second["asset"]&&first["asset"]!=third["asset"],"identity: the same file and assignment give the same asset; a swing value changes it");
+ check(first["fit"]==Json{{"ok",true}}&&!first["info"].contains("fit"),"import: the result reports the import-time fit outside the manifest");
  check(first["info"]["conversion"]["sourceSha256"]==hash(readFile(mixamo))&&first["info"].contains("conversion")&&!first["info"].contains("vrm"),"identity: the manifest's conversion block names the source file");
  {auto id=first["asset"].get<std::string>();auto loaded=loadAsset(cache,id);
   check(loaded->springs&&loaded->conversionBoneMap.size()==MappedSlotCount&&loaded->conversionBoneMap.at("ValveBiped.Bip01_Pelvis")==0,"reload: springs and the conversion bone map come back with the cached asset");
@@ -483,7 +565,7 @@ void converterTests(){
 int main(int argc,char** argv){try{
  if(argc==3&&std::string(argv[1])=="--write-fixtures"){fs::path dir=argv[2];fs::create_directories(dir);
   writeAtomic(dir/L"mixamo.glb",humanoid());Variant ue;ue.names=Names::Unreal;writeAtomic(dir/L"unreal.glb",humanoid(ue));Variant numbered;numbered.names=Names::Nonsense;writeAtomic(dir/L"numbered.glb",humanoid(numbered));
-  Variant z;z.zUpCentimetres=true;writeAtomic(dir/L"mixamo-zup-cm.glb",humanoid(z));Variant mirror;mirror.mirrored=true;writeAtomic(dir/L"mixamo-mirrored.glb",humanoid(mirror));std::cout<<"fixtures written to "<<utf8(dir.wstring())<<"\n";return 0;}
+  Variant z;z.zUpCentimetres=true;writeAtomic(dir/L"mixamo-zup-cm.glb",humanoid(z));Variant mirror;mirror.mirrored=true;writeAtomic(dir/L"mixamo-mirrored.glb",humanoid(mirror));writeAtomic(dir/L"humanoid.dae",daeHumanoid());std::cout<<"fixtures written to "<<utf8(dir.wstring())<<"\n";return 0;}
  if(argc==3&&std::string(argv[1])=="--write-slots"){auto text=slotsJson().dump(1)+"\n";writeAtomic(argv[2],std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));return 0;}
  nameTests();conventionTests();ruleTests();converterTests();
  std::cout<<checks<<" checks passed\n";return 0;

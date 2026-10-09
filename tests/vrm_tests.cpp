@@ -141,7 +141,9 @@ std::vector<btTransform> rigid(size_t n,const btTransform& t){return std::vector
 float degrees(const btQuaternion& q){return q.getAngleShortestPath()*SIMD_DEGS_PER_RAD;}
 }
 
-int main(){try{
+int main(int argc,char** argv){try{
+ // A VRM 1.0 avatar for scripts/test-character-import.py (a VRM saved as .glb imports as before).
+ if(argc==3&&std::string(argv[1])=="--write-fixture"){writeAtomic(fs::path(argv[2]),synthetic(false));return 0;}
  // ---- conversion, both VRM versions ----
  std::shared_ptr<Model> latest;VrmConversion latestConversion;
  for(bool v0:{true,false}){

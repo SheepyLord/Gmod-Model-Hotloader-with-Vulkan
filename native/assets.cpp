@@ -192,8 +192,9 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
     auto directory=cache/L"assets"/wide(id);writeAtomic(directory/L"model.bin",raw);writeJson(directory/L"manifest.json",manifest);
     auto registryPath=cache/L"sources.local.json";Json registry=fs::exists(registryPath)?readJson(registryPath):Json::object();registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
-    model->id=id;report("Preparing Source materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy",.94f);prepareModelFit(*model,cache);
-    return {{"state","complete"},{"asset",id},{"info",manifest}};
+    model->id=id;report("Preparing Source materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy",.94f);auto fit=prepareModelFit(*model,cache);
+    // The fit stays outside the manifest (and so outside the asset's identity).
+    return {{"state","complete"},{"asset",id},{"info",manifest},{"fit",fit}};
 }
 Json importConverted(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion&& converted){return importAsset(source,cache,options,progress,&converted);}
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){

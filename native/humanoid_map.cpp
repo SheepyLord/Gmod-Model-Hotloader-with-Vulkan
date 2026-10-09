@@ -402,6 +402,7 @@ struct Guesser {
    std::vector<int> arm;for(int b:tree.path(spine4,hands[k]))if(!m[b].twist)arm.push_back(b);if(arm.size()<3)continue;
    int hand=-1;for(size_t q=arm.size();q-->0&&hand<0;){int b=arm[q];int chains=0;for(int c:tree.children[b])chains+=subtreeWeight[c]>0;if(chains>=3)hand=b;}
    if(hand<0)for(size_t q=arm.size();q-->0&&hand<0;)if(v.bones[arm[q]].weighted)hand=arm[q];
+   if(hand<0)continue;  // nothing on the way moves the mesh (weights on twist or helper bones)
    size_t h=std::find(arm.begin(),arm.end(),hand)-arm.begin();if(h<2)continue;
    size_t first=0;if(h+1>=4&&length3(v.bones[arm[0]].position,v.bones[arm[1]].position)<.12f*H){put(key("Clavicle").c_str(),arm[0],.7f);first=1;}
    int upper=arm[first];float reach=length3(v.bones[upper].position,v.bones[hand].position);int fore=-1;float best=0;
