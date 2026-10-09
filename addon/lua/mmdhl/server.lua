@@ -89,14 +89,16 @@ function mmdhl.Spawn(p,id,options,done,progress,flags)
     fitSequence=fitSequence+1 local started=SysTime() local timerName='mmdhl_fit_'..fitSequence
     -- A saved profile that no longer builds (an older module, a rejected shape) must not
     -- block the spawn: it is retried once without what the saved file added, and the player is told.
-    local function failed(reason)
+    -- fit: the native fitter's (English) reason; players get it inside a token that says
+    -- what it means. The physics editor (flags.replace) reads the raw reason itself.
+    local function failed(reason,fit)
      if not retried and (savedPhysics or savedStyles) then
       local retry=table.Copy(opts)
       if savedPhysics then retry.physicsOverrides={} retry.physicsEditor=nil end
       if savedStyles then for _,o in pairs(retry.collisionOverrides or {}) do if istable(o) then o.style=nil end end end
       notice(p,L('physics_editor.notice.saved_failed',{reason=reason})) attempt(retry,true) return
      end
-     finish(nil,reason)
+     finish(nil,fit and not (flags and flags.replace) and L('server.error.fit_failed',{reason=reason}) or reason)
     end
     timer.Create(timerName,.05,0,function()
      if not IsValid(p) then timer.Remove(timerName) finish(nil,L'server.error.player_disconnected') return end
@@ -104,7 +106,7 @@ function mmdhl.Spawn(p,id,options,done,progress,flags)
      local ready,err=native.RequestCarrierFit(id,util.TableToJSON(opts))
      if ready==false and SysTime()-started<30 then return end
      timer.Remove(timerName)
-     if not ready then failed(err or L'server.error.fit_timeout') return end
+     if not ready then if err then failed(err,true) else failed(L'server.error.fit_timeout') end return end
      local ok,e=xpcall(function() mmdhl.SpawnNative(p,id,opts,function(ent,reason)
       if IsValid(ent) then finish(ent) else failed(reason or L'server.error.native_ragdoll_failed') end
      end,flags) end,debug.traceback)

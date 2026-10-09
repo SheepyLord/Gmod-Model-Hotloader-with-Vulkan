@@ -173,7 +173,16 @@ local cleanup,cleanupError=mmdhl.Decode(native.DeleteAssets('[]'))
 if cleanupError then ErrorNoHalt('[Model Hotloader cleanup] '..cleanupError..'\n') end
 -- kind is nil for characters and 'static' for props; both share one worker.
 function library.StartImport(handle,err,kind)
- if not handle then library.status=tostring(err or L'library.import.start_failed') hook.Run('MMDHL.ImportChanged') return false end
+ if not handle then
+  library.status=tostring(err or L'library.import.start_failed') hook.Run('MMDHL.ImportChanged')
+  -- The importer did not start (missing, blocked, the installation check): say why in the
+  -- failure window. A busy importer only needs the status line.
+  if err and mmdhl.ShowImportFailure and not tostring(err):find('already running',1,true) then
+   local failure={state='failed',error=tostring(err),stageCode='start',kind=kind}
+   timer.Simple(0,function() mmdhl.ShowImportFailure(failure,kind=='static' and 'static' or 'library') end)
+  end
+  return false
+ end
  library.job=handle library.jobKind=kind library.progress=nil library.filename=nil library.status=L'library.import.opening_picker' hook.Run('MMDHL.ImportChanged') return true
 end
 -- The model picker is a separate window. A full-screen game covers it and a
@@ -210,8 +219,15 @@ function library.CancelImport()
  if library.job then native.CancelJob(library.job) library.job=nil library.status=L'library.import.cancelled' hook.Run('MMDHL.ImportChanged') end
 end
 -- Import feedback: explain failures and catch models imported on the wrong side.
+-- Natives before 2.3.0 send no error code: the first phrase the English message
+-- contains picks the hint, so specific phrases come before general ones.
 local function hints() return {
  {'vrm avatar',L'library.hint.vrm_avatar'},
+ {'spring bone',L'library.hint.vrm_spring'},
+ {'invalid/truncated pmx',L'library.hint.pmx'},
+ {'import worker missing',L'library.hint.worker_missing'},
+ {'cannot start import worker',L'library.hint.worker_start'},
+ {'cannot isolate worker',L'library.hint.worker_start'},
  {'belong in static props',mmdhl.boneMapper and mmdhl.boneMapper.Available('convert') and L'library.hint.character_format' or L'library.hint.static_file'},
  {'humanoid map',L'library.hint.vrm_humanoid'},
  {'external buffer',L'library.hint.vrm_external_buffer'},
@@ -293,18 +309,117 @@ function mmdhl.VrmSummary(info)
   L('library.vrm.spring_bones',{joints=springs,colliders=colliders})}
  return short,table.concat(long,'\n'),meta.allowRedistribution
 end
--- Structured worker errors (errorCode) choose their hint before the message text does.
+-- Structured worker errors (errorCode, 2.3.0 natives) choose their hint and their sentence
+-- before the message text does; a code of a known family with no entry gets the family's.
 local codeHints={['character.format']='library.hint.character_format',['character.blend']='library.hint.character_blend',['character.parse']='library.hint.character_parse',
  ['character.no_skeleton']='library.hint.character_no_skeleton',['character.too_few_bones']='library.hint.character_no_skeleton',['character.too_many_bones']='library.hint.character_too_complex',
  ['character.too_complex']='library.hint.character_too_complex',['character.bone_map']='library.hint.character_bone_map',['character.jiggle']='library.hint.character_jiggle',
- ['character.orientation']='library.hint.character_orientation',['character.needs_mapping']='library.hint.character_needs_mapping',['character.request_version']='library.hint.character_needs_mapping'}
+ ['character.orientation']='library.hint.character_orientation',['character.needs_mapping']='library.hint.character_needs_mapping',['character.request_version']='library.hint.character_needs_mapping',
+ ['pmx.truncated']='library.hint.pmx_truncated',['pmx.section_corrupt']='library.hint.pmx_damaged',['pmx.text']='library.hint.pmx_damaged',['pmx.version']='library.hint.pmx_version',
+ ['pmx.materials']='library.hint.pmx_materials',['pmx.number']='library.hint.pmx_number',['pmx.reference']='library.hint.pmx_reference',
+ ['format.archive']='library.hint.format_archive',['format.motion']='library.hint.format_motion',['format.image']='library.hint.format_image',['format.renamed']='library.hint.format_renamed',['format.unknown']='library.hint.format_unknown',
+ ['vrm.truncated']='library.hint.truncated',['vrm.humanoid']='library.hint.vrm_humanoid',['vrm.external']='library.hint.vrm_external_buffer',['spring.data']='library.hint.vrm_spring',
+ ['io.missing']='library.hint.io_missing',['io.locked']='library.hint.io_locked',['io.denied']='library.hint.io_denied',['io.device']='library.hint.io_device',['io.read']='library.hint.cannot_open',['io.empty']='library.hint.io_empty',
+ ['io.write']='library.hint.io_write',['io.filesystem']='library.hint.io_write',['io.disk_full']='library.hint.io_disk_full',['memory']='library.hint.memory',['worker.crash']='library.hint.worker_crash',['texture.derivative']='library.hint.texture_derivative'}
+local familyHints={pmx='library.hint.pmx',vrm='library.hint.vrm_damaged',spring='library.hint.vrm_spring',io='library.hint.cannot_open',format='library.hint.format_unknown',character='library.hint.character_parse'}
 -- i18n-keys: library.hint.character_format library.hint.character_blend library.hint.character_parse library.hint.character_no_skeleton library.hint.character_too_complex
 -- i18n-keys: library.hint.character_bone_map library.hint.character_jiggle library.hint.character_orientation library.hint.character_needs_mapping
-function mmdhl.ImportHint(err,code)
- if isstring(code) and codeHints[code] then return L(codeHints[code]) end
+-- i18n-keys: library.hint.pmx_truncated library.hint.pmx_damaged library.hint.pmx_version library.hint.pmx_materials library.hint.pmx_number library.hint.pmx_reference library.hint.pmx
+-- i18n-keys: library.hint.format_archive library.hint.format_motion library.hint.format_image library.hint.format_renamed library.hint.format_unknown
+-- i18n-keys: library.hint.truncated library.hint.vrm_humanoid library.hint.vrm_external_buffer library.hint.vrm_spring library.hint.vrm_damaged
+-- i18n-keys: library.hint.io_missing library.hint.io_locked library.hint.io_denied library.hint.io_device library.hint.cannot_open library.hint.io_empty library.hint.io_write library.hint.io_disk_full
+-- i18n-keys: library.hint.memory library.hint.worker_crash library.hint.texture_derivative
+local function codeEntry(map,families,code)
+ if not isstring(code) then return nil end
+ return map[code] or (families and families[code:match('^([%w_]+)%.') or ''])
+end
+-- details: the error's errorDetails; their extension fills the renamed-file hint.
+function mmdhl.ImportHint(err,code,details)
+ local key=codeEntry(codeHints,familyHints,code)
+ if key then return L(key,{extension=istable(details) and isstring(details.extension) and details.extension or '.fbx'}) end
  local lower=tostring(err or ''):lower()
  for _,hint in ipairs(hints()) do if lower:find(hint[1],1,true) then return hint[2] end end
  return L'library.hint.default'
+end
+-- The failure in one sentence in the player's language; the importer's own (English)
+-- sentence, which names the exact element, stays in the details.
+local codeCauses={['pmx.truncated']='library.cause.truncated',['vrm.truncated']='library.cause.truncated',['pmx.section_corrupt']='library.cause.pmx_damaged',['pmx.text']='library.cause.pmx_text',
+ ['pmx.version']='library.cause.pmx_version',['pmx.materials']='library.cause.pmx_materials',['pmx.number']='library.cause.pmx_number',['pmx.reference']='library.cause.pmx_reference',
+ ['format.archive']='library.cause.format_archive',['format.motion']='library.cause.format_motion',['format.image']='library.cause.format_image',['format.renamed']='library.cause.format_renamed',['format.unknown']='library.cause.format_unknown',
+ ['vrm.json']='library.cause.vrm_damaged',['vrm.data']='library.cause.vrm_damaged',['vrm.container']='library.cause.vrm_damaged',['vrm.image']='library.cause.vrm_damaged',['vrm.no_skeleton']='library.cause.vrm_damaged',
+ ['vrm.no_geometry']='library.cause.vrm_damaged',['vrm.error']='library.cause.vrm_damaged',['vrm.humanoid']='library.cause.vrm_humanoid',['vrm.external']='library.cause.vrm_external',['spring.data']='library.cause.spring',
+ ['io.missing']='library.cause.io_missing',['io.locked']='library.cause.io_locked',['io.denied']='library.cause.io_denied',['io.device']='library.cause.io_device',['io.read']='library.cause.io_read',['io.empty']='library.cause.io_empty',
+ ['io.write']='library.cause.io_write',['io.filesystem']='library.cause.io_write',['io.disk_full']='library.cause.io_disk_full',['memory']='library.cause.memory',['worker.crash']='library.cause.worker_crash',['texture.derivative']='library.cause.texture'}
+-- i18n-keys: library.cause.truncated library.cause.pmx_damaged library.cause.pmx_text library.cause.pmx_version library.cause.pmx_materials library.cause.pmx_number library.cause.pmx_reference
+-- i18n-keys: library.cause.format_archive library.cause.format_motion library.cause.format_image library.cause.format_renamed library.cause.format_unknown
+-- i18n-keys: library.cause.vrm_damaged library.cause.vrm_humanoid library.cause.vrm_external library.cause.spring
+-- i18n-keys: library.cause.io_missing library.cause.io_locked library.cause.io_denied library.cause.io_device library.cause.io_read library.cause.io_empty library.cause.io_write library.cause.io_disk_full
+-- i18n-keys: library.cause.memory library.cause.worker_crash library.cause.texture
+function mmdhl.ImportCause(status)
+ local key=codeEntry(codeCauses,nil,status.errorCode)
+ if not key then return tostring(status.error or L'library.import.unknown_error') end
+ local d=istable(status.errorDetails) and status.errorDetails or {}
+ return L(key,{bone=tostring(d.bone or '?'),code=tostring(d.exitCodeHex or status.exitCode or '?')})
+end
+-- The step, for "While {step}: …": by stageCode in the player's language, else the
+-- importer's own name for it (older natives, static props).
+local stages={read=true,parse=true,convert_vrm=true,convert_character=true,probe=true,textures=true,cache=true,materials=true,fit=true,start=true,worker=true}
+-- i18n-keys: library.stage.read library.stage.parse library.stage.convert_vrm library.stage.convert_character library.stage.probe library.stage.textures
+-- i18n-keys: library.stage.cache library.stage.materials library.stage.fit library.stage.start library.stage.worker
+function mmdhl.ImportStage(status)
+ if stages[status.stageCode] then return L('library.stage.'..status.stageCode) end
+ return tostring(status.stage or L'library.failure.importing'):lower()
+end
+-- Where it went wrong: the places the importer names (bone 12 “左足” › …), the value, the
+-- byte where reading stopped; else its English context, else its last progress line.
+local kinds={vertex=true,triangle=true,material=true,texture=true,bone=true,ik=true,morph=true,display_frame=true,rigid_body=true,joint=true,soft_body=true,header=true,text=true,
+ mesh=true,primitive=true,accessor=true,buffer_view=true,buffer=true,node=true,skin=true,image=true,humanoid_bone=true,spring=true,spring_joint=true,collider=true,collider_group=true}
+-- i18n-keys: library.element.vertex library.element.triangle library.element.material library.element.texture library.element.bone library.element.ik library.element.morph
+-- i18n-keys: library.element.display_frame library.element.rigid_body library.element.joint library.element.soft_body library.element.header library.element.text
+-- i18n-keys: library.element.mesh library.element.primitive library.element.accessor library.element.buffer_view library.element.buffer library.element.node library.element.skin
+-- i18n-keys: library.element.image library.element.humanoid_bone library.element.spring library.element.spring_joint library.element.collider library.element.collider_group
+local function placeText(p)
+ local kind=tostring(p.kind or '') local noun=kinds[kind] and L('library.element.'..kind) or kind:gsub('_',' ')
+ local name=isstring(p.name) and p.name~='' and p.name local index=tonumber(p.index)
+ if index and name then return L('library.where.item_named',{kind=noun,index=index,name=name}) end
+ if index then return L('library.where.item',{kind=noun,index=index}) end
+ if name then return L('library.where.named',{kind=noun,name=name}) end
+ return noun
+end
+function mmdhl.ImportWhere(status)
+ local d=istable(status.errorDetails) and status.errorDetails or {} local parts={}
+ if istable(d.where) and #d.where>0 then for _,p in ipairs(d.where) do if istable(p) then parts[#parts+1]=placeText(p) end end
+ elseif istable(status.context) then for _,c in ipairs(status.context) do parts[#parts+1]=tostring(c) end end
+ if istable(d.after) then parts[#parts+1]=L('library.where.after',{place=placeText(d.after)}) end
+ if isstring(d.field) and d.field~='' then parts[#parts+1]=d.value~=nil and L('library.where.value',{field=d.field,value=tostring(d.value)}) or d.field end
+ if tonumber(d.offset) and tonumber(d.size) then parts[#parts+1]=L('library.where.offset',{offset=string.Comma(tonumber(d.offset)),size=string.Comma(tonumber(d.size))}) end
+ if isstring(d.path) and d.path~='' then parts[#parts+1]=d.path end
+ if isstring(status.detail) and status.detail~='' and (#parts==0 or status.errorCode=='worker.crash' or status.errorCode=='memory') then parts[#parts+1]=L('library.where.progress',{detail=status.detail}) end
+ if #parts==0 then return nil end
+ return table.concat(parts,' › ')
+end
+-- Everything a problem report needs, as the Copy details button copies it.
+-- i18n-keys: library.failure.detail_code library.failure.detail_context library.failure.detail_data library.failure.detail_file library.failure.detail_source
+-- i18n-keys: library.failure.detail_step library.failure.detail_progress library.failure.detail_exit library.failure.detail_build library.failure.detail_elapsed library.failure.detail_time
+function mmdhl.ImportFailureDetails(status,kind)
+ local unknown=L'library.failure.unknown'
+ local file=tostring(status.filename or (status.source and string.GetFileFromFilename(status.source)) or L'library.failure.selected_file')
+ local lines={L('library.failure.detail_error',{error=tostring(status.error or unknown)})}
+ local function add(key,vars) lines[#lines+1]=L(key,vars) end
+ if isstring(status.errorCode) and status.errorCode~='' then add('library.failure.detail_code',{code=status.errorCode}) end
+ if istable(status.context) and #status.context>0 then local c={} for _,v in ipairs(status.context) do c[#c+1]=tostring(v) end add('library.failure.detail_context',{context=table.concat(c,' › ')}) end
+ if istable(status.errorDetails) and next(status.errorDetails)~=nil then add('library.failure.detail_data',{data=util.TableToJSON(status.errorDetails)}) end
+ add('library.failure.detail_file',{file=file}) add('library.failure.detail_source',{source=tostring(status.source or unknown)})
+ lines[#lines+1]=kind=='static' and L'library.failure.detail_type_static' or L'library.failure.detail_type_character'
+ add('library.failure.detail_step',{step=tostring(status.stage or unknown)..(isstring(status.stageCode) and ' ['..status.stageCode..']' or '')})
+ if isstring(status.detail) and status.detail~='' then add('library.failure.detail_progress',{detail=status.detail}) end
+ if status.exitCode~=nil then local d=istable(status.errorDetails) and status.errorDetails or {}
+  add('library.failure.detail_exit',{code=tostring(d.exitCodeHex or status.exitCode),cause=tostring(d.cause or status.exceptionType or unknown)}) end
+ if istable(status.worker) then add('library.failure.detail_build',{release=tostring(status.worker.release or unknown),build=tostring(status.worker.build or unknown)}) end
+ if tonumber(status.elapsed_ms) then add('library.failure.detail_elapsed',{seconds=string.format('%.1f',tonumber(status.elapsed_ms)/1000)}) end
+ add('library.failure.detail_time',{time=os.date('%Y-%m-%d %H:%M:%S')})
+ if isstring(status.log) and status.log~='' then lines[#lines+1]=L'library.failure.detail_log' lines[#lines+1]=status.log end
+ return table.concat(lines,'\n')
 end
 -- A .blend holds a whole scene: list its meshes first, then import the chosen ones.
 local function isBlend(source) return tostring(source or ''):lower():sub(-6)=='.blend' end
@@ -324,18 +439,29 @@ local function startImport(kind,source)
  if BM and BM.Convertible(source) then return BM.Probe(source) end
  return library.StartImport(native.BeginImport(source,'{}'))
 end
+-- Wrapped text height in a label this wide: each line's measured width wraps, plus breaks.
+local function textHeight(text,font,width)
+ surface.SetFont(font) local total=0
+ for line in (tostring(text)..'\n'):gmatch('([^\n]*)\n') do local w,h=surface.GetTextSize(line=='' and ' ' or line) total=total+h*math.max(1,math.ceil(w/math.max(1,width))) end
+ return total
+end
 function mmdhl.ShowImportFailure(status,kind)
  local UI=mmdhl.UI if not UI then Derma_Message(tostring(status.error),L'library.failure.title_short',L'common.close') return end
  local s,f=UI.metrics()
  local file=tostring(status.filename or (status.source and string.GetFileFromFilename(status.source)) or L'library.failure.selected_file')
- local hint=status.hint or mmdhl.ImportHint(status.error,status.errorCode)
- local unknown=L'library.failure.unknown'
- local details=table.concat({L('library.failure.detail_file',{file=file}),L('library.failure.detail_source',{source=tostring(status.source or unknown)}),kind=='static' and L'library.failure.detail_type_static' or L'library.failure.detail_type_character',L('library.failure.detail_step',{step=tostring(status.stage or unknown)}),L('library.failure.detail_error',{error=tostring(status.error or unknown)}),L('library.failure.detail_time',{time=os.date('%Y-%m-%d %H:%M:%S')})},'\n')
- local frame=vgui.Create('DFrame') frame:SetTitle('') frame:SetSize(s(640),s(380)) frame:Center() frame:MakePopup() frame:DockPadding(s(16),s(16),s(16),s(14)) frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
+ local hint=status.hint or mmdhl.ImportHint(status.error,status.errorCode,status.errorDetails)
+ local details=mmdhl.ImportFailureDetails(status,kind)
+ local where=mmdhl.ImportWhere(status)
+ -- What failed (and while doing what), where in the file, and what to try.
+ local lines={{L('library.failure.title',{file=file}),f.Title,Color(166,38,38)},{L('library.failure.while',{step=mmdhl.ImportStage(status),error=mmdhl.ImportCause(status)}),f.Body,UI.colors.ink}}
+ if where then lines[#lines+1]={L('library.failure.where',{where=where}),f.Body,UI.colors.ink} end
+ lines[#lines+1]={L('library.failure.what_to_try',{hint=hint}),f.Body,UI.colors.muted}
+ -- The window grows with its text (long names, longer translations) and keeps room for the details.
+ local wide=math.min(ScrW()-s(40),s(680)) local tall=s(16)+s(10)+s(34)+s(14)+s(150)
+ for _,line in ipairs(lines) do line.tall=textHeight(line[1],line[2],wide-s(36)) tall=tall+line.tall+s(6) end
+ local frame=vgui.Create('DFrame') frame:SetTitle('') frame:SetSize(wide,math.Clamp(tall,s(380),math.max(s(380),ScrH()-s(60)))) frame:Center() frame:MakePopup() frame:DockPadding(s(16),s(16),s(16),s(14)) frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
  frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Color(246,248,251)) draw.RoundedBoxEx(6,0,0,w,s(6),Color(196,62,62),true,true,false,false) end
- local title=UI.label(frame,L('library.failure.title',{file=file}),f.Title,s(34)) title:Dock(TOP) title:SetTextColor(Color(166,38,38))
- local stage=UI.label(frame,L('library.failure.while',{step=tostring(status.stage or L'library.failure.importing'):lower(),error=tostring(status.error or L'library.import.unknown_error')}),f.Body,s(48)) stage:Dock(TOP) stage:SetWrap(true) stage:SetAutoStretchVertical(true)
- local try=UI.label(frame,L('library.failure.what_to_try',{hint=hint}),f.Body,s(48)) try:Dock(TOP) try:SetWrap(true) try:SetAutoStretchVertical(true) try:SetTextColor(UI.colors.muted)
+ for _,line in ipairs(lines) do local label=UI.label(frame,line[1],line[2],line.tall) label:Dock(TOP) label:SetWrap(true) label:SetAutoStretchVertical(true) label:SetTextColor(line[3]) label:DockMargin(0,0,0,s(6)) end
  local buttons=frame:Add('DPanel') buttons:Dock(BOTTOM) buttons:SetTall(s(34)) buttons:SetPaintBackground(false) buttons:DockMargin(0,s(10),0,0)
  local close=UI.button(buttons,L'common.close',function() frame:Close() end,s(34),f.Body) close:Dock(RIGHT) close:SetWide(s(100))
  local copy=UI.button(buttons,L'library.failure.copy_details',function() SetClipboardText(details) notification.AddLegacy(L'library.failure.copied',NOTIFY_GENERIC,4) end,s(34),f.Body) copy:Dock(RIGHT) copy:SetWide(s(130)) copy:DockMargin(0,0,s(8),0)
@@ -357,6 +483,47 @@ function mmdhl.ShowImportFailure(status,kind)
   end
  end
  local text=frame:Add('DTextEntry') text:Dock(FILL) text:SetMultiline(true) text:SetEditable(false) text:SetFont(f.Small) text:SetText(details) text:DockMargin(0,s(6),0,0)
+end
+-- After a character import whose ragdoll fit failed (status.fit, 2.3.0 natives). The bone
+-- window's rescue prompt explains missing parts when it can assign them; otherwise this
+-- window lists them (or says why the fit failed), so the player learns it before spawning.
+function mmdhl.ExplainFit(status)
+ local fit=istable(status) and status.fit
+ if not istable(fit) or fit.ok~=false or not isstring(status.asset) then return false end
+ -- A model that does not look like a character gets the static-prop question instead.
+ local found,bones=mmdhl.HumanoidLandmarks(status.info or {}) if found<6 or bones<15 then return false end
+ local BM=mmdhl.boneMapper
+ if fit.errorCode=='fit.landmarks' and BM and BM.AfterImport and BM.Available and BM.Available('fit') and isfunction(mmdhl.OpenBoneMapper) then return false end
+ mmdhl.ShowFitFailure(status) return true
+end
+function mmdhl.ShowFitFailure(status)
+ local UI=mmdhl.UI if not UI then return end local s,f=UI.metrics()
+ local fit=status.fit local d=istable(fit.errorDetails) and fit.errorDetails or {}
+ local missing=istable(fit.missing) and #fit.missing>0 and fit.missing or istable(d.missing) and d.missing or {}
+ local name=tostring((status.info or {}).name or status.filename or L'library.prompt.this_model')
+ local BM=mmdhl.boneMapper local parts={}
+ for i,key in ipairs(missing) do parts[i]=BM and BM.PartLabel and BM.PartLabel(key) or tostring(key):gsub('^ValveBiped%.Bip01_','') end
+ -- Assigning bones fixes missing parts only, and needs the bone window (feature-detected).
+ local assign=#missing>0 and isfunction(mmdhl.OpenBoneMapper)
+ local lines={{L'library.fit_failed.title',f.Title,UI.colors.ink},
+  {#missing>0 and L('library.fit_failed.missing',{name=name,parts=table.concat(parts,', ')}) or L('library.fit_failed.reason',{name=name,reason=tostring(fit.error or L'library.import.unknown_error')}),f.Body,UI.colors.ink},
+  {assign and L'library.fit_failed.assign_hint' or #missing>0 and L'library.fit_failed.rename_hint' or L'library.fit_failed.other_hint',f.Body,UI.colors.muted}}
+ local wide=math.min(ScrW()-s(40),s(600)) local tall=s(16)+s(10)+s(36)+s(14)
+ for _,line in ipairs(lines) do line.tall=textHeight(line[1],line[2],wide-s(36)) tall=tall+line.tall+s(8) end
+ if IsValid(library.fitPrompt) then library.fitPrompt:Remove() end
+ local frame=vgui.Create('DFrame') library.fitPrompt=frame
+ frame:SetTitle('') frame:SetSize(wide,math.Clamp(tall,s(220),math.max(s(220),ScrH()-s(60)))) frame:Center() frame:MakePopup() frame:DockPadding(s(16),s(16),s(16),s(14))
+ frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
+ frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Color(246,248,251)) draw.RoundedBoxEx(6,0,0,w,s(6),Color(191,120,22),true,true,false,false) end
+ local buttons=frame:Add('DPanel') buttons:Dock(BOTTOM) buttons:SetTall(s(36)) buttons:SetPaintBackground(false) buttons:DockMargin(0,s(10),0,0)
+ local keep=UI.button(buttons,L'library.fit_failed.keep',function() frame:Close() end,s(36),f.Body) keep:Dock(RIGHT) surface.SetFont(f.Body) keep:SetWide(math.max(s(130),surface.GetTextSize(L'library.fit_failed.keep')+s(28)))
+ if assign then
+  local open=UI.button(buttons,L'library.fit_failed.assign',function() frame:Close() mmdhl.OpenBoneMapper({asset=status.asset,source=status.source,fit=fit}) end,s(36),f.Strong,true)
+  open:Dock(RIGHT) surface.SetFont(f.Strong) open:SetWide(math.max(s(170),surface.GetTextSize(L'library.fit_failed.assign')+s(28))) open:DockMargin(0,0,s(8),0)
+ end
+ for _,line in ipairs(lines) do local label=UI.label(frame,line[1],line[2],line.tall) label:Dock(TOP) label:SetWrap(true) label:SetAutoStretchVertical(true) label:SetTextColor(line[3]) label:DockMargin(0,0,0,s(8)) end
+ UI.ownScale(frame)
+ return frame
 end
 -- Object picker for .blend files with several meshes. The ticked meshes become
 -- one prop and keep their placement from Blender.
@@ -467,7 +634,13 @@ mmdhl.PromptCharacterInstead=promptCharacterInstead
 hook.Add('Think','MMDHL.LibraryImport',function()
  if not library.job or (library.nextPoll or 0)>RealTime() then return end library.nextPoll=RealTime()+.1
  local status,err=mmdhl.Decode(native.PollJob(library.job))
- if not status then library.job=nil library.status=tostring(err) pickerNotice(false) hook.Run('MMDHL.ImportChanged') return end
+ if not status then
+  local kind=library.jobKind=='static' and 'static' or 'library'
+  library.job=nil library.status=tostring(err) pickerNotice(false) hook.Run('MMDHL.ImportChanged')
+  -- The module lost the job or cannot read its result: say so like any failure.
+  local failure={state='failed',error=tostring(err or L'library.import.unknown_error'),stageCode='worker',filename=library.filename}
+  timer.Simple(0,function() mmdhl.ShowImportFailure(failure,kind) end) return
+ end
  if mmdhl.boneMapper and mmdhl.boneMapper.OnJobStatus(status) then hook.Run('MMDHL.ImportChanged') return end
  if status.state~='running' or status.stage~='Select model' then pickerNotice(false) end
  library.status=status.state=='failed' and L('library.import.failed',{error=tostring(status.error or L'library.import.unknown_error')}) or status.stage or status.error or status.state
@@ -524,7 +697,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   if #warnings>0 then library.status=L('library.import.with_warnings',{message=library.status,count=#warnings}) end
   notification.AddLegacy(library.status,#warnings>0 and NOTIFY_HINT or NOTIFY_GENERIC,8)
   hook.Run('MMDHL.Imported',status.asset)
-  timer.Simple(0,function() promptStaticInstead(status) if mmdhl.boneMapper and mmdhl.boneMapper.AfterImport then mmdhl.boneMapper.AfterImport(status) end end)
+  timer.Simple(0,function() promptStaticInstead(status) if mmdhl.boneMapper and mmdhl.boneMapper.AfterImport then mmdhl.boneMapper.AfterImport(status) end if mmdhl.ExplainFit then mmdhl.ExplainFit(status) end end)
  elseif status.state=='failed' or status.state=='cancelled' then
   library.job=nil library.reimportOf=nil notification.AddLegacy(library.status,status.state=='failed' and NOTIFY_ERROR or NOTIFY_HINT,8)
   local kind=(status.kind=='static' or library.jobKind=='static') and 'static' or 'library'
