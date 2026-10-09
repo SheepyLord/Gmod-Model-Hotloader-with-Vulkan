@@ -27,7 +27,8 @@ Json requireCanonicalPhysics(const Json& raw);
 // options with physicsOverrides canonicalised (throws) and erased when empty; dropped for role "arms".
 Json normalizeCarrierOptions(Json options);
 // The fitted-rig cache key of RequestCarrierFit/PrepareCarrier/PreviewCarrierFit: the
-// options a fit depends on. Without physicsOverrides it is the string 2.2 used.
+// options a fit depends on (boneMap pins too). Without physicsOverrides and boneMap
+// it is the string 2.2 used.
 std::string carrierFitKey(const std::string& id,const Json& options);
 bool validSurfaceprop(std::string_view);
 // A collision override's shape style: "fitted" (absent), "box" or "capsule". Throws otherwise.

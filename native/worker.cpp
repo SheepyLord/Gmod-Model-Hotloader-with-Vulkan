@@ -167,6 +167,8 @@ int wmain(int argc,wchar_t** argv){
             writeAtomic(out/L"model.pmx",converted.pmx);for(auto& [path,bytes]:converted.textures)writeAtomic(out/fs::path(wide(path)),bytes);
             auto info=converted.conversion;info["warnings"]=converted.warnings;info["textures"]=converted.textures.size();writeJson(out/L"conversion.json",info);std::cout<<converted.pmx.size()<<" bytes"<<std::endl;return 0;}
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--inspect-bone-map"){auto m=loadCharacter(argv[2]);std::cout<<inspectBoneMap(*m,argc==4?readJson(argv[3]):Json{{"include",{"skeleton"}}}).dump()<<std::endl;return 0;}
+        // The fitter's bone choice (native.GetBoneMapProposal), optionally with {"boneMap":{...}} pins.
+        if((argc==3||argc==4)&&std::wstring(argv[1])==L"--bone-map-proposal"){auto m=loadCharacter(argv[2]);std::cout<<boneMapProposal(*m,argc==4?readJson(argv[3]):Json::object()).dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&(std::wstring(argv[1])==L"--fit"||std::wstring(argv[1])==L"--fit-raw")){auto m=loadCharacter(argv[2]);std::cout<<fitRig(*m,argc==4?Json::parse(utf8(argv[3])):Json{{"calibrated",std::wstring(argv[1])!=L"--fit-raw"}}).manifest.dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--pick"){
             fs::path dir=argv[2];status=dir/L"status.json";bool prop=argc==4&&std::wstring(argv[3])==L"static";

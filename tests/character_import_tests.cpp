@@ -486,14 +486,18 @@ void converterTests(){
   check(fitRig(*mm,Json::object()).bodies.size()==18,"dae: the converted character fits the 18-body carrier");}
  // ---- the fitter ----
  {auto rig=fitRig(*m,Json::object());check(rig.bodies.size()==18,"fit: the converted character fits the 18-body carrier");
-  // Until the fitter takes the conversion map as its pins, the MMD names carry it.
+  // Without its map (an older binary) the MMD names carry the assignment; with it the map is the fitter's base.
   std::vector<std::string> differ;for(auto& b:rig.bones){auto it=c.conversion["boneMap"].find(b.name);if(it!=c.conversion["boneMap"].end()&&it->get<int>()>=0&&b.mmd!=it->get<int>())differ.push_back(b.name);}
   for(auto& d:differ)std::cout<<"  fitter differs: "<<d<<"\n";
-  check(differ.empty(),"fit: the fitter finds every assigned part by the MMD name the converter wrote");}
+  check(differ.empty(),"fit: the fitter finds every assigned part by the MMD name the converter wrote");
+  for(auto& [key,value]:c.conversion["boneMap"].items())m->conversionBoneMap[key]=value.get<int>();
+  auto mapped=fitRig(*m,Json::object());differ.clear();bool provenance=true;
+  for(size_t i=0;i<mapped.bones.size();i++){auto& b=mapped.bones[i];auto it=c.conversion["boneMap"].find(b.name);if(it==c.conversion["boneMap"].end()||it->get<int>()<0)continue;if(b.mmd!=it->get<int>())differ.push_back(b.name);provenance&=mapped.manifest["bones"][i]["provenance"]=="conversion";}
+  check(differ.empty()&&provenance&&mapped.bodies.size()==18,"fit: the conversion map is the fitter's base, and its bones say so");}
  {auto renamed=parse(c.pmx);for(auto name:{"左ひざ","右ひじ"}){auto& bone=renamed->bones[pmxBone(*renamed,name)];bone.name=bone.english="renamed";}
   bool listed=false;try{fitRig(*renamed,Json::object());}catch(const ImportError& e){auto missing=e.details.value("missing",Json::array());
-   listed=e.code=="fit.landmarks"&&missing==Json::array({"ValveBiped.Bip01_R_Forearm","ValveBiped.Bip01_L_Calf"})&&std::string(e.what())=="No bone found for: right forearm, left lower leg";}
-  check(listed,"fit: every missing landmark is listed, in words and by its carrier name");}
+   listed=e.code=="fit.landmarks"&&missing==Json::array({"ValveBiped.Bip01_R_Forearm","ValveBiped.Bip01_L_Calf"})&&std::string(e.what())=="No bone found for: right forearm (searched 右ひじ, 右肘, elbow_R, right elbow), left lower leg (searched 左ひざ, 左膝, knee_L, left knee)";}
+  check(listed,"fit: every missing landmark is listed, in words with the names searched and by its carrier name");}
  // ---- a manual assignment overrides the automatic one ----
  {auto manual=request;manual["boneMap"]["ValveBiped.Bip01_L_Forearm"]="mixamorig:LeftForeArm_Twist";
   fails([&]{convertCharacter(mixamo,manual,{});},"character.bone_map","order","errors: a hand that is not below the forearm chosen for it is refused");

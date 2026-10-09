@@ -252,8 +252,10 @@ The editor never refuses to open:
   collision shapes can be changed; the rest of the editor is read-only and the
   server owner is asked to update. Box and capsule styles then apply as the
   fitted shape in the same box.
-* Ragdolls and dupes made without physics edits keep exactly the carrier they
-  had in 2.2. A dupe whose physics cannot be built is restored without them.
+* Ragdolls and dupes made without physics edits get exactly the carrier of a
+  model nobody edited. (2.3.0 fits every model once more for its chest, see
+  [TORSO_FIT.md](TORSO_FIT.md); the physics editor itself changes nothing
+  there.) A dupe whose physics cannot be built is restored without them.
 
 ## Limitations
 

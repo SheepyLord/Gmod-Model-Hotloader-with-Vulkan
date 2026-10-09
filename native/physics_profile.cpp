@@ -172,7 +172,7 @@ Json normalizeCarrierOptions(Json options){
 }
 std::string carrierFitKey(const std::string& id,const Json& options){
  Json geometry;
- for(auto key:{"scaleMultiplier","scale","height","mass","collisionOverrides","collisionOverrideScale","excludedMaterials","role","gender","animationSource","animationReference","armsParts","physicsOverrides"})if(options.contains(key))geometry[key]=options[key];
+ for(auto key:{"scaleMultiplier","scale","height","mass","collisionOverrides","collisionOverrideScale","excludedMaterials","role","gender","animationSource","animationReference","armsParts","physicsOverrides","boneMap"})if(options.contains(key))geometry[key]=options[key];
  return id+geometry.dump();
 }
 void applyPhysics(Rig& r,const Json& c){

@@ -117,6 +117,19 @@ local below=BM.Below
 local function auto(slot,value,confidence,method)
  return {bone=value or -1,confidence=confidence or 0,method=method or ''}
 end
+-- A slot's aliases from the fitter (GetBoneMapProposal), without the slot's own bone: a
+-- pinned Spine2/Spine4 outside its band comes back as an alias of a synthesized pivot,
+-- and the window shows it as the slot's bone, never as moving with itself.
+function BM.SlotAliases(aliases,value)
+ local list={} for _,a in ipairs(istable(aliases) and aliases or {}) do if a~=value then list[#list+1]=a end end
+ return list
+end
+-- A fitter issue (GetBoneMapProposal) as a window issue: band, range and chest have
+-- their own texts; everything else shows the native sentence.
+function BM.NativeIssue(i)
+ local code=(i.code=='band' or i.code=='range' or i.code=='chest') and i.code or 'native'
+ return {code=code,severity=i.severity or 'warning',slot=i.slot or '',args={message=tostring(i.text or '')}}
+end
 local function originFor(g)
  if g.bone<0 then return 'created' end
  if (g.confidence or 0)<.85 then return 'guess' end
@@ -172,13 +185,17 @@ function BM.NewState(mode,data)
    if value<0 and slot.required and (tonumber(suggestion.bone) or -1)>=0 and (tonumber(suggestion.confidence) or 0)>=.5 then g.suggested=suggestion.bone g.suggestedConfidence=suggestion.confidence end
    s.auto[slot.key]=g
    local c=now[slot.key] or b local cv=tonumber(c.mmd) or -1
+   -- A saved torso pin outside its band moves with a synthesized pivot (the fitter lists it
+   -- as an alias): it stays the player's choice, so saving again keeps it.
+   local pin,aliases=tonumber(s.savedPins[slot.key]),c.aliases or {}
+   for _,a in ipairs(aliases) do if pin and pin>=0 and a==pin then cv=pin end end
    local origin=(b.provenance=='conversion' and 'conversion') or 'auto'
    if s.savedPins[slot.key]~=nil then origin='fit_saved' end
    if cv<0 and slot.required then
     if g.suggested>=0 then s.slots[slot.key]={bone=g.suggested,origin='guess',confidence=g.suggestedConfidence or .5}
     else s.slots[slot.key]={bone=-1,origin=origin,confidence=0} end
    else s.slots[slot.key]={bone=cv,origin=cv<0 and (s.savedPins[slot.key]~=nil and 'fit_saved' or 'created') or origin,confidence=1} end
-   s.aliases[slot.key]=c.aliases or {}
+   s.aliases[slot.key]=BM.SlotAliases(aliases,cv)
   end end
   local used={} for _,v in pairs(s.slots) do if v.bone>=0 then used[v.bone]=(used[v.bone] or 0)+1 end end
   -- A suggestion never takes a bone another part already uses.

@@ -233,6 +233,13 @@ target_compile_options(mmdhl_actor_tests PRIVATE /Zi /utf-8)
 target_link_options(mmdhl_actor_tests PRIVATE /DEBUG:FULL)
 set_target_properties(mmdhl_actor_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME animated_carriers_and_sharing COMMAND mmdhl_actor_tests "${CMAKE_SOURCE_DIR}/tests/fixtures/native-cloth21.pmx")
+# The carrier's torso from the PMX hierarchy (issue #9) and the fitter's bone pins.
+add_executable(mmdhl_torso_tests tests/torso_tests.cpp)
+target_link_libraries(mmdhl_torso_tests PRIVATE mmd_runtime)
+target_compile_options(mmdhl_torso_tests PRIVATE /utf-8)
+set_target_properties(mmdhl_torso_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_test(NAME torso COMMAND mmdhl_torso_tests)
+set_tests_properties(torso PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # Every build records its binaries in the Workshop policy. Development trees can point

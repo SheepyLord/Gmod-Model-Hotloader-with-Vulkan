@@ -70,10 +70,10 @@ A rigged humanoid imported in **Static Props** offers **Import as character** (t
 
 - **Older native files with this Lua**: no FBX in the picker, no bone window, no menu entries. An FBX, glTF or DAE picked through "All files" fails with a hint to update the native files to 2.3.0 and the update reminder. The rescue prompt says to update the native files.
 - **This native with older Lua**: the picker lists FBX/glTF/DAE; the old Lua sends no assignment, so the worker maps automatically and imports when every required part is certain, otherwise fails with "This model needs its bones assigned. Update Model Hotloader's addon files to get the bone window."
-- **Fit mode** needs the fitter pins (`native.GetBoneMapProposal` and the `boneMap` fit option, the torso feature of 2.3.0) and `native.InspectBoneMap`. Without them, conversion works and fit mode is hidden.
+- **Fit mode** needs the fitter pins (`native.GetBoneMapProposal` and the `boneMap` fit option, [the carrier's torso and bone pins](TORSO_FIT.md)) and `native.InspectBoneMap`. Without them, conversion works and fit mode is hidden.
 - Existing PMX, PMD and VRM assets keep their ids; the VRM writer is byte-identical (golden test).
 - A converted asset loaded by an older binary still loads (manifest version 2); it fits by its MMD names and loses only its springs and explicit torso choices.
-- Converted characters fit by the MMD names the converter writes; `character_import` checks that the fitter finds every assigned part by them. `Model::conversionBoneMap` (filled at import and load) is for the fitter pins: once `fitRig` takes `options.boneMap`, it seeds its effective map from `conversionBoneMap` and lets the pins override it (spec §10.6-1). Until then, the only difference is a skipped segment: with a middle spine but no chest, the fitter's chest is the middle-spine bone (its `上半身2` alias), as for any MMD model.
+- `fitRig` starts from the converter's assignment (`Model::conversionBoneMap`, filled at import and load; its bones say `provenance: "conversion"`) and lets the pins of `options.boneMap` override it (spec §10.6-1). A middle spine without a chest is the chest, as its `上半身2` name says for any MMD model. A binary without the map fits by the MMD names the converter writes, which find the same bones; `character_import` checks both.
 
 ## Technical reference
 
@@ -99,7 +99,7 @@ A rigged humanoid imported in **Static Props** offers **Import as character** (t
 - `{"kind":"character","requestVersion":1,"boneMap":{"<ValveBiped key>":"<bone name or empty>"},"eyes":{"L":…,"R":…},"jiggle":{"version":1,"groups":[{kind, enabled, swing, custom, collide, values:{stiffness, dragForce, gravityPower, hitRadius}, chains:[{root, enabled}]}]}}`: converts and imports. The request is stored as the asset's options in `sources.local.json`, so Reload repeats it. `{}` (older Lua) maps automatically.
 - Running statuses carry `stageCode` `probe` or `convert_character`; failures carry `errorCode` and `errorDetails` (`character.bone_map`: `slot`, `bone`, `reason` = missing, required, duplicate, order, leg_on_spine, unknown_slot, locked or size; `character.jiggle`: `root`, `bone`, `slot`, `reason` = missing, body, too_many or range).
 
-Import results (`complete`, every character kind) carry `fit` outside the manifest: `{"ok":true}`, or `{"ok":false,"errorCode":"fit.landmarks","error":"No bone found for: left thigh, left lower leg","missing":["ValveBiped.Bip01_L_Thigh","ValveBiped.Bip01_L_Calf"]}` (other fit failures use `fit.error`). The fitter lists every missing landmark at once, also in the spawn error.
+Import results (`complete`, every character kind) carry `fit` outside the manifest: `{"ok":true}`, or `{"ok":false,"errorCode":"fit.landmarks","error":"No bone found for: left thigh (searched 左足, leg_L, left leg), left lower leg (searched 左ひざ, 左膝, knee_L, left knee)","missing":["ValveBiped.Bip01_L_Thigh","ValveBiped.Bip01_L_Calf"],"searched":{"ValveBiped.Bip01_L_Thigh":["ValveBiped.Bip01_L_Thigh","左足","leg_L","left leg"],…}}` (other fit failures use `fit.error`, with empty `missing` and `searched`). The fitter lists every missing landmark at once with the names it searched, also in the spawn error.
 
 Developer flags of `mmdhl_worker.exe`: `--probe-character <file>`, `--convert-character <file> <outdir> [request.json]`, `--inspect-bone-map <model> [options.json]`.
 
@@ -110,6 +110,10 @@ Developer flags of `mmdhl_worker.exe`: `--probe-character <file>`, `--convert-ch
 ### `native.InspectBoneMap(assetId, optionsJSON)` (both realms)
 
 The cached model's skeleton and automatic map for the window, and the structural rules on an assignment. The asset must be loaded (`RequestAsset`, then `AssetInfo`), otherwise it fails with "Load the asset before requesting a bone map". Options: `include` (`["skeleton"]` adds the skeleton in the probe's form) and `values` (`{"<key>": <bone index or -1>}`). The result has `version`, `asset`, `auto`, optionally `skeleton`, and `issues` (`code`, `severity`, `slot`, `bone`, `text`); values out of range or not whole numbers are `range` errors. Malformed options fail with "Invalid bone map options".
+
+### `native.GetBoneMapProposal(assetId, optionsJSON)` (both realms)
+
+The fitter's own choice for a loaded asset with the pins of `options.boneMap` (`{"<key>": <bone index or -1>}`), from the same mapping code as the fit: `bones` (`name`, `mmd`, `aliases`, `provenance` `PMX`/`synthesized`/`user`/`conversion`, `required`), `missing`, `issues` (`range`, `duplicate`, `required` errors; `moved`, `band`, `chest` warnings) and `torso` (`method`, `repairs`). Bad pins are issues, not failures. The full contract, and the fit option itself, are in [TORSO_FIT.md](TORSO_FIT.md#bone-pins).
 
 ### Saving pins
 

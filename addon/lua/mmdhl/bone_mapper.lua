@@ -65,8 +65,9 @@ if SERVER then
    if next(pins) then
     local result,e=mmdhl.Decode(native.GetBoneMapProposal(id,BM.IndexJSON('boneMap',pins)))
     if not result then invalid(tostring(e or '')) return end
-    if istable(result.missing) and #result.missing>0 then invalid(BM.PartList(result.missing)) return end
+    -- A bad pin first: a pin that took a required part's bone also leaves that part missing.
     for _,i in ipairs(result.issues or {}) do if istable(i) and i.severity=='error' then invalid(tostring(i.text or i.code or '')) return end end
+    if istable(result.missing) and #result.missing>0 then invalid(BM.PartList(result.missing)) return end
     -- The structural rules on what the window showed and checked: the fitter's own
     -- choice with the pins on top (the fitter's torso repairs are its own business).
     if isfunction(native.InspectBoneMap) then
