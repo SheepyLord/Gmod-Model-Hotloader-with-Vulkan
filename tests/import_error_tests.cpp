@@ -223,10 +223,10 @@ int main(int argc,char** argv){try{
   auto e=failure([&]{prepareSourceMaterials(temp/L"cache2",id);},"damaged vtf");
   check(e.code=="texture.derivative"&&e.details.value("path","")==utf8(vtf.wstring())&&placed(e.details["where"],"material",int64_t(textured),result["info"]["materials"][textured].value("name","")),"a damaged cached texture names the material and the file's path");}
 
- // ---- a PMX character's textures come only from its own folders (dependency_scope.hpp) ----
- // Its bytes go into the cache and to other players with the model: a texture that climbs
- // out, is root-relative, lies behind a junction or in a denied place is never read, with a
- // warning; the model's folder, the tex folder below it and the one beside it still are.
+ // ---- a PMX character's textures (dependency_scope.hpp, Reach::Local) ----
+ // As in 2.2 a texture may climb out of the model's folder or lie behind a junction (artists'
+ // working folders keep textures beside the model); a root-relative one or one in a denied
+ // place is never read, with a warning.
  {auto pack=temp/L"pack";auto folder=pack/L"model";for(auto f:{folder/L"tex",pack/L"tex",pack/L"outside"})fs::create_directories(f);
   for(auto f:{folder/L"beside.dds",folder/L"tex"/L"below.dds",pack/L"tex"/L"up.dds",folder/L"denied.dds",pack/L"outside"/L"secret.dds",pack/L"secret.dds"})fs::copy_file("tests/fixtures/checker.dds",f);
   auto link=L"cmd /c mklink /J \""+(folder/L"linked").wstring()+L"\" \""+(pack/L"outside").wstring()+L"\" >nul";check(_wsystem(link.c_str())==0,"the test junction");
@@ -237,9 +237,10 @@ int main(int argc,char** argv){try{
   setDependencyDenylist([](const fs::path& p){return p.filename()==L"denied.dds";});
   auto result=importAsset(folder/L"model.pmx",temp/L"cache3",Json::object(),{});setDependencyDenylist({});
   auto& textures=result["info"]["textures"];auto warnings=result["info"]["warnings"].dump();std::cout<<"  "<<warnings<<"\n";
-  check(textures.size()==8&&!textures[0].value("base","").empty()&&!textures[1].value("base","").empty()&&!textures[2].value("base","").empty(),"textures in the model's folder, below it and in the tex folder beside it are read");
-  for(size_t i=3;i<8;i++){auto shown=spec.textures[i];std::replace(shown.begin(),shown.end(),'\\','/');
-   check(textures[i].value("base","").empty()&&has(warnings,"Texture outside the model's folders: "+shown),"a texture outside the model's folders is not read, with a warning: "+shown);}
+  check(textures.size()==8,"every material keeps its texture slot");
+  for(size_t i:{0,1,2,4,5,6})check(!textures[i].value("base","").empty(),"a texture is read as in 2.2: "+spec.textures[i]);
+  for(size_t i:{3,7}){auto shown=spec.textures[i];std::replace(shown.begin(),shown.end(),'\\','/');
+   check(textures[i].value("base","").empty()&&has(warnings,"Texture in a protected location: "+shown),"a denied or root-relative texture is not read, with a warning: "+shown);}
   check(!has(warnings,"Cannot read"),"a refused texture is never opened");
   fs::remove(folder/L"linked");}
 

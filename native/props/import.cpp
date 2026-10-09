@@ -46,16 +46,15 @@ public:
     aiReturn Seek(size_t offset,aiOrigin origin)override{size_t next=offset;if(origin==aiOrigin_CUR){if(offset>bytes.size()-pos)return aiReturn_FAILURE;next=pos+offset;}if(origin==aiOrigin_END){if(offset>bytes.size())return aiReturn_FAILURE;next=bytes.size()-offset;}if(next>bytes.size())return aiReturn_FAILURE;pos=next;return aiReturn_SUCCESS;}
     size_t Tell()const override{return pos;}size_t FileSize()const override{return bytes.size();}void Flush()override{}
 };
-// The model file, and what it names (glTF buffers, OBJ material libraries) only from its
-// own folder and below: never an absolute path or one that climbs out, a link out of it
-// or a denied place (DependencyScope).
+// The model file and what it names (glTF buffers, OBJ material libraries), as in 2.2
+// (DependencyScope::Reach::Local): never a network path or, through any link, a denied place.
 class UnicodeIO final:public Assimp::IOSystem {
     fs::path model;DependencyScope scope;
     fs::path path(const char* p)const{std::string s(p);if(networkPath(s))throw std::runtime_error("Network model dependencies are not supported");
         auto q=fs::absolute(fs::path(wide(s))).lexically_normal();if(q==model)return q;
-        q=scope.locate(s);if(q.empty()||!scope.allows(q))throw std::runtime_error("Model dependencies are read only from the model's own folder");return q;}
+        q=scope.locate(s);if(q.empty()||!scope.allows(q))throw std::runtime_error("Model dependency in a protected location");return q;}
 public:
-    explicit UnicodeIO(const fs::path& source):model(fs::absolute(source).lexically_normal()),scope(model.parent_path(),false){}
+    explicit UnicodeIO(const fs::path& source):model(fs::absolute(source).lexically_normal()),scope(model.parent_path(),false,DependencyScope::Reach::Local){}
     bool Exists(const char* p)const override{try{return fs::is_regular_file(path(p));}catch(...){return false;}}
     char getOsSeparator()const override{return '/';}
     Assimp::IOStream* Open(const char* p,const char* mode="rb")override{try{if(std::strchr(mode,'w')||std::strchr(mode,'a'))return nullptr;return new MemoryStream(readFile(path(p)));}catch(...){return nullptr;}}

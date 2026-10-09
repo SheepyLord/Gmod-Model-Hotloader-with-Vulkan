@@ -16,7 +16,7 @@ std::wstring key(std::wstring s){
     return s;
 }
 }
-TextureResolver::TextureResolver(fs::path directory):root(std::move(directory)),scope(root,true){
+TextureResolver::TextureResolver(fs::path directory,DependencyScope::Reach reach):root(std::move(directory)),scope(root,true,reach){
     folders={root,root/L"tex",root/L"textures",root.parent_path()/L"tex",root.parent_path()/L"textures",
         root.parent_path().parent_path()/L"tex",root.parent_path().parent_path()/L"textures"};
 }
@@ -37,8 +37,9 @@ void TextureResolver::index(){
 }
 ResolvedTexture TextureResolver::resolve(const std::string& reference){
     if(reference.find("://")!=std::string::npos)throw std::runtime_error("Network textures are not supported");
-    // A share on another computer, an absolute path and a path that climbs out of the
-    // model's folders are never opened (DependencyScope): only the file name is looked up here.
+    // A reference the scope refuses (a share on another computer, a denied place; for a
+    // confined resolver also one outside the model's folders) is never opened as written
+    // (DependencyScope): only the file name is looked up here.
     auto ref=fs::path(wide(reference));
     if(auto direct=scope.locate(reference);!direct.empty()&&scope.allows(direct))return{direct,false};
     auto name=ref.filename();

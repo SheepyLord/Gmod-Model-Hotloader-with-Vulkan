@@ -384,7 +384,7 @@ Bytes applyAlpha(Bytes bytes,AlphaUse use,int cut){
 }
 struct Textures {
  const aiScene* scene;props::TextureResolver resolver;std::map<std::string,Bytes> files;std::vector<std::string> paths;std::map<std::pair<std::string,int>,int> index;std::vector<std::string>& warnings;
- Textures(const aiScene* s,const fs::path& folder,std::vector<std::string>& w):scene(s),resolver(folder),warnings(w){}
+ Textures(const aiScene* s,const fs::path& folder,std::vector<std::string>& w):scene(s),resolver(folder,props::DependencyScope::Reach::Confined),warnings(w){}
  int get(const std::string& reference,const std::string& material,AlphaUse use,float cutoff){
   int cut=use==AlphaUse::Cutout?int(std::lround(std::clamp(cutoff,0.f,1.f)*255)):0;auto key=std::make_pair(reference,int(use)*1000+cut);
   if(auto it=index.find(key);it!=index.end())return it->second;

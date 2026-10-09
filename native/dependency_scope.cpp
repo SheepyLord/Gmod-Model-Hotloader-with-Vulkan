@@ -92,7 +92,7 @@ std::wstring longName(const std::wstring& path){
 }
 void setDependencyDenylist(std::function<bool(const fs::path&)> denied){denylist()=std::move(denied);}
 void simulateUnknownFinalPaths(bool unknown){unknownFinals=unknown;}
-DependencyScope::DependencyScope(path modelFolder,bool textureFolders):root(std::move(modelFolder)){
+DependencyScope::DependencyScope(path modelFolder,bool textureFolders,Reach r):root(std::move(modelFolder)),reach(r){
     trees={root};
     if(textureFolders)for(auto base:{root.parent_path(),root.parent_path().parent_path()})for(auto name:{L"tex",L"textures"})trees.push_back(base/name);
 }
@@ -118,6 +118,7 @@ DependencyScope::path DependencyScope::locate(std::string_view reference) const 
     else candidate=(root/ref).lexically_normal();
     if(!plainParts(candidate))return {};
     auto text=absoluteText(candidate);if(text.empty())return {};
+    if(reach==Reach::Local)return candidate;
     for(auto& tree:trees)if(within(text,absoluteText(tree)))return candidate;
     return {};
 }
@@ -125,14 +126,14 @@ bool DependencyScope::allows(const path& file) const {
     if(!plainParts(file))return false;
     auto text=absoluteText(file);if(text.empty())return false;
     std::vector<size_t> holders;for(size_t i=0;i<trees.size();i++)if(within(text,absoluteText(trees[i])))holders.push_back(i);
-    if(holders.empty())return false;
+    if(holders.empty()&&reach==Reach::Confined)return false;
     auto io=extended(file);if(io.empty())return false;
     Handle h;h.h=CreateFileW(io.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr);
     if(h.h==INVALID_HANDLE_VALUE)return false;
     BY_HANDLE_FILE_INFORMATION info{};if(!GetFileInformationByHandle(h.h,&info)||(info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY))return false;
     // Links and junctions are followed by Windows: where the file really is decides.
     auto real=finalPath(h.h);
-    bool inside=false;if(!real.empty())for(auto& tree:finalTrees())inside=inside||within(real,tree);
+    bool inside=reach==Reach::Local;if(!inside&&!real.empty())for(auto& tree:finalTrees())inside=inside||within(real,tree);
     // Where Windows cannot say, the path as written counts when no link lies on the way.
     if(!inside)for(auto i:holders)inside=inside||linkFreeBelow(absoluteText(trees[i]),text,i>0);
     if(!inside)return false;

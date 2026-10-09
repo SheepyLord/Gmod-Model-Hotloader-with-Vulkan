@@ -102,17 +102,18 @@ static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes&
     if(!stbir_resize_uint8_srgb(pixels,width,height,0,scaled.data(),w,h,0,STBIR_RGBA))throw std::runtime_error("Cannot scale down a large texture");
     width=w;height=h;return true;
 }
-// A PMX or PMD texture: a path relative to the model, read only from the model's folders
-// like every other format's (dependency_scope.hpp). `refused` when it climbs out of them,
-// leads out through a link or names a denied place. The sentences are part of the asset's
-// identity: an absolute path keeps 2.2's.
+// A PMX or PMD texture: a path relative to the model. It may climb out of the model's
+// folder as in 2.2 (artists' working folders keep textures beside it), but is `refused`
+// when it is drive- or root-relative, an alternate data stream or, through any link, a
+// denied place (dependency_scope.hpp, Reach::Local). The sentences are part of the
+// asset's identity: an absolute path keeps 2.2's.
 static fs::path resolveTexture(const DependencyScope& scope,std::string path,bool& refused){
     std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);
     auto file=(scope.folder()/p).lexically_normal();std::error_code error;
     refused=scope.locate(path).empty()||(fs::is_regular_file(ioPath(file),error)&&!scope.allows(file));
     return file;
 }
-static std::string outsideTexture(std::string path){std::replace(path.begin(),path.end(),'\\','/');return "Texture outside the model's folders: "+path;}
+static std::string outsideTexture(std::string path){std::replace(path.begin(),path.end(),'\\','/');return "Texture in a protected location: "+path;}
 static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings){
     int width=0,height=0,channels=0;
     if(bytes.size()>INT_MAX)throw std::runtime_error("Texture exceeds the decoder's signed 32-bit input format: "+name);
@@ -224,7 +225,7 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource){ImportScope scope("Reading the VRM spring bones","vrm");model->springs=SpringSetup::fromManifest(vrm,*model);}
     if(character){model->springs=SpringSetup::fromManifest(conversion,*model);auto map=conversion.value("boneMap",Json::object());for(auto& [key,value]:map.items())model->conversionBoneMap[key]=value.get<int>();}
     Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;if(character)manifest["conversion"]=conversion;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
-    std::map<std::wstring,std::pair<std::string,bool>> prepared;const DependencyScope scope(source.parent_path(),true);
+    std::map<std::wstring,std::pair<std::string,bool>> prepared;const DependencyScope scope(source.parent_path(),true,DependencyScope::Reach::Local);
     for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
         auto image=material.base.substr(material.base.find_last_of("/\\")+1);
         report("Preparing textures","textures",.1f+.8f*float(i)/std::max<size_t>(1,model->materials.size()),"Material "+std::to_string(i+1)+" of "+std::to_string(model->materials.size())+(material.name.empty()?std::string():" “"+cleanText(material.name)+"”")+(image.empty()?std::string():": "+cleanText(image)),i+1,model->materials.size());

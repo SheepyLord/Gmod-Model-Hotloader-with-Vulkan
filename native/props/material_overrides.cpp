@@ -44,7 +44,7 @@ void applyMaterialOverrides(Asset& a,const fs::path& source,const Options& optio
         catch(const std::exception&){
             if(!resources.refuses(ref))throw;
             std::string name="?";try{name=utf8(fs::path(wide(ref)).filename().wstring());}catch(...){}
-            warnings.push_back("Material override texture outside the model's folders was not used: "+name);return std::nullopt;
+            warnings.push_back("Material override texture in a protected location was not used: "+name);return std::nullopt;
         }
     };
     std::set<std::string> matchedMaterials,matchedMeshes;

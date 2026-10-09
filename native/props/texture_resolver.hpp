@@ -17,10 +17,13 @@ class TextureResolver {
     std::map<std::wstring,std::vector<fs::path>> names;
     void index();
 public:
-    explicit TextureResolver(fs::path directory);
+    // Static props keep 2.2's reach (DependencyScope::Reach::Local); characters in other
+    // formats pass Reach::Confined.
+    explicit TextureResolver(fs::path directory,DependencyScope::Reach reach=DependencyScope::Reach::Local);
     ResolvedTexture resolve(const std::string& reference);
-    // The reference names a file the model may not read as written: outside the model's
-    // folders, through a link out of them or a denied place (a network path too). resolve()
+    // The reference names a file the model may not read as written: a denied place or a
+    // network path (for a confined resolver also one outside the model's folders or
+    // through a link out of them). resolve()
     // then looks for its file name instead.
     bool refuses(const std::string& reference) const;
 };

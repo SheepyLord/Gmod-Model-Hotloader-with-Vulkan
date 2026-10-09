@@ -4,21 +4,28 @@
 #include <string>
 #include <string_view>
 #include <vector>
-// The files a model may name (external buffers, material libraries, textures): those
-// in its own folder and below it and, for textures, in the tex and textures folders
-// the static prop resolver also searches one and two levels up. A model file is
-// untrusted: what it reads goes into the cache and to other players with the model, so
-// a reference that is absolute, drive- or root-relative or climbs out of these folders
-// is never opened, a link or junction cannot lead out of them, and nothing the
-// process's denylist names (the worker's FilePolicy) is read. Every importer uses it:
-// PMX and PMD characters (assets.cpp), FBX, glTF and DAE characters
-// (character_import.cpp) and static props (props/import.cpp, props/texture_resolver.cpp).
+// The files a model may name (external buffers, material libraries, textures). A model
+// file is untrusted: what it reads goes into the cache and to other players with the
+// model, so a network path, a drive- or root-relative one, an alternate data stream and
+// anything the process's denylist names (the worker's FilePolicy), wherever a link
+// leads, are never opened. A confined scope (FBX, glTF and DAE characters,
+// character_import.cpp) also reads only its own folder and below it and, for textures,
+// the tex and textures folders the static prop resolver also searches one and two
+// levels up: a reference that is absolute or climbs out of them is never opened and a
+// link or junction cannot lead out of them. PMX and PMD characters (assets.cpp) and
+// static props (props/import.cpp, props/texture_resolver.cpp) keep 2.2's reach.
 // It lives in the runtime so that one denylist serves them all.
 namespace mmd {
 class DependencyScope {
 public:
     using path = std::filesystem::path;
-    DependencyScope(path modelFolder,bool textureFolders);
+    // Confined: the folders above only (FBX, glTF and DAE characters, new in 2.3).
+    // Local: PMX and PMD textures and static props read what they read in 2.2 (absolute
+    // paths and ones that climb out, which many artists' working folders use), but still
+    // never a network path, an alternate data stream, a drive- or root-relative path or,
+    // through any link, a place the denylist names.
+    enum class Reach {Confined,Local};
+    DependencyScope(path modelFolder,bool textureFolders,Reach reach=Reach::Confined);
     // The path `reference` (UTF-8, absolute or relative to the model's folder) names,
     // normalized, when that lies in the scope as written; empty otherwise (also for
     // network paths and parts Windows would rewrite, such as a trailing dot).
@@ -31,6 +38,7 @@ public:
     const path& folder() const {return root;}
 private:
     path root;
+    Reach reach;
     std::vector<path> trees;                        // as written (lexical)
     mutable std::vector<std::wstring> finals;       // where they really are
     mutable bool resolved=false;
