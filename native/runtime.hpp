@@ -50,14 +50,22 @@ struct Material {
     btVector3 diffuse{1,1,1},ambient{.2f,.2f,.2f},specular{0,0,0},edgeColor{0,0,0};
     float alpha=1,power=1,edgeAlpha=1,edgeSize=1;
     // Share of the part's surface whose base texels pass the 0.5 alpha test,
-    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha).
-    float alphaCoverage=1;
+    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha), at rest.
+    // uvMorphCoverage: for a dynamicCutout part, the highest it reaches with one
+    // texture morph at a quarter, half, three quarters or full weight (0: none
+    // shows anything). With the rest value it decides RTX Remix blending, once.
+    float alphaCoverage=1,uvMorphCoverage=0;
     std::array<std::array<float,4>,3> textureBlend{{{1,1,1,1},{1,1,1,1},{1,1,1,1}}};
     int sphereMode=0,toonIndex=-1;
     bool twoSided=false,edge=false,shadow=true,alphaTexture=false,translucentTexture=false;
+    // RTX Remix: a UV morph moves some of its alpha-tested triangles, so what the
+    // test removes is decided per instance at its current UVs (cutout.hpp).
+    bool dynamicCutout=false;
 };
 struct Rig;
 struct SpringSetup;
+struct AlphaPassMask;
+struct RemixCutout;
 struct OverlapTriangle {unsigned primitive;std::array<unsigned,3> vertices;unsigned material;};
 // Source hardware skinning (the path studio models use): three bones per
 // vertex, 53 bone matrices per draw. Built once per model. Vertices the shaders
@@ -92,6 +100,11 @@ struct Model {
     // Per triangle, 0 when the 0.5 alpha test removes every sampled texel of it
     // (loadAsset; empty: nothing measured). Only RTX Remix draws skip those.
     std::vector<uint8_t> cutoutTriangles;
+    // Alpha-tested triangles a texture (UV) morph moves, ascending: they stay 1 in
+    // cutoutTriangles and are cut at an instance's current UVs with the pass mask
+    // of their part's texture (cutoutMasks, set only for Material::dynamicCutout parts).
+    std::vector<unsigned> uvCutoutTriangles;
+    std::vector<std::shared_ptr<const AlphaPassMask>> cutoutMasks;
     std::vector<Bone> bones;
     std::vector<unsigned> order;
     std::vector<Material> materials;
@@ -191,7 +204,8 @@ void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std:
 struct DrawVertex { float x=0,y=0,z=0,nx=0,ny=0,nz=0; uint32_t color=0xffffffffu; float u=0,v=0,tx=1,ty=0,tz=0,tw=1,edge=0,extra0=0,extra1=0; };
 static_assert(sizeof(DrawVertex)==64&&offsetof(DrawVertex,nx)==12&&offsetof(DrawVertex,color)==24&&offsetof(DrawVertex,u)==28&&offsetof(DrawVertex,tx)==36);
 struct Snapshot {
-    uint64_t sequence=0,staticsVersion=0;
+    // uvVersion: the instance's UV state these vertices carry (Instance::uvVersion).
+    uint64_t sequence=0,staticsVersion=0,uvVersion=0;
     double time=0;
     bool materialsPristine=false;
     std::vector<DrawVertex> vertices;
@@ -246,6 +260,9 @@ struct Instance {
     // Sparse morph state in the skin layout order plus per-vertex UV overrides.
     std::vector<float> morphX,morphY,morphZ,uvU,uvV,uvE0,uvE1,palette;
     std::vector<unsigned> morphTouched,uvTouched;
+    // Weights of the texture and UVA1 morphs the UV state holds (morph, weight), and
+    // a version that changes only with them: held UV morphs cost nothing per publish.
+    std::vector<std::pair<unsigned,float>> uvWeights;uint64_t uvVersion=0;
     std::shared_ptr<const Model::SkinLayout> morphLayout;
     std::vector<float> previousPalette;std::vector<uint64_t> boneChangedState;uint64_t allChangedState=0,geometryState=0;
     unsigned changedBones=0;bool fullChange=false;uint64_t idleFrames=0;unsigned fullChangeReasons=0;// 1 morph, 2 statics, 4 soft, 8 layout, 16 new buffer
@@ -288,6 +305,10 @@ struct Instance {
     // renderView marks the first-person colour view; its triangle mask is built
     // once and shared with queued draws.
     unsigned renderView=0;std::shared_ptr<const std::vector<uint8_t>> firstPersonMask;
+    // RTX Remix: the cut at the UVs of remixCutoutVersion (a uvVersion), made on
+    // the main thread at render frame remixCutoutFrame and shared with queued
+    // draws (renderer.cpp).
+    uint64_t remixCutoutVersion=0,remixCutoutFrame=0;std::shared_ptr<const RemixCutout> remixCutout;
     void setMaterialState(std::vector<bool> visible,std::vector<bool> forceOpaque);
     std::vector<float> morphWeights,lastImpulseWeights;
     const std::vector<float>& expandedMorphs() const;

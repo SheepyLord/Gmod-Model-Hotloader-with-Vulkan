@@ -626,8 +626,10 @@ void Instance::publish(double t){
     if(result==backSnapshot)std::atomic_thread_fence(std::memory_order_acquire);result->sequence=snapshot?snapshot->sequence+1:1;result->time=t;result->bones=global;
     const auto& weights=expandedMorphs();
     bool forceAlpha=std::any_of(materialForceOpaque.begin(),materialForceOpaque.end(),[](bool v){return v;});
-    bool anyMaterialMorph=forceAlpha,anyVertexMorph=false,anyUvMorph=false;
-    for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){int type=nanoemModelMorphGetType(model->morphs[i]);anyMaterialMorph|=type==NANOEM_MODEL_MORPH_TYPE_MATERIAL;anyVertexMorph|=type==NANOEM_MODEL_MORPH_TYPE_VERTEX;anyUvMorph|=type>=NANOEM_MODEL_MORPH_TYPE_TEXTURE&&type<=NANOEM_MODEL_MORPH_TYPE_UVA4;}
+    bool anyMaterialMorph=forceAlpha,anyVertexMorph=false;
+    // Only texture and UVA1 morphs write UVs (UVA2-4 reach no shader).
+    auto writesUv=[](int type){return type==NANOEM_MODEL_MORPH_TYPE_TEXTURE||type==NANOEM_MODEL_MORPH_TYPE_UVA1;};std::vector<std::pair<unsigned,float>> uvState;
+    for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){int type=nanoemModelMorphGetType(model->morphs[i]);anyMaterialMorph|=type==NANOEM_MODEL_MORPH_TYPE_MATERIAL;anyVertexMorph|=type==NANOEM_MODEL_MORPH_TYPE_VERTEX;if(writesUv(type))uvState.emplace_back(unsigned(i),weights[i]);}
     // Materials are copied only while a material morph is active or the buffer is stale.
     if(anyMaterialMorph||!result->materialsPristine||result->materials.size()!=model->materials.size()){result->materials=model->materials;result->materialsPristine=!anyMaterialMorph;}
     // Sparse morph state: restore the vertices touched last time, then apply the current weights.
@@ -635,14 +637,16 @@ void Instance::publish(double t){
     if(layoutChanged){morphX=layout.px;morphY=layout.py;morphZ=layout.pz;morphTouched.clear();morphLayout=layoutPtr;}
     bool morphDirty=!morphTouched.empty()||!scalarMorph.empty();
     for(auto k:morphTouched){morphX[k]=layout.px[k];morphY[k]=layout.py[k];morphZ[k]=layout.pz[k];}morphTouched.clear();scalarMorph.clear();
-    if(uvU.size()!=n){uvU.resize(n);uvV.resize(n);uvE0.resize(n);uvE1.resize(n);for(size_t i=0;i<n;i++){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
-    for(auto i:uvTouched){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}
-    bool uvChanged=!uvTouched.empty()||anyUvMorph;uvTouched.clear();
+    // UVs are restored and re-applied only when their morphs' weights change, so a
+    // held UV morph keeps the statics (and the idle publish) of an unmorphed model.
+    bool uvReset=uvU.size()!=n,uvChanged=uvReset||uvState!=uvWeights;
+    if(uvReset){uvU.resize(n);uvV.resize(n);uvE0.resize(n);uvE1.resize(n);for(size_t i=0;i<n;i++){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
+    if(uvChanged){for(auto i:uvTouched){const auto& v=model->vertices[i];uvU[i]=v.uv[0];uvV[i]=v.uv[1];uvE0[i]=v.extra[0][0];uvE1[i]=v.extra[0][1];}uvTouched.clear();}
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){auto morph=model->morphs[i];float w=weights[i];nanoem_rsize_t count=0;int type=nanoemModelMorphGetType(morph);
         if(type==NANOEM_MODEL_MORPH_TYPE_VERTEX){auto entries=nanoemModelMorphGetAllVertexMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphVertexGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphVertexGetPosition(entries[k]);int s=layout.sorted[id];
             if(s>=0){morphX[s]+=p[0]*w;morphY[s]+=p[1]*w;morphZ[s]+=p[2]*w;morphTouched.push_back(unsigned(s));}
             else scalarMorph.try_emplace(id,btVector3(0,0,0)).first->second+=btVector3(p[0],p[1],p[2])*w;}}
-        if(type>=NANOEM_MODEL_MORPH_TYPE_TEXTURE&&type<=NANOEM_MODEL_MORPH_TYPE_UVA4){auto entries=nanoemModelMorphGetAllUVMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphUVGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphUVGetPosition(entries[k]);
+        if(uvChanged&&writesUv(type)){auto entries=nanoemModelMorphGetAllUVMorphObjects(morph,&count);for(size_t k=0;k<count;k++){int id=vertexIndex(nanoemModelMorphUVGetVertexObject(entries[k]));if(id<0||size_t(id)>=n)continue;auto p=nanoemModelMorphUVGetPosition(entries[k]);
             if(type==NANOEM_MODEL_MORPH_TYPE_TEXTURE){uvU[id]+=p[0]*w;uvV[id]+=p[1]*w;}else if(type==NANOEM_MODEL_MORPH_TYPE_UVA1){uvE0[id]+=p[0]*w;uvE1[id]+=p[1]*w;}uvTouched.push_back(unsigned(id));}}
         if(type==NANOEM_MODEL_MORPH_TYPE_MATERIAL){auto entries=nanoemModelMorphGetAllMaterialMorphObjects(morph,&count);for(size_t k=0;k<count;k++){auto e=entries[k];auto target=nanoemModelMorphMaterialGetMaterialObject(e);int index=target?nanoemModelObjectGetIndex(nanoemModelMaterialGetModelObject(target)):-1;bool multiply=nanoemModelMorphMaterialGetOperationType(e)==NANOEM_MODEL_MORPH_MATERIAL_OPERATION_TYPE_MULTIPLY;
             auto scalar=[&](float& out,float value){out=multiply?out*(1+(value-1)*w):out+value*w;};auto color=[&](btVector3& out,const float* value){for(int c=0;c<3;c++)scalar(out[c],value[c]);};
@@ -651,11 +655,11 @@ void Instance::publish(double t){
     }
     for(size_t i=0;i<materialForceOpaque.size();i++)if(materialForceOpaque[i])result->materials[i].alpha=1;
     morphDirty=morphDirty||!morphTouched.empty()||!scalarMorph.empty();
-    if(uvChanged||!uvTouched.empty())staticsVersion++;
+    if(uvChanged){uvWeights=std::move(uvState);++uvVersion;++staticsVersion;}
     // Static attributes live in the 64-byte Source vertex; refill only when the buffer is new or UV morphs changed.
     bool newBuffer=result->vertices.size()!=n;bool rebuildStatics=newBuffer||result->staticsVersion!=staticsVersion;
     result->vertices.resize(n);
-    if(rebuildStatics){for(size_t i=0;i<n;i++){auto& d=result->vertices[i];const auto& v=model->vertices[i];d.color=0xffffffffu;d.u=uvU[i];d.v=uvV[i];d.edge=v.edge;d.extra0=uvE0[i];d.extra1=uvE1[i];if(sourceRig&&i<model->tangentSigns.size())d.tw=-model->tangentSigns[i];else{d.tx=1;d.ty=0;d.tz=0;d.tw=1;}}result->staticsVersion=staticsVersion;}
+    if(rebuildStatics){for(size_t i=0;i<n;i++){auto& d=result->vertices[i];const auto& v=model->vertices[i];d.color=0xffffffffu;d.u=uvU[i];d.v=uvV[i];d.edge=v.edge;d.extra0=uvE0[i];d.extra1=uvE1[i];if(sourceRig&&i<model->tangentSigns.size())d.tw=-model->tangentSigns[i];else{d.tx=1;d.ty=0;d.tz=0;d.tw=1;}}result->staticsVersion=staticsVersion;result->uvVersion=uvVersion;}
     result->minimum=btVector3(BT_LARGE_FLOAT,BT_LARGE_FLOAT,BT_LARGE_FLOAT);result->maximum=-result->minimum;
     // Hardware skinning: the renderer draws most vertices from rest data and the
     // palette below; only GpuSkin::cpuVertices are deformed here. Soft bodies,

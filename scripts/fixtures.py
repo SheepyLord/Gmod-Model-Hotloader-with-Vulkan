@@ -11,10 +11,12 @@ def png(width,height,rgba):
  rows=b''.join(b'\0'+rgba[y*width*4:(y+1)*width*4] for y in range(height))
  def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
  return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(rows))+chunk(b'IEND',b'')
-def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),material_count=2,chain=0,chain_damping=.5,chain_mass_ratio=1,chain_masses=None,chain_locked=False,extra_vertices=0,bad='',morph_vertex=3,morph_offset=1,island=False,texture_name='checker.dds',group_chain=0,group_lattice=0,control_root=False):
+def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),material_count=2,chain=0,chain_damping=.5,chain_mass_ratio=1,chain_masses=None,chain_locked=False,extra_vertices=0,bad='',morph_vertex=3,morph_offset=1,island=False,texture_name='checker.dds',group_chain=0,group_lattice=0,control_root=False,uv_switch=0):
  # bad: one non-finite or runaway value per section. The loader repairs them (soft bodies are
  # rejected); the repair kinds mirror released models: a NaN vertex, NaN normal, BDEF4 weights
  # of (1, 1, 1, -2) on one bone, a bone parented to itself, a 1e21 kg anchor, a 1e14 spring.
+ # uv_switch: the Fabric grid maps to u 0-0.25 (column x at u x/16, row y at v y/4) and a
+ # texture (UV) morph after the other morphs moves all of it by that much in u.
  nan=float('nan');inf=float('inf')
  b=bytearray(b'PMX '+pack('fB',2.1,8)+bytes([1,1,4,4,4,4,4,4]))
  b+=text('MMDHL regression rope' if rope else 'MMDHL regression cloth')+text('Generated fixture')+text('CC0 procedural test geometry')+text('')
@@ -66,7 +68,7 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
   weights=[(1,(4,top+2),(.85,)),(2,(13,4,21,top+2),(.4,.3,.2,.1)),(0,(top+2,),()),(0,(top+3,),()),(1,(top+1,top),(.5,))]
  b+=pack('i',len(vertices))
  for i,p in enumerate(vertices):
-  t=weights[i-control][0] if i>=control else 0 if i>=alone else i%5;b+=(vec(nan,p[1],p[2]) if bad=='vertex_position' and i==0 else vec(*p))+(vec(0,0,0) if bad=='zero_normal' and i<3 else vec(nan,0,-1) if bad=='normal' and i==1 else vec(0,0,-1))+(vec(nan,0) if bad=='uv' and i==0 else vec((i%5)/4,(i//5)/6))+vec(.2,.3,0,0)+pack('B',t)
+  t=weights[i-control][0] if i>=control else 0 if i>=alone else i%5;b+=(vec(nan,p[1],p[2]) if bad=='vertex_position' and i==0 else vec(*p))+(vec(0,0,0) if bad=='zero_normal' and i<3 else vec(nan,0,-1) if bad=='normal' and i==1 else vec(0,0,-1))+(vec(nan,0) if bad=='uv' and i==0 else vec(((i-3)%5)/16,((i-3)//5)/4) if uv_switch and 3<=i<28 else vec((i%5)/4,(i//5)/6))+vec(.2,.3,0,0)+pack('B',t)
   if i>=control:_,ids,w=weights[i-control];b+=pack('i'*len(ids),*ids)+vec(*w)
   elif t==0:b+=pack('i',0)
   elif t in (1,3):b+=pack('ii',0,1)+vec(.6)
@@ -104,6 +106,7 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
  for k in range(group_lattice):
   child=len(morphs)+1 if k+1<group_lattice else 0
   morphs.append(text('lattice'+str(k))+text('')+pack('BBi',1,0,2)+pack('if',child,1)+pack('if',child,1))
+ if uv_switch:morphs.append(text('uv switch')+text('')+pack('BBi',4,3,25)+b''.join(pack('i',v)+vec(uv_switch,0,0,0) for v in range(3,28)))
  b+=pack('i',len(morphs))+b''.join(morphs)+pack('i',0) # display frames
  if chain:
   first=hair
@@ -198,6 +201,11 @@ if __name__=='__main__':
  # maps to (u 0-0.5, v 0) are opaque, 5 of 64 overall.
  (out/'cutout-atlas.png').write_bytes(png(8,8,b''.join(bytes((220,200,190,255 if i<5 else 0)) for i in range(64))))
  (out/'native-cutout-atlas.pmx').write_bytes(make(texture=True,texture_name='cutout-atlas.png'))
+ # An atlas switched by a UV morph, as Ruan Mei's stockings are: opaque only at u 0.5-0.875
+ # (columns 4-6 of 8). The Fabric maps to u 0-0.25, transparent at rest; the morph moves it
+ # by 0.5, so weight 1 shows all of it, 0.5 its last column, 0.25 nothing.
+ (out/'cutout-switch.png').write_bytes(png(8,8,b''.join(bytes((40,40,48,255 if 4<=i%8<7 else 0)) for i in range(64))))
+ (out/'native-cutout-uvmorph.pmx').write_bytes(make(humanoid=True,texture=True,texture_name='cutout-switch.png',uv_switch=.5))
  # Nested group morphs: 13 links of coefficient 1000 overflow a float at weight 1, and
  # 40 levels that name their child twice reach 2^40 expansions.
  (out/'native-group-chain.pmx').write_bytes(make(humanoid=True,group_chain=13))
