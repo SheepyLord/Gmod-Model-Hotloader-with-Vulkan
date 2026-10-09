@@ -251,8 +251,10 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
   model file (`.pmx`, `.pmd`, `.vrm`, `.fbx`, `.glb`, `.gltf`, `.dae`, `.obj`,
   `.blend`), and the Workshop package scan ignores network paths.
 * Tests: `tests/file_access_tests.cpp` (CTest `file_access`, also the picked
-  files that imports on another server are limited to and the private job folders;
-  with the test-only
+  files that imports on another server are limited to, shared by two games
+  running at once, the private job folders, and the functions the module's
+  `BeginImport`, `Reload`, `PropReload`, `Browse`, `PollJob` and
+  `InspectModelNotes` go through (`native/picked_models.hpp`); with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
   variable and is never packaged; the shipped worker has no such path) and
   `tests/test_file_access.py`.

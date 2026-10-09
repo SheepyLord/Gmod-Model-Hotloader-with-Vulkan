@@ -72,7 +72,43 @@ void textureResolverTests(){
      auto beside=importModel(dir/L"model"/L"beside.gltf",options,{});
      check(beside.vertices.size()==4&&beside.indices.size()==12,"a glTF buffer beside the model no longer imports");
      rejects([&]{importModel(dir/L"model"/L"escape.gltf",options,{});},"a glTF buffer outside the model's folder was read");
-     rejects([&]{importModel(dir/L"model"/L"linked.gltf",options,{});},"a glTF buffer behind a junction was read");}
+     rejects([&]{importModel(dir/L"model"/L"linked.gltf",options,{});},"a glTF buffer behind a junction was read");
+     // A .gmodel.json sidecar can come with a downloaded model: its textures are read from the
+     // model's folders too. One outside them is left out with a warning naming only the file,
+     // and the rest of the override still applies; one inside them still repairs the material;
+     // one that is nowhere still fails the import.
+     const Bytes png={137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,16,0,0,0,16,8,6,0,0,0,31,243,255,97,0,0,0,26,73,68,65,84,120,156,99,184,179,37,234,63,37,152,97,212,128,81,3,70,13,24,46,6,0,0,157,55,233,31,202,232,213,231,0,0,0,0,73,69,78,68,174,66,96,130};
+     writeAtomic(dir/L"outside"/L"fix.png",png);writeAtomic(dir/L"model"/L"paint.png",png);
+     auto painted=[&](const std::string& name,const Json& skin){auto j=Json::parse(gltf("shape.bin"));j["materials"]={{{"name","skin"}}};j["meshes"][0]["primitives"][0]["material"]=0;
+         write(dir/L"model"/wide(name),j.dump());write(dir/L"model"/wide(name+".gmodel.json"),Json{{"version",1},{"materials",{{"skin",skin}}}}.dump());return dir/L"model"/wide(name);};
+     auto warned=[](const Asset& a,const std::string& text){for(auto& w:a.manifest["warnings"])if(w.get<std::string>()==text)return true;return false;};
+     auto skin=[](const Asset& a){for(auto& m:a.manifest["materials"])if(m.value("name","")=="skin")return m;return Json();};
+     const std::string refused="Material override texture outside the model's folders was not used: fix.png";
+     for(auto ref:{utf8((dir/L"outside"/L"fix.png").wstring()),std::string("../outside/fix.png")}){
+         auto a=importModel(painted("outside.gltf",{{"base_texture",ref},{"color",{1,0,0,1}}}),options,{});
+         check(warned(a,refused)&&skin(a).value("base_texture","").empty()&&skin(a)["color"][1]==0,"a sidecar texture outside the model's folders failed the import, was read or dropped the rest of the override");
+         for(auto& w:a.manifest["warnings"])check(w.get<std::string>().find(utf8(dir.wstring()))==std::string::npos,"a sidecar warning names a folder on this computer");}
+     auto inside=importModel(painted("inside.gltf",{{"base_texture","paint.png"}}),options,{});
+     check(!skin(inside).value("base_texture","").empty()&&!warned(inside,refused),"a sidecar texture beside the model no longer repairs the material");
+     auto masked=importModel(painted("masked.gltf",{{"base_texture","paint.png"},{"opacity_texture","../outside/fix.png"}}),options,{});
+     check(!skin(masked).value("base_texture","").empty()&&warned(masked,refused),"a sidecar's opacity texture outside the model's folders was read, or lost the base texture");
+     rejects([&]{importModel(painted("nowhere.gltf",{{"base_texture","nowhere.png"}}),options,{});},"a sidecar texture that is nowhere no longer fails the import");
+     // Where Windows cannot say where an open file really is (some RAM disks, FUSE and cloud
+     // drives), files with no link on the way still resolve; a junction in the model's folder
+     // and a tex folder that is a junction still lead nowhere, and the denylist still applies.
+     mmd::simulateUnknownFinalPaths(true);
+     {TextureResolver blind(dir/L"model");auto body=blind.resolve("body.png");auto face=blind.resolve("../textures/skin/face.png");
+      check(body.path==dir/L"model"/L"body.png"&&!body.repaired&&face.path==dir/L"textures"/L"skin"/L"face.png"&&!face.repaired,"textures no longer resolve where Windows cannot say where a file really is");
+      rejects([&]{blind.resolve("linked/secret.png");},"a junction led a texture out where Windows cannot say where a file really is");
+      check(importModel(dir/L"model"/L"beside.gltf",options,{}).vertices.size()==4,"a glTF buffer no longer imports where Windows cannot say where a file really is");
+      rejects([&]{importModel(dir/L"model"/L"linked.gltf",options,{});},"a glTF buffer behind a junction was read where Windows cannot say where a file really is");
+      check(junction(dir/L"tex",dir/L"outside"),"cannot create the tex junction");
+      rejects([&]{TextureResolver(dir/L"model").resolve("../tex/secret.png");},"a tex folder that is a junction led a texture out where Windows cannot say where a file really is");
+      fs::remove(dir/L"tex");
+      setDependencyDenylist([](const fs::path& p){return p.filename()==L"wallet.png";});
+      rejects([&]{TextureResolver(dir/L"model").resolve("wallet.png");},"a denied file was read where Windows cannot say where a file really is");
+      setDependencyDenylist({});}
+     mmd::simulateUnknownFinalPaths(false);}
     fs::remove(dir/L"model"/L"linked");
     fs::remove_all(dir);
 }

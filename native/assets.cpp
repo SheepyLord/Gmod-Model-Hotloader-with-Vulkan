@@ -6,6 +6,7 @@
 #include "humanoid_slots.hpp"
 #include "cutout.hpp"
 #include "import_error.hpp"
+#include "dependency_scope.hpp"
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincodec.h>
@@ -101,7 +102,17 @@ static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes&
     if(!stbir_resize_uint8_srgb(pixels,width,height,0,scaled.data(),w,h,0,STBIR_RGBA))throw std::runtime_error("Cannot scale down a large texture");
     width=w;height=h;return true;
 }
-static fs::path resolveTexture(const fs::path& base,std::string path){std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);return (base/p).lexically_normal();}
+// A PMX or PMD texture: a path relative to the model, read only from the model's folders
+// like every other format's (dependency_scope.hpp). `refused` when it climbs out of them,
+// leads out through a link or names a denied place. The sentences are part of the asset's
+// identity: an absolute path keeps 2.2's.
+static fs::path resolveTexture(const DependencyScope& scope,std::string path,bool& refused){
+    std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);
+    auto file=(scope.folder()/p).lexically_normal();std::error_code error;
+    refused=scope.locate(path).empty()||(fs::is_regular_file(ioPath(file),error)&&!scope.allows(file));
+    return file;
+}
+static std::string outsideTexture(std::string path){std::replace(path.begin(),path.end(),'\\','/');return "Texture outside the model's folders: "+path;}
 static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings){
     int width=0,height=0,channels=0;
     if(bytes.size()>INT_MAX)throw std::runtime_error("Texture exceeds the decoder's signed 32-bit input format: "+name);
@@ -213,7 +224,7 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource){ImportScope scope("Reading the VRM spring bones","vrm");model->springs=SpringSetup::fromManifest(vrm,*model);}
     if(character){model->springs=SpringSetup::fromManifest(conversion,*model);auto map=conversion.value("boneMap",Json::object());for(auto& [key,value]:map.items())model->conversionBoneMap[key]=value.get<int>();}
     Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;if(character)manifest["conversion"]=conversion;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
-    std::map<std::wstring,std::pair<std::string,bool>> prepared;
+    std::map<std::wstring,std::pair<std::string,bool>> prepared;const DependencyScope scope(source.parent_path(),true);
     for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
         auto image=material.base.substr(material.base.find_last_of("/\\")+1);
         report("Preparing textures","textures",.1f+.8f*float(i)/std::max<size_t>(1,model->materials.size()),"Material "+std::to_string(i+1)+" of "+std::to_string(model->materials.size())+(material.name.empty()?std::string():" “"+cleanText(material.name)+"”")+(image.empty()?std::string():": "+cleanText(image)),i+1,model->materials.size());
@@ -222,13 +233,15 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
                 if(embeddedSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
                     auto key=L"vrm:"+wide(entry.second);auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(found->second,entry.second,cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
                     textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;continue;}
-                auto file=resolveTexture(source.parent_path(),entry.second);
-                if(!fs::exists(file)&&std::string(entry.first)=="toon"){
-                    // MMD's shared ramps normally live beside the executable in Data.
-                    auto candidate=source.parent_path().parent_path().parent_path()/L"Data"/fs::path(wide(entry.second)).filename();
-                    if(fs::exists(candidate))file=candidate;
+                bool refused=false;auto file=resolveTexture(scope,entry.second,refused);
+                if((refused||!fs::exists(file))&&std::string(entry.first)=="toon"){
+                    // MMD's shared ramps normally live beside the executable in Data: only a
+                    // file of that name there, never a link out of it or a denied place.
+                    auto data=source.parent_path().parent_path().parent_path()/L"Data";auto candidate=data/fs::path(wide(entry.second)).filename();
+                    if(DependencyScope(data,false).allows(candidate)){file=candidate;refused=false;}
                     else if(entry.second.starts_with("toon")){textures[entry.first]="";continue;}
                 }
+                if(refused)throw std::runtime_error(outsideTexture(entry.second));
                 auto key=file.wstring();auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(readFile(file),utf8(file.filename().wstring()),cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
             }catch(const std::exception& e){model->warnings.push_back(e.what());}
             textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;

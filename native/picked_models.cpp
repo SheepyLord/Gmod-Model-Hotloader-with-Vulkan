@@ -1,5 +1,7 @@
 #include "picked_models.hpp"
 #include "file_access.hpp"
+#include "model_notes.hpp"
+#include "props/network_path.hpp"
 #include <windows.h>
 #include <bcrypt.h>
 #include <algorithm>
@@ -22,23 +24,54 @@ fs::path temporaryFolder(const fs::path& temp){
  wchar_t t[MAX_PATH+1]{};if(!GetTempPathW(MAX_PATH+1,t))throw std::runtime_error("No temporary folder");return t;
 }
 bool plainDirectory(const fs::path& path){auto a=GetFileAttributesW(ioPath(path).c_str());return a!=INVALID_FILE_ATTRIBUTES&&(a&FILE_ATTRIBUTE_DIRECTORY)&&!(a&FILE_ATTRIBUTE_REPARSE_POINT);}
+// Games running at the same time (the Steam copy and another install) share the store:
+// one saves at a time, each merging what the other saved.
+struct StoreLock{
+ HANDLE mutex=CreateMutexW(nullptr,FALSE,L"Local\\ModelHotloader-picked-models");bool owned=false;
+ StoreLock(){if(mutex){auto r=WaitForSingleObject(mutex,2000);owned=r==WAIT_OBJECT_0||r==WAIT_ABANDONED;}}
+ ~StoreLock(){if(owned)ReleaseMutex(mutex);if(mutex)CloseHandle(mutex);}
+ StoreLock(const StoreLock&)=delete;StoreLock& operator=(const StoreLock&)=delete;
+};
 }
-PickedModels::PickedModels(fs::path file):store(std::move(file)){
+PickedModels::PickedModels(fs::path file):store(std::move(file)){refresh();}
+// Reads the store again when it changed since it was last read and adds what it holds
+// that this game does not know yet (another game's picks). A damaged store adds nothing.
+void PickedModels::refresh() const {
+ if(store.empty())return;
+ // Every save writes a new file in its place (writeAtomic): its file ID says whether it changed.
+ BY_HANDLE_FILE_INFORMATION data{};
+ {HANDLE h=CreateFileW(ioPath(store).c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr);if(h==INVALID_HANDLE_VALUE)return;
+  bool known=GetFileInformationByHandle(h,&data);CloseHandle(h);if(!known)return;}
+ uint64_t index=(uint64_t(data.nFileIndexHigh)<<32)|data.nFileIndexLow,time=(uint64_t(data.ftLastWriteTime.dwHighDateTime)<<32)|data.ftLastWriteTime.dwLowDateTime,size=(uint64_t(data.nFileSizeHigh)<<32)|data.nFileSizeLow;
+ if(index==seenIndex&&time==seenTime&&size==seenSize)return;
+ seenIndex=index;seenTime=time;seenSize=size;
+ if((data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)||size>(4u<<20))return;
+ std::vector<std::wstring> stored;
  try{
-  std::error_code error;if(!fs::is_regular_file(ioPath(store),error)||fs::file_size(ioPath(store),error)>(4u<<20))return;
   auto j=readJson(store);if(!j.is_object()||j.value("schema",0)!=1||!j.contains("paths")||!j["paths"].is_array())return;
-  for(auto& p:j["paths"])if(p.is_string()){auto k=key(p.get<std::string>());if(!k.empty()&&!listed(paths,k))paths.push_back(k);}
-  if(paths.size()>MaxPicked)paths.erase(paths.begin(),paths.end()-MaxPicked);
- }catch(...){paths.clear();}
+  for(auto& p:j["paths"])if(p.is_string()){auto k=key(p.get<std::string>());if(!k.empty()&&!listed(stored,k))stored.push_back(k);}
+ }catch(...){return;}
+ // The store's order (oldest first), then what only this game remembers.
+ for(auto& p:paths)if(!listed(stored,p))stored.push_back(p);
+ if(stored.size()>MaxPicked)stored.erase(stored.begin(),stored.end()-MaxPicked);
+ paths=std::move(stored);
 }
-bool PickedModels::picked(std::string_view source,bool thisSession) const {return listed(thisSession?session:paths,key(source));}
+bool PickedModels::picked(std::string_view source,bool thisSession) const {
+ auto k=key(source);if(k.empty())return false;
+ if(thisSession)return listed(session,k);
+ if(listed(paths,k))return true;
+ refresh();return listed(paths,k);
+}
 bool PickedModels::add(std::string_view source){
  auto k=key(source);if(k.empty())return true;
  if(!listed(session,k))session.push_back(k);
+ StoreLock lock;seenIndex=seenTime=seenSize=0;refresh();
  // Newest last; the oldest go first past the limit.
  paths.erase(std::remove_if(paths.begin(),paths.end(),[&](const std::wstring& p){return same(p,k);}),paths.end());paths.push_back(k);
  if(paths.size()>MaxPicked)paths.erase(paths.begin(),paths.end()-MaxPicked);
- try{Json list=Json::array();for(auto& p:paths)list.push_back(utf8(p));fs::create_directories(ioPath(store.parent_path()));writeJson(store,{{"schema",1},{"paths",list}});return true;}catch(...){return false;}
+ if(store.empty())return false;
+ try{Json list=Json::array();for(auto& p:paths)list.push_back(utf8(p));fs::create_directories(ioPath(store.parent_path()));writeJson(store,{{"schema",1},{"paths",list}});}catch(...){return false;}
+ refresh();return true;
 }
 fs::path pickedModelsStore(){return fileAccessStore().parent_path()/L"picked-models.json";}
 bool sourceAllowed(const PickedModels& picked,std::string_view source,bool localServer,SourceUse use){
@@ -57,5 +90,32 @@ size_t sweepPrivateFolders(const std::wstring& prefix,std::chrono::hours age,con
   auto time=fs::last_write_time(it->path(),e);if(!e&&time<cutoff&&fs::remove_all(ioPath(it->path()),e)>0&&!e)removed++;
  }
  return removed;
+}
+fs::path importJobsFolder(){auto dir=temporaryFolder({})/L"mmdhl-jobs";fs::create_directories(ioPath(dir));return dir;}
+fs::path prepareImportJob(const PickedModels& picked,bool localServer,bool picker,const std::string& source,const Json& options,const fs::path& jobs){
+ // On a server this game does not host, every client script is that server's: it imports
+ // only files the player picked, decided before anything opens the path.
+ if(!source.empty()&&!sourceAllowed(picked,source,localServer,SourceUse::Import))throw std::runtime_error("On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.");
+ // Sources come from Lua (or registries in data/ that Lua can write): a path to another
+ // computer would make Windows sign in there. Mapped drive letters still work.
+ if(props::networkPath(source))throw std::runtime_error("Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
+ // The request, the status and the picker's answer go through a folder of the job's own
+ // in the user's temporary folder: Lua can rewrite anything under garrysmod/data.
+ auto dir=createPrivateFolder(L"job-",jobs.empty()?importJobsFolder():jobs);
+ try{
+  writeJson(dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"stageCode",picker?"pick":"start"},{"progress",0}});
+  if(!picker)writeJson(dir/L"request.json",{{"source",source},{"options",options}});
+ }catch(...){std::error_code error;fs::remove_all(ioPath(dir),error);throw;}
+ return dir;
+}
+void notePickedSource(PickedModels& picked,bool pickerJob,const Json& result){
+ // The picker's answer came through the job's private folder: the player chose this file.
+ if(!pickerJob||!result.is_object())return;
+ auto state=result.find("state"),source=result.find("source");
+ if(state!=result.end()&&state->is_string()&&*state=="selected"&&source!=result.end()&&source->is_string())picked.add(source->get<std::string>());
+}
+Json inspectModelNotesFor(const PickedModels& picked,bool localServer,const std::string& source){
+ if(!sourceAllowed(picked,source,localServer,SourceUse::Notes))throw std::runtime_error("On a server you do not host, model terms are read only beside a model just chosen in the file window");
+ return inspectModelNotes(fs::path(wide(source)));
 }
 }

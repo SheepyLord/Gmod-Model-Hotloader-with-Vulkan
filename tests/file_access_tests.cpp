@@ -273,7 +273,54 @@ int wmain(int argc,wchar_t** argv){try{
   fs::create_directories(root/L"temp");auto job=createPrivateFolder(L"mmdhl-job-",root/L"temp"),next=createPrivateFolder(L"mmdhl-job-",root/L"temp");
   check(fs::is_directory(job)&&job.parent_path()==root/L"temp"&&job.filename().wstring().starts_with(L"mmdhl-job-")&&job.filename().wstring().size()==42&&next!=job,"a private job folder");
   write(job/L"status.json","{}");fs::last_write_time(job,fs::file_time_type::clock::now()-std::chrono::hours(48));
-  check(sweepPrivateFolders(L"mmdhl-job-",std::chrono::hours(24),root/L"temp")==1&&!fs::exists(job)&&fs::exists(next),"job folders a crash left are swept after a day, recent ones stay");}
+  check(sweepPrivateFolders(L"mmdhl-job-",std::chrono::hours(24),root/L"temp")==1&&!fs::exists(job)&&fs::exists(next),"job folders a crash left are swept after a day, recent ones stay");
+  // Two games running at once (the Steam copy and another install) share the store: neither
+  // loses the other's picks, and each sees what the other picked since it started.
+  {auto shared=root/L"picked"/L"shared.json";auto steam=u8(root/L"models"/L"steam.pmx"),rtx=u8(root/L"models"/L"rtx.pmx");
+   PickedModels first(shared),second(shared);check(first.add(steam)&&second.add(rtx),"the shared store was not saved");
+   check(sourceAllowed(PickedModels(shared),steam,false,SourceUse::Import)&&sourceAllowed(PickedModels(shared),rtx,false,SourceUse::Import),"a game running at the same time dropped another's pick from the store");
+   check(sourceAllowed(first,rtx,false,SourceUse::Import)&&!sourceAllowed(first,rtx,false,SourceUse::Notes),"a pick another game saved since was not seen, or counted as this session's");}}
+ // ---- The module's import functions (module.cpp) go through these, tested here without a game ----
+ // Every job (BeginImport, Reload, PropReload, Browse) starts in prepareImportJob: on another
+ // server only a picked file, refused before any job folder exists and with the same sentence
+ // whether the file exists or not; never a network path; the request and status in a private
+ // folder of %TEMP%\mmdhl-jobs. PollJob remembers only a picker job's "selected" answer, and
+ // InspectModelNotes reads beside a file picked in this session only.
+ {auto store=root/L"picked-jobs"/L"picked-models.json";auto jobs=root/L"jobs";fs::create_directories(jobs);
+  write(root/L"notes"/L"chosen.pmx","PMX ");write(root/L"notes"/L"other.pmx","PMX ");write(root/L"notes"/L"readme.txt","Free to use.");
+  auto chosen=u8(root/L"notes"/L"chosen.pmx"),other=u8(root/L"notes"/L"other.pmx"),missing=u8(root/L"notes"/L"missing.pmx");
+  auto folders=[&]{size_t n=0;for(auto it=fs::directory_iterator(jobs);it!=fs::directory_iterator();++it)n++;return n;};
+  auto failure=[](const std::function<void()>& f){try{f();}catch(const std::exception& e){return std::string(e.what());}return std::string();};
+  PickedModels picked(store);
+  auto unpicked=failure([&]{prepareImportJob(picked,false,false,other,Json::object(),jobs);}),absent=failure([&]{prepareImportJob(picked,false,false,missing,Json::object(),jobs);});
+  check(unpicked.find("only models chosen in its file window")!=std::string::npos&&unpicked==absent&&folders()==0,"another server started a job for a file the player did not pick, or the refusal told whether it exists: "+unpicked+" / "+absent);
+  check(failure([&]{prepareImportJob(picked,true,false,"\\\\example.invalid\\share\\x.pmx",Json::object(),jobs);}).find("network paths")!=std::string::npos&&folders()==0,"a job started for a network path");
+  auto direct=prepareImportJob(picked,true,false,other,Json{{"kind","static"}},jobs);auto request=readJson(direct/L"request.json");
+  check(direct.parent_path()==jobs&&direct.filename().wstring().starts_with(L"job-")&&request["source"]==other&&request["options"]["kind"]=="static"&&readJson(direct/L"status.json")["stageCode"]=="start","single player or a listen host: a direct path's job, request and status");
+  auto picker=prepareImportJob(picked,false,true,"",Json::object(),jobs);
+  check(readJson(picker/L"status.json")["stageCode"]=="pick"&&!fs::exists(picker/L"request.json"),"the picker's job on another server");
+  notePickedSource(picked,false,Json{{"state","selected"},{"source",chosen}});notePickedSource(picked,true,Json{{"state","cancelled"},{"source",chosen}});
+  notePickedSource(picked,true,Json{{"state","complete"},{"source",chosen}});notePickedSource(picked,true,Json{{"state","selected"},{"source",42}});notePickedSource(picked,true,Json("selected"));
+  check(!sourceAllowed(picked,chosen,false,SourceUse::Import),"a result other than the picker's \"selected\" counted as a pick");
+  notePickedSource(picked,true,Json{{"state","selected"},{"source",chosen}});
+  check(fs::is_regular_file(prepareImportJob(picked,false,false,chosen,Json::object(),jobs)/L"request.json"),"a picked file's job did not start on another server");
+  auto notes=inspectModelNotesFor(picked,false,chosen);
+  check(notes["readmes"].size()==1&&notes["readmes"][0]["text"].get<std::string>().find("Free to use.")!=std::string::npos,"the notes beside a file picked in this session were not read: "+notes.dump());
+  auto notesRefused=failure([&]{inspectModelNotesFor(picked,false,other);}),notesAbsent=failure([&]{inspectModelNotesFor(picked,false,missing);});
+  check(!notesRefused.empty()&&notesRefused==notesAbsent,"another server read notes beside a file the player did not pick, or learnt whether it exists");
+  check(!failure([&]{inspectModelNotesFor(PickedModels(store),false,chosen);}).empty(),"another server read notes beside a file picked in an earlier session");
+  check(inspectModelNotesFor(PickedModels(store),true,other)["readmes"].size()==1,"single player or a listen host lost the notes beside any model");
+  // The real folder: %TEMP%\mmdhl-jobs, never garrysmod/data.
+  wchar_t temp[MAX_PATH+1]{};GetTempPathW(MAX_PATH+1,temp);auto real=prepareImportJob(picked,true,true,"",Json::object());
+  check(real.parent_path()==fs::path(temp)/L"mmdhl-jobs"&&real.parent_path()==importJobsFolder(),"jobs left the user's temporary folder: "+u8(real));
+  fs::remove_all(real);
+  // module.cpp calls these and nothing around them: every import job starts through
+  // launch(), which prepares the job before the worker starts, and the notes are read only
+  // through inspectModelNotesFor.
+  auto module=slurp("native/module.cpp");auto launch=module.find("uint64_t launch(");auto spawn=module.find("CreateProcessW(",launch);
+  check(launch!=std::string::npos&&spawn!=std::string::npos&&module.find("CreateProcessW(",spawn+1)==std::string::npos&&module.substr(launch,spawn-launch).find("prepareImportJob(picked(),localServerRealm(),picker,source,options)")!=std::string::npos,"module.cpp starts a worker without prepareImportJob");
+  check(module.find("inspectModelNotes(")==std::string::npos&&module.find("inspectModelNotesFor(picked(),localServerRealm(),")!=std::string::npos&&module.find("notePickedSource(picked(),j.picker,result)")!=std::string::npos,"module.cpp reads notes or remembers picks around picked_models.hpp");
+  for(auto name:{"FUNCTION(BeginImport)","FUNCTION(Reload)","FUNCTION(PropReload)","FUNCTION(Browse)"}){auto at=module.find(name);check(at!=std::string::npos&&module.find("launch(",at)<module.find("END_FUNCTION",at),std::string(name)+" does not start its job through launch()");}}
  fa.reset();releaseRuntimeRealm(true);check(!localServerRealm(),"the server realm count");
  std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule and dialogs\n";
  return 0;

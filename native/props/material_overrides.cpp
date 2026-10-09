@@ -1,6 +1,7 @@
 #include "core.hpp"
 #include "texture_resolver.hpp"
 #include <map>
+#include <optional>
 #include <set>
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,19 @@ void applyMaterialOverrides(Asset& a,const fs::path& source,const Options& optio
     TextureResolver resources(source.parent_path());
     auto& materials=a.manifest.at("materials");unsigned applied=0;
     auto& warnings=a.manifest["warnings"];if(warnings.is_null())warnings=Json::array();
+    // A sidecar can come with a downloaded model, so the textures it names are read like
+    // the model's own: only from the model's folders (TextureResolver). One outside them is
+    // looked up by its file name there, and otherwise left out with a warning that names
+    // only the file (manifests are shared); the rest of the override still applies. A texture
+    // that is nowhere fails the import, as before.
+    auto overrideTexture=[&](const std::string& ref)->std::optional<fs::path>{
+        try{return resources.resolve(ref).path;}
+        catch(const std::exception&){
+            if(!resources.refuses(ref))throw;
+            std::string name="?";try{name=utf8(fs::path(wide(ref)).filename().wstring());}catch(...){}
+            warnings.push_back("Material override texture outside the model's folders was not used: "+name);return std::nullopt;
+        }
+    };
     std::set<std::string> matchedMaterials,matchedMeshes;
     auto apply=[&](Json& m,const Json& override){
         if(!override.is_object())throw std::runtime_error("Material override must be an object");
@@ -41,10 +55,12 @@ void applyMaterialOverrides(Asset& a,const fs::path& source,const Options& optio
         if(override.contains("specular")||override.contains("shininess"))m.erase("pbr"); // explicit Phong wins
         for(auto binding:{"base_texture","normal_texture"})if(override.contains(binding)){
             auto ref=override.at(binding).get<std::string>();
-            auto bytes=readFile(resources.resolve(ref).path,MaxTextureFileBytes);
-            Texture texture;
-            if(std::string_view(binding)=="base_texture"&&override.contains("opacity_texture")){
-                auto mask=readFile(resources.resolve(override.at("opacity_texture").get<std::string>()).path,MaxTextureFileBytes);
+            auto file=overrideTexture(ref);if(!file)continue;
+            auto bytes=readFile(*file,MaxTextureFileBytes);
+            Texture texture;std::optional<fs::path> maskFile;
+            if(std::string_view(binding)=="base_texture"&&override.contains("opacity_texture"))maskFile=overrideTexture(override.at("opacity_texture").get<std::string>());
+            if(maskFile){
+                auto mask=readFile(*maskFile,MaxTextureFileBytes);
                 texture=makeMaskedTexture(bytes,mask,options.limits.textureDimension,override.value("white_opacity",false));
             }else texture=makeTexture(bytes,options.limits.textureDimension);
             auto hash=texture.hash;addTexture(a,std::move(texture),ref);m[binding]=hash;

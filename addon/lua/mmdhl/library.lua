@@ -171,14 +171,28 @@ end
 -- Complete physical deletion of any archives Windows held open last session.
 local cleanup,cleanupError=mmdhl.Decode(native.DeleteAssets('[]'))
 if cleanupError then ErrorNoHalt('[Model Hotloader cleanup] '..cleanupError..'\n') end
+-- Refusals the native says only in English before a job starts (natives after 2.3.0): a
+-- code gives them the player's language in the failure window and the status line.
+local startRefusals={{'only models chosen in its file window','start.not_picked'}}
+local function startCode(err)
+ local lower=tostring(err or ''):lower()
+ for _,refusal in ipairs(startRefusals) do if lower:find(refusal[1],1,true) then return refusal[2] end end
+end
+-- Why an import did not start, in the player's language where the sentence is known, and its code.
+function library.StartError(err)
+ local code=startCode(err)
+ if code then return mmdhl.ImportCause({errorCode=code,error=tostring(err)}),code end
+ return tostring(err or L'library.import.start_failed')
+end
 -- kind is nil for characters and 'static' for props; both share one worker.
 function library.StartImport(handle,err,kind)
  if not handle then
-  library.status=tostring(err or L'library.import.start_failed') hook.Run('MMDHL.ImportChanged')
+  local text,code=library.StartError(err)
+  library.status=text hook.Run('MMDHL.ImportChanged')
   -- The importer did not start (missing, blocked, the installation check): say why in the
   -- failure window. A busy importer only needs the status line.
   if err and mmdhl.ShowImportFailure and not tostring(err):find('already running',1,true) then
-   local failure={state='failed',error=tostring(err),stageCode='start',kind=kind}
+   local failure={state='failed',error=tostring(err),errorCode=code,stageCode='start',kind=kind}
    timer.Simple(0,function() mmdhl.ShowImportFailure(failure,kind=='static' and 'static' or 'library') end)
   end
   return false
@@ -211,8 +225,20 @@ end
 function library.ReimportProp(id)
  if library.job then return false,L'library.import.busy' end
  local handle,err=native.PropReload(id,util.TableToJSON(mmdhl.props.ImportOptions()))
- if not library.StartImport(handle,err,'static') then return false,err end
+ if not library.StartImport(handle,err,'static') then return false,(library.StartError(err)) end
  library.reimportOf=id library.status=L'library.import.reimporting_prop' return true
+end
+-- Reload a character from its recorded source (the entity editor's Reload). The new
+-- revision keeps the terms record of the one it replaces when the source's readmes cannot
+-- be read again (on a server this game does not host, only beside a file picked in this
+-- session). Keyed by source: a changed file goes through the bone window first.
+library.reloadOf=library.reloadOf or {}
+function library.ReloadCharacter(id)
+ local handle,err=native.Reload(id)
+ if not library.StartImport(handle,err) then return false,(library.StartError(err)) end
+ local entry=istable(library.entries) and library.entries[id]
+ if entry and isstring(entry.source) and entry.source~='' then library.reloadOf[entry.source]=id end
+ return true
 end
 function library.CancelImport()
  pickerNotice(false)
@@ -322,7 +348,8 @@ local codeHints={['character.format']='library.hint.character_format',['characte
  ['format.archive']='library.hint.format_archive',['format.motion']='library.hint.format_motion',['format.image']='library.hint.format_image',['format.renamed']='library.hint.format_renamed',['format.unknown']='library.hint.format_unknown',
  ['vrm.truncated']='library.hint.truncated',['vrm.humanoid']='library.hint.vrm_humanoid',['vrm.external']='library.hint.vrm_external_buffer',['spring.data']='library.hint.vrm_spring',
  ['io.missing']='library.hint.io_missing',['io.locked']='library.hint.io_locked',['io.denied']='library.hint.io_denied',['io.device']='library.hint.io_device',['io.read']='library.hint.cannot_open',['io.empty']='library.hint.io_empty',
- ['io.write']='library.hint.io_write',['io.filesystem']='library.hint.io_write',['io.disk_full']='library.hint.io_disk_full',['memory']='library.hint.memory',['worker.crash']='library.hint.worker_crash',['texture.derivative']='library.hint.texture_derivative'}
+ ['io.write']='library.hint.io_write',['io.filesystem']='library.hint.io_write',['io.disk_full']='library.hint.io_disk_full',['memory']='library.hint.memory',['worker.crash']='library.hint.worker_crash',['texture.derivative']='library.hint.texture_derivative',
+ ['start.not_picked']='library.hint.remote_picked'}
 local familyHints={pmx='library.hint.pmx',vrm='library.hint.vrm_damaged',spring='library.hint.vrm_spring',io='library.hint.cannot_open',format='library.hint.format_unknown',character='library.hint.character_parse'}
 -- i18n-keys: library.hint.character_format library.hint.character_blend library.hint.character_parse library.hint.character_no_skeleton library.hint.character_too_complex
 -- i18n-keys: library.hint.character_bone_map library.hint.character_jiggle library.hint.character_orientation library.hint.character_needs_mapping
@@ -330,7 +357,7 @@ local familyHints={pmx='library.hint.pmx',vrm='library.hint.vrm_damaged',spring=
 -- i18n-keys: library.hint.format_archive library.hint.format_motion library.hint.format_image library.hint.format_renamed library.hint.format_unknown
 -- i18n-keys: library.hint.truncated library.hint.vrm_humanoid library.hint.vrm_external_buffer library.hint.vrm_spring library.hint.vrm_damaged
 -- i18n-keys: library.hint.io_missing library.hint.io_locked library.hint.io_denied library.hint.io_device library.hint.cannot_open library.hint.io_empty library.hint.io_write library.hint.io_disk_full
--- i18n-keys: library.hint.memory library.hint.worker_crash library.hint.texture_derivative
+-- i18n-keys: library.hint.memory library.hint.worker_crash library.hint.texture_derivative library.hint.remote_picked
 local function codeEntry(map,families,code)
  if not isstring(code) then return nil end
  return map[code] or (families and families[code:match('^([%w_]+)%.') or ''])
@@ -355,12 +382,13 @@ local codeCauses={['pmx.truncated']='library.cause.truncated',['vrm.truncated']=
  ['vrm.json']='library.cause.vrm_damaged',['vrm.data']='library.cause.vrm_damaged',['vrm.container']='library.cause.vrm_damaged',['vrm.image']='library.cause.vrm_damaged',['vrm.no_skeleton']='library.cause.vrm_damaged',
  ['vrm.no_geometry']='library.cause.vrm_damaged',['vrm.error']='library.cause.vrm_damaged',['vrm.humanoid']='library.cause.vrm_humanoid',['vrm.external']='library.cause.vrm_external',['spring.data']='library.cause.spring',
  ['io.missing']='library.cause.io_missing',['io.locked']='library.cause.io_locked',['io.denied']='library.cause.io_denied',['io.device']='library.cause.io_device',['io.read']='library.cause.io_read',['io.empty']='library.cause.io_empty',
- ['io.write']='library.cause.io_write',['io.filesystem']='library.cause.io_write',['io.disk_full']='library.cause.io_disk_full',['memory']='library.cause.memory',['worker.crash']='library.cause.worker_crash',['texture.derivative']='library.cause.texture'}
+ ['io.write']='library.cause.io_write',['io.filesystem']='library.cause.io_write',['io.disk_full']='library.cause.io_disk_full',['memory']='library.cause.memory',['worker.crash']='library.cause.worker_crash',['texture.derivative']='library.cause.texture',
+ ['start.not_picked']='library.cause.not_picked'}
 -- i18n-keys: library.cause.truncated library.cause.pmx_damaged library.cause.pmx_text library.cause.pmx_version library.cause.pmx_materials library.cause.pmx_number library.cause.pmx_reference
 -- i18n-keys: library.cause.format_archive library.cause.format_motion library.cause.format_image library.cause.format_renamed library.cause.format_unknown
 -- i18n-keys: library.cause.vrm_damaged library.cause.vrm_humanoid library.cause.vrm_external library.cause.spring
 -- i18n-keys: library.cause.io_missing library.cause.io_locked library.cause.io_denied library.cause.io_device library.cause.io_read library.cause.io_empty library.cause.io_write library.cause.io_disk_full
--- i18n-keys: library.cause.memory library.cause.worker_crash library.cause.texture
+-- i18n-keys: library.cause.memory library.cause.worker_crash library.cause.texture library.cause.not_picked
 function mmdhl.ImportCause(status)
  local key=codeEntry(codeCauses,nil,status.errorCode)
  if not key then return tostring(status.error or L'library.import.unknown_error') end
@@ -702,7 +730,9 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   library.job=nil
   local preference='mmd_hotloader/library/'..status.asset..'.json' local saved=util.JSONToTable(file.Read(preference,'DATA') or '')
   if saved and saved.deleted then saved.deleted=nil file.Write(preference,util.TableToJSON(saved,true)) end
-  if mmdhl.terms then mmdhl.terms.Imported('character',status.asset,status.source) end
+  local previous=isstring(status.source) and library.reloadOf[status.source] or nil
+  if previous then library.reloadOf[status.source]=nil end
+  if mmdhl.terms then mmdhl.terms.Imported('character',status.asset,status.source,previous) end
   if mmdhl.names then mmdhl.names.Imported(status.asset,status.source) end
   library.Refresh()
   local name=(status.info or {}).name

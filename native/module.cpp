@@ -29,7 +29,6 @@
 #include "import_error.hpp"
 #include "file_access.hpp"
 #include "picked_models.hpp"
-#include "props/network_path.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
 #ifdef MMDHL_SERVER
@@ -71,26 +70,18 @@ void pruneJobs(){std::vector<uint64_t> done;for(auto& [id,j]:context->jobs)if(!j
 #ifndef MMDHL_SERVER
 // The files the player chose in the picker (picked_models.hpp), read on first use.
 PickedModels& picked(){if(!context->picked){fs::path store;try{store=pickedModelsStore();}catch(...){}context->picked=std::make_unique<PickedModels>(store);}return *context->picked;}
-// Where jobs keep their request, status and log: %TEMP%\mmdhl-jobs\job-<random> (picked_models.hpp).
-fs::path jobsFolder(){wchar_t temp[MAX_PATH+1]{};if(!GetTempPathW(MAX_PATH+1,temp))throw std::runtime_error("No temporary folder for the import");auto dir=fs::path(temp)/L"mmdhl-jobs";fs::create_directories(ioPath(dir));return dir;}
 #endif
 uint64_t launch(bool picker,const std::string& source,const Json& options){
 #ifdef MMDHL_SERVER
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
-    // On a server this game does not host, every client script is that server's: it imports
-    // only files the player picked, decided before anything opens the path (picked_models.hpp).
-    if(!source.empty()&&!sourceAllowed(picked(),source,localServerRealm(),SourceUse::Import))throw std::runtime_error("On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.");
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
-    // Sources come from Lua (or registries in data/ that Lua can write): a path to another
-    // computer would make Windows sign in there. Mapped drive letters still work.
-    if(props::networkPath(source))throw std::runtime_error("Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
     pruneJobs();
-    // The request, the status and the picker's answer go through a folder of the job's own
-    // in the user's temporary folder: Lua can rewrite anything under garrysmod/data.
-    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.picker=picker;j.dir=createPrivateFolder(L"job-",jobsFolder());
-    writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"stageCode",picker?"pick":"start"},{"progress",0}});
-    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"options",options}});
+    // On a server this game does not host only a file the player picked, never a network
+    // path; the request and status go into a private folder in %TEMP%\mmdhl-jobs, which
+    // Lua cannot rewrite (picked_models.hpp, tested in file_access_tests.cpp).
+    Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.picker=picker;
+    j.dir=prepareImportJob(picked(),localServerRealm(),picker,source,options);
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
     // The cache folder goes on the command line, not in request.json: any script can rewrite
@@ -188,7 +179,7 @@ FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->job
     if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);
 #ifndef MMDHL_SERVER
      // The picker's answer came through the job's private folder: the player chose this file.
-     if(j.picker&&result.value("state","")=="selected"&&result.contains("source")&&result["source"].is_string())picked().add(result["source"].get<std::string>());
+     notePickedSource(picked(),j.picker,result);
 #endif
     }
     else if(result.value("state","")!="running")result={{"state","running"},{"stage","Committing asset"},{"progress",.99}};
@@ -320,9 +311,7 @@ FUNCTION(PollPackageExport) {
 } END_FUNCTION
 // Readme, licence and embedded terms of a model file the player chose, before importing it.
 // On a server this game does not host, only beside a file picked in this session.
-FUNCTION(InspectModelNotes) {auto source=stringArg(LUA,1);
- if(!sourceAllowed(picked(),source,localServerRealm(),SourceUse::Notes))throw std::runtime_error("On a server you do not host, model terms are read only beside a model just chosen in the file window");
- push(LUA,inspectModelNotes(fs::path(wide(source))));return 1;} END_FUNCTION
+FUNCTION(InspectModelNotes) {push(LUA,inspectModelNotesFor(picked(),localServerRealm(),stringArg(LUA,1)));return 1;} END_FUNCTION
 FUNCTION(CancelPackageExport) {auto it=context->packages.find(number(LUA,1));if(it!=context->packages.end())it->second.progress->cancel=true;LUA->PushBool(true);return 1;} END_FUNCTION
 // Shows an export in Explorer. Only plain file names inside data/mmd_hotloader/exports.
 FUNCTION(RevealPackageExport) {
@@ -618,7 +607,7 @@ GMOD_MODULE_OPEN(){
     try {context=std::make_unique<Context>();acquireRuntimeRealm(ServerRealm);wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
-        sweepJobFolders(context->cache,std::chrono::hours(24));try{sweepPrivateFolders(L"job-",std::chrono::hours(24),jobsFolder());}catch(...){}
+        sweepJobFolders(context->cache,std::chrono::hours(24));try{sweepPrivateFolders(L"job-",std::chrono::hours(24),importJobsFolder());}catch(...){}
 #endif
         LUA->CreateTable();
 #define REGISTER(name) LUA->PushCFunction(name);LUA->SetField(-2,#name)
