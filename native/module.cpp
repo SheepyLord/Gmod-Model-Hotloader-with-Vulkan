@@ -595,7 +595,7 @@ FUNCTION(ReadMainThreadSamples) {auto report=mainThreadSampler.report(context->b
 #endif
 }
 GMOD_MODULE_OPEN(){
-    try {context=std::make_unique<Context>();acquireRuntimeRealm(ServerRealm);wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
+    try {context=std::make_unique<Context>();wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
         sweepJobFolders(context->cache,std::chrono::hours(24));
@@ -618,8 +618,11 @@ GMOD_MODULE_OPEN(){
         REGISTER(FileAccessInfo);REGISTER(FileAccessPick);REGISTER(FileAccessRequest);REGISTER(FileAccessPoll);REGISTER(FileAccessRead);REGISTER(FileAccessPollRead);REGISTER(FileAccessList);REGISTER(FileAccessPollList);REGISTER(FileAccessRelease);REGISTER(FileAccessCancel);REGISTER(FileAccessGrants);REGISTER(FileAccessRevoke);REGISTER(FileAccessSetEnabled);
 #endif
         registerPropFunctions(LUA,context->cache);
+        // Counted only once nothing can fail any more: localServerRealm() decides whether file
+        // access is offered, and nothing would release the count of a module that failed to open.
+        acquireRuntimeRealm(ServerRealm);
         LUA->Push(-1);LUA->SetField(GarrysMod::Lua::INDEX_GLOBAL,"mmdhl_native");return 1;
-    }catch(const std::exception& e){LUA->ThrowError(e.what());return 0;}
+    }catch(const std::exception& e){context.reset();LUA->ThrowError(e.what());return 0;}
 }
 GMOD_MODULE_CLOSE(){
 shutdownProps();

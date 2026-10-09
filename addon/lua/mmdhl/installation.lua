@@ -378,12 +378,29 @@ function M.RefreshGameCompatibility()
  return report and report.pending
 end
 -- Every native call that starts mmdhl_worker.exe. Reload takes its options from the source registry.
-local workerCalls={Browse=true,BeginImport=true,Reload=true,PropDerive=true,PropReload=true}
+-- File access shows its dialogs in the worker (turning it off shows none); its refusals
+-- carry a code, as native's do, and it takes no import options. A request for a path in a
+-- folder the player always allowed for that addon needs no dialog: without the worker,
+-- native answers only those (noDialog) and refuses the rest as the guard would.
+local workerCalls={Browse=true,BeginImport=true,Reload=true,PropDerive=true,PropReload=true,FileAccessPick=true,FileAccessRequest=true,FileAccessSetEnabled=true}
+local fileAccessCalls={FileAccessPick=true,FileAccessRequest=true,FileAccessSetEnabled=true}
 local function guardedNative(native)
  local proxy={}
  for name,value in pairs(native) do
   if workerCalls[name] then proxy[name]=function(...)
-   local ok,err=M.FeatureAvailable('imports') if not ok then return nil,err end
+   if name=='FileAccessSetEnabled' and (...)~=true then return value(...) end
+   local ok,err=M.FeatureAvailable('imports')
+   if fileAccessCalls[name] then
+    if ok then return value(...) end
+    local request=name=='FileAccessRequest' and util.JSONToTable(tostring((...) or ''))
+    if istable(request) then
+     request.noDialog=true
+     local id,why,code=value(util.TableToJSON(request))
+     if id~=nil or code~='worker_unavailable' then return id,why,code end
+    end
+    return nil,err,'worker_unavailable'
+   end
+   if not ok then return nil,err end
    local args={...}
    if name~='Browse' and name~='Reload' and not status.features.detailedCollision then
     local options=util.JSONToTable(args[2] or '{}') or {} options.collision='hull' args[2]=util.TableToJSON(options)

@@ -3,9 +3,18 @@
 // trip through the test-only worker (argv[1], answers from MMDHL_FA_TEST_ANSWER). argv[2]
 // is the shipped worker: its --request refuses network sources and cache folders before
 // opening them, and takes the cache folder from its command line when the game names one.
+// Also: turning file access off, revoking a folder and closing the module stop the reads
+// and listings they concern, also reads that wait on a file that does not answer, and what
+// a smaller folder answered before a larger one replaced it; two game processes share the
+// store without writing back each other's old state, and what one turns off or revokes
+// stops the other's reads and dialogs at its next poll; without a worker the installation
+// check allows, only remembered folders answer; the picker's arming (and, with
+// MMDHL_FA_UI_TESTS=1, the real folder picker takes no OK in its first moment).
 #include "file_access.hpp"
+#include "file_access_picker.hpp"
 #include "props/network_path.hpp"
 #include <windows.h>
+#include <winioctl.h>
 #include <shlobj.h>
 #include <fstream>
 #include <iostream>
@@ -22,6 +31,29 @@ static FileReadResult readNow(FileAccess& fa,const std::string& handle,const Jso
 static Json listNow(FileAccess& fa,const std::string& handle,const Json& o){auto id=fa.list(handle,o);for(int i=0;i<500;i++){if(auto r=fa.pollList(id))return *r;Sleep(10);}throw std::runtime_error("File access validation failed: listing never finished");}
 static std::vector<Json> logged(const fs::path& log){std::vector<Json> out;std::ifstream f(log);std::string line;while(std::getline(f,line))if(!line.empty())out.push_back(Json::parse(line));return out;}
 static std::string u8(const fs::path& p){return utf8(p.wstring());}
+// Until every read and listing thread ended (they are never joined).
+static void settle(){for(int i=0;i<1000&&fileAccessThreads();i++)Sleep(10);check(!fileAccessThreads(),"a read or listing never ended");}
+// A file that does not answer, like one on a network share that stopped responding: this
+// process holds a read-write-handle oplock on it and never acknowledges the break, so any
+// other open of the file waits (until the oplock is released here).
+struct StuckFile {
+ HANDLE file=INVALID_HANDLE_VALUE;OVERLAPPED overlapped{};REQUEST_OPLOCK_OUTPUT_BUFFER out{};bool held=false;
+ explicit StuckFile(const fs::path& path){
+  overlapped.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+  // Antivirus software may still have the new file open for a moment: no oplock then.
+  for(int attempt=0;attempt<40&&!held;attempt++){
+   if(file!=INVALID_HANDLE_VALUE){CloseHandle(file);Sleep(50);}
+   file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);if(file==INVALID_HANDLE_VALUE)break;
+   REQUEST_OPLOCK_INPUT_BUFFER in{REQUEST_OPLOCK_CURRENT_VERSION,sizeof(in),OPLOCK_LEVEL_CACHE_READ|OPLOCK_LEVEL_CACHE_HANDLE|OPLOCK_LEVEL_CACHE_WRITE,REQUEST_OPLOCK_INPUT_FLAG_REQUEST};
+   out={};out.StructureVersion=REQUEST_OPLOCK_CURRENT_VERSION;out.StructureLength=sizeof(out);ResetEvent(overlapped.hEvent);
+   held=!DeviceIoControl(file,FSCTL_REQUEST_OPLOCK,&in,sizeof(in),&out,sizeof(out),nullptr,&overlapped)&&GetLastError()==ERROR_IO_PENDING;
+  }
+ }
+ // Someone opened the file: the oplock breaks and that open waits for this process.
+ bool breaking() const {return held&&WaitForSingleObject(overlapped.hEvent,0)==WAIT_OBJECT_0;}
+ void release(){if(file!=INVALID_HANDLE_VALUE){CloseHandle(file);file=INVALID_HANDLE_VALUE;}}
+ ~StuckFile(){release();if(overlapped.hEvent)CloseHandle(overlapped.hEvent);}
+};
 int wmain(int argc,wchar_t** argv){try{
  check(argc==3,"usage: mmdhl_file_access_tests <test worker> <mmdhl_worker>");
  auto base=fs::temp_directory_path()/(L"mmdhl-file-access-test-"+std::to_wstring(GetCurrentProcessId()));
@@ -247,7 +279,148 @@ int wmain(int argc,wchar_t** argv){try{
   check(refusal([&]{reader.read(file,Json::object());})=="busy","a ninth read ran beside eight");
   Sleep(1500);check(readNow(reader,file,Json::object()).data=="{\"x\":1}\r\n","uncollected results kept their slots");
   check(refusal([&]{reader.pollRead(forgotten[0]);})=="unknown_request","an uncollected result was kept");}
+ // ---- Revoking a folder or turning file access off stops what was read through it ----
+ settle();
+ {FileAccessConfig own=config;own.store=root/L"store6"/L"file-access.json";FileAccess reader(own);
+  answer(L"always");auto inFolder=wait(reader,reader.request({{"requester","Reader"},{"path",local+"\\allowed"},{"folder",true}}))["items"][0]["handle"].get<std::string>();
+  answer(L"once");auto once=wait(reader,reader.request({{"requester","Other"},{"path",local+"\\allowed\\a.json"}}))["items"][0]["handle"].get<std::string>();
+  // Finished but not collected yet: a result of a revoked folder is not handed out; a file allowed once still is.
+  auto read=reader.read(inFolder,{{"relative","a.json"}}),listing=reader.list(inFolder,Json::object()),other=reader.read(once,Json::object());settle();
+  check(reader.revoke(reader.grants()["grants"][0]["id"]),"revoking the folder");
+  check(refusal([&]{reader.pollRead(read);})=="released"&&refusal([&]{reader.pollList(listing);})=="released","a read or listing of a revoked folder was delivered");
+  check(reader.pollRead(other).value().data=="{\"x\":1}\r\n","revoking a folder stopped the read of a file allowed once");
+  read=reader.read(once,Json::object());auto decoded=reader.read(once,{{"mode","text"}});settle();
+  check(!reader.setEnabled(false,"en").value("enabled",true)&&refusal([&]{reader.pollRead(read);})=="disabled"&&refusal([&]{reader.pollRead(decoded);})=="disabled","a read was delivered after file access was turned off");}
+ // ---- Reads that wait on files that do not answer ----
+ // Turning off answers at once, and closing the module (every map change) does not wait for them.
+ write(root/L"stuck"/L"first.bin","stuck");write(root/L"stuck"/L"second.bin","stuck");
+ {FileAccessConfig own=config;answer(L"once");
+  own.store=root/L"store7"/L"file-access.json";auto first=std::make_unique<FileAccess>(own);
+  own.store=root/L"store8"/L"file-access.json";auto second=std::make_unique<FileAccess>(own);
+  auto firstItem=wait(*first,first->request({{"requester","Stuck"},{"path",local+"\\stuck\\first.bin"}}))["items"][0]["handle"].get<std::string>();
+  auto secondItem=wait(*second,second->request({{"requester","Stuck"},{"path",local+"\\stuck\\second.bin"}}))["items"][0]["handle"].get<std::string>();
+  StuckFile stuckFirst(root/L"stuck"/L"first.bin"),stuckSecond(root/L"stuck"/L"second.bin");
+  // A read waits only when the open breaks the oplock and nothing completes it.
+  auto stuckRead=[&](FileAccess& fa,const std::string& item,const StuckFile& stuck)->std::optional<uint64_t>{
+   if(!stuck.held)return std::nullopt;auto id=fa.read(item,Json::object());
+   for(int i=0;i<200&&!stuck.breaking();i++)Sleep(10);Sleep(200);
+   if(!stuck.breaking()||fa.pollRead(id))return std::nullopt;return id;};
+  auto firstRead=stuckRead(*first,firstItem,stuckFirst);auto secondRead=firstRead?stuckRead(*second,secondItem,stuckSecond):std::nullopt;
+  if(!firstRead||!secondRead)std::cout<<"note: this volume grants no oplock that holds an open; the checks of reads that do not answer were skipped\n";
+  else{
+   check(!first->setEnabled(false,"en").value("enabled",true)&&refusal([&]{first->pollRead(*firstRead);})=="disabled","a read that does not answer held up turning file access off");
+   std::atomic<bool> closed=false;std::thread closer([&]{second.reset();closed=true;});
+   for(int i=0;i<200&&!closed;i++)Sleep(10);
+   bool waited=!closed;stuckSecond.release();closer.join();
+   check(!waited,"closing file access waited for a read of a file that does not answer");
+  }
+  stuckFirst.release();stuckSecond.release();first.reset();second.reset();settle();}
+ // ---- Two game processes share the store (two installs, -multirun) ----
+ // Neither writes back what the other revoked or turned off, and each sees the other's choices.
+ {FileAccessConfig shared=config;shared.store=root/L"store9"/L"file-access.json";
+  FileAccess one(shared);answer(L"always");
+  auto remembered=wait(one,one.request({{"requester","Shared"},{"path",local+"\\allowed"},{"folder",true}}));check(remembered.value("state","")=="granted","the shared grant: "+remembered.dump());
+  FileAccess two(shared);auto dialogs=logged(log).size();
+  auto viaGrant=wait(two,two.request({{"requester","Shared"},{"path",local+"\\allowed\\a.json"}}));
+  check(viaGrant["items"][0].value("remembered",false)&&logged(log).size()==dialogs,"the other process did not use the remembered folder: "+viaGrant.dump());
+  auto twoItem=viaGrant["items"][0]["handle"].get<std::string>();
+  // Revoked in one: the other asks again, loses what the folder answered, and saves nothing of it.
+  check(one.revoke(one.grants()["grants"][0]["id"]),"revoking in the first process");
+  check(refusal([&]{two.read(twoItem,Json::object());})=="released","an item outlived a folder another process revoked");
+  answer(L"always");auto other=wait(two,two.request({{"requester","Shared"},{"path",local+"\\outside\\secret.txt"}}));
+  check(other.value("state","")=="granted"&&logged(log).size()==dialogs+1,"the second process: "+other.dump());
+  auto stored=readJson(shared.store)["grants"];
+  check(stored.size()==1&&stored[0]["folder"]==u8(root/L"outside")&&two.grants()["grants"].size()==1,"a revoked folder was written back by another process: "+stored.dump());
+  // Both add a folder: the store keeps both.
+  answer(L"always");wait(one,one.request({{"requester","One"},{"path",local+"\\allowed\\sub\\b.bin"}}));
+  stored=readJson(shared.store)["grants"];check(stored.size()==2&&one.grants()["grants"].size()==2&&two.grants()["grants"].size()==2,"one process dropped the other's folder: "+stored.dump());
+  // Turned off in one: off in the other at once, and it stays off in the store.
+  auto twoOnce=other["items"][0]["handle"].get<std::string>();
+  check(!one.setEnabled(false,"en").value("enabled",true),"turning off in the first process");
+  check(refusal([&]{two.request({{"requester","Shared"},{"path",local+"\\outside\\secret.txt"}});})=="disabled"&&refusal([&]{two.read(twoOnce,Json::object());})=="disabled"&&!two.info().value("enabled",true),"file access stayed on in the other process");
+  check(!readJson(shared.store).value("enabled",true)&&readJson(shared.store)["grants"].size()==2,"the store after turning off: "+readJson(shared.store).dump());}
+ // A choice that could not be saved is written with the next change that can be.
+ write(root/L"blocker2","not a folder");
+ {FileAccess later({config.worker,root/L"blocker2"/L"file-access.json",config.temp,policy});answer(L"always");
+  check(wait(later,later.request({{"requester","Later"},{"path",local+"\\allowed\\a.json"}})).value("notSaved",false),"a store that cannot be written");
+  fs::remove(root/L"blocker2");fs::create_directories(root/L"blocker2");
+  check(!later.setEnabled(false,"en").contains("notSaved"),"the store was not written once it could be");
+  auto saved=readJson(root/L"blocker2"/L"file-access.json");check(!saved.value("enabled",true)&&saved["grants"].size()==1&&saved["grants"][0]["requester"]=="Later","the unsaved folder was lost: "+saved.dump());}
+ // ---- A larger remembered folder replaces a smaller one of the same addon ----
+ // What the smaller one answered stays readable while the larger one covers it, in both game
+ // processes, and revoking the larger one (the only one the window lists) ends it everywhere.
+ settle();
+ {FileAccessConfig shared=config;shared.store=root/L"store11"/L"file-access.json";FileAccess one(shared);answer(L"always");
+  auto inner=wait(one,one.request({{"requester","Grow"},{"path",local+"\\allowed\\sub\\b.bin"}}));
+  check(inner.value("state","")=="granted"&&inner["items"][0].value("remembered",false)&&one.grants()["grants"].size()==1,"the smaller folder: "+inner.dump());
+  FileAccess two(shared);auto dialogs=logged(log).size();
+  auto twoInner=wait(two,two.request({{"requester","Grow"},{"path",local+"\\allowed\\sub\\b.bin"}}));
+  check(twoInner["items"][0].value("remembered",false)&&logged(log).size()==dialogs,"the other process did not use the smaller folder: "+twoInner.dump());
+  auto oneItem=inner["items"][0]["handle"].get<std::string>(),twoItem=twoInner["items"][0]["handle"].get<std::string>();
+  auto wider=wait(one,one.request({{"requester","Grow"},{"path",local+"\\allowed\\a.json"}}));auto grants=one.grants()["grants"];
+  check(wider.value("state","")=="granted"&&grants.size()==1&&grants[0]["folder"].get<std::string>()==displayPath(root/L"allowed"),"the larger folder did not replace the smaller one: "+grants.dump());
+  check(readNow(one,oneItem,{{"length",16}}).data==blob.substr(0,16),"a file the larger folder covers was released when it replaced the smaller one");
+  check(readNow(two,twoItem,{{"length",16}}).data==blob.substr(0,16)&&two.grants()["grants"].size()==1,"the other process released a file the larger folder covers");
+  auto running=one.read(oneItem,{{"length",16}}),twoRunning=two.read(twoItem,{{"length",16}});settle();
+  check(one.revoke(grants[0]["id"]),"revoking the larger folder");
+  check(refusal([&]{one.pollRead(running);})=="released"&&refusal([&]{one.read(oneItem,Json::object());})=="released","a file of the smaller folder outlived the larger one that replaced it");
+  check(refusal([&]{two.pollRead(twoRunning);})=="released"&&refusal([&]{two.read(twoItem,Json::object());})=="released","the other process kept reading a file of the revoked folder");}
+ // ---- What another game process turns off or revokes stops what this one runs, at its next poll ----
+ // Each kind of poll reads the store again: nothing finished but not collected yet is handed out,
+ // and a dialog waiting there closes (the first poll after the change is each one's own).
+ {FileAccessConfig shared=config;shared.store=root/L"store12"/L"file-access.json";FileAccess one(shared),two(shared),three(shared);
+  answer(L"always");auto folderItem=wait(two,two.request({{"requester","Polled"},{"path",local+"\\allowed"},{"folder",true}}))["items"][0]["handle"].get<std::string>();
+  answer(L"once");auto onceItem=wait(two,two.request({{"requester","Polled"},{"path",local+"\\outside\\secret.txt"}}))["items"][0];
+  check(!onceItem.value("remembered",true),"the file allowed once: "+onceItem.dump());
+  auto listing=two.list(folderItem,Json::object()),inFolder=two.read(folderItem,{{"relative","a.json"}}),once=two.read(onceItem["handle"],Json::object());settle();
+  check(one.revoke(one.grants()["grants"][0]["id"]),"revoking in the other process");
+  check(refusal([&]{two.pollList(listing);})=="released"&&refusal([&]{two.pollRead(inFolder);})=="released","a listing or read of a folder another process revoked was delivered");
+  check(two.pollRead(once).value().data=="outside","another process's revoke stopped the read of a file allowed once");
+  answer(L"wait");auto asking=three.pick({{"requester","Polled"}});check(three.poll(asking).value("dialog",false),"the waiting dialog");
+  auto running=two.read(onceItem["handle"],Json::object());settle();
+  check(!one.setEnabled(false,"en").value("enabled",true),"turning off in the other process");
+  check(refusal([&]{two.pollRead(running);})=="disabled","a read was delivered after another process turned file access off");
+  auto closed=three.poll(asking);check(closed.value("state","")=="denied"&&closed.value("code","")=="disabled","a dialog stayed open after another process turned file access off: "+closed.dump());
+  Sleep(100);check(fs::is_empty(config.temp),"the closed dialog's private folder was left behind");}
+ // ---- Without a worker the installation check allows (noDialog) only a remembered folder answers ----
+ // installation.lua's guard asks so: no window opens, even with no worker file, and every other
+ // path gets the same refusal, so it tells a script nothing about it.
+ {FileAccessConfig own=config;own.store=root/L"store13"/L"file-access.json";
+  {FileAccess asker(own);answer(L"always");check(wait(asker,asker.request({{"requester","Gated"},{"path",local+"\\allowed"},{"folder",true}})).value("state","")=="granted","the remembered folder");}
+  own.worker=root/L"no-worker.exe";FileAccess gated(own);auto dialogs=logged(log).size();
+  auto viaFolder=wait(gated,gated.request({{"requester","Gated"},{"path",local+"\\allowed\\a.json"},{"noDialog",true}}));
+  check(viaFolder.value("state","")=="granted"&&viaFolder["items"][0].value("remembered",false),"a remembered folder did not answer without the worker: "+viaFolder.dump());
+  for(const auto& ask:std::vector<std::pair<std::string,std::string>>{{"Gated",local+"\\outside\\secret.txt"},{"Gated",local+"\\allowed\\missing.json"},{"Gated",local+"\\outside\\denied\\x.txt"},{"Other",local+"\\allowed\\a.json"}})
+   check(refusal([&]{gated.request({{"requester",ask.first},{"path",ask.second},{"noDialog",true}});})=="worker_unavailable","without the worker, "+ask.first+" asking for "+ask.second);
+  check(logged(log).size()==dialogs,"a window opened without a worker the installation check allows");
+  check(refusal([&]{gated.request({{"requester","Gated"},{"path",local+"\\allowed\\a.json"}});})=="worker_missing"&&refusal([&]{gated.request({{"requester","Gated"},{"path",local+"\\allowed\\a.json"},{"noDialog","yes"}});})=="invalid_options","a request that may need a window");}
+ // ---- The picker's arming, without a window ----
+ {check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM");
+  PickerArming arming;check(arming.OnFileOk(nullptr)==S_FALSE,"the picker took an OK at once");
+  arming.armedAt=GetTickCount64()-1;check(arming.OnFileOk(nullptr)==S_OK,"the picker refused an OK after its button woke up");
+  // Counted again from when the window appears (it shows its first folder), however long it took to open...
+  check(arming.OnFolderChange(nullptr)==S_OK&&arming.OnFileOk(nullptr)==S_FALSE,"the picker's window appeared armed");
+  // ...but not each time the player opens another folder.
+  arming.armedAt=GetTickCount64()-1;arming.OnFolderChange(nullptr);check(arming.OnFileOk(nullptr)==S_OK,"opening another folder disarmed the picker");
+  // Raised to the foreground: counted again, never shortened.
+  arming.restart();check(arming.OnFileOk(nullptr)==S_FALSE,"raising the picker did not count again");
+  auto later=GetTickCount64()+60000;arming.armedAt=later;arming.restart();check(arming.armedAt.load()==later,"raising the picker shortened its arming");
+  // The real picker takes its arming; one that does not is never shown.
+  IFileOpenDialog* dialog=nullptr;check(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))),"cannot create a file picker");
+  auto cookie=armPicker(*dialog,arming);check(cookie!=0&&SUCCEEDED(dialog->Unadvise(cookie)),"the file picker did not take its arming");dialog->Release();
+  struct Refusing{HRESULT Advise(IFileDialogEvents*,DWORD* c){*c=0;return E_FAIL;}} refusing;
+  struct NoCookie{HRESULT Advise(IFileDialogEvents*,DWORD* c){*c=0;return S_OK;}} noCookie;
+  check(refusal([&]{armPicker(refusing,arming);}).starts_with("other")&&refusal([&]{armPicker(noCookie,arming);}).starts_with("other"),"a picker that did not take its arming would be shown");
+  CoUninitialize();}
+ // ---- The real folder picker: an Enter or click at once chooses nothing ----
+ // It shows a window on this desktop, so it runs only when MMDHL_FA_UI_TESTS is set.
+ if(GetEnvironmentVariableW(L"MMDHL_FA_UI_TESTS",nullptr,0)){
+  FileAccess ui({config.worker,root/L"store10"/L"file-access.json",config.temp,policy});answer(L"ui-pick");SetEnvironmentVariableW(L"MMDHL_FA_TEST_FOLDER",(root/L"allowed").c_str());
+  auto picked=wait(ui,ui.pick({{"requester","Picker"},{"folder",true}}));auto shown=logged(log).back();
+  check(shown.contains("uiPick")&&shown["uiPick"].value("refusedAtOnce",false),"the picker took an OK at once: "+shown.dump()+" "+picked.dump());
+  check(picked.value("state","")=="granted"&&picked["items"][0].value("name","")=="allowed","the picker after its button woke up: "+picked.dump());
+ }else std::cout<<"note: the real folder picker was not shown (set MMDHL_FA_UI_TESTS=1 on a desktop)\n";
  fa.reset();releaseRuntimeRealm(true);check(!localServerRealm(),"the server realm count");
- std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule and dialogs\n";
+ std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule, dialogs, stopped reads, the shared store and the picker's arming\n";
  return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}}

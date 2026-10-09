@@ -5,7 +5,9 @@ deny-only hook refuses before native and cannot grant; the MMDHL.RequestUserFile
 forwards to the picker or RequestPath; requester labels and the reporting script are
 sanitized; native refusal codes read as real phrases; MMDHL.FileAccessChanged runs after
 the callback and outside the poll; a choice native could not save is reported; the
-management window lists, revokes and switches through native."""
+management window lists, revokes and switches through native. The installation check's
+verdict on mmdhl_worker.exe (which shows the dialogs) reaches addons and the window, and
+the switch still turns file access off then."""
 import json
 from pathlib import Path
 from lupa import LuaRuntime
@@ -19,7 +21,8 @@ istable=function(v) return type(v)=='table' end
 isstring=function(v) return type(v)=='string' end
 isfunction=function(v) return type(v)=='function' end
 isnumber=function(v) return type(v)=='number' end
-IsValid=function(v) return v~=nil and v~=false and not (type(v)=='table' and v.removed) end
+-- GMod's IsValid: a table counts only through its own IsValid method.
+IsValid=function(v) if not v then return false end local f=v.IsValid if not f then return false end return f(v) and true or false end
 NOW=0 RealTime=function() return NOW end
 TIMERS={} timer={Simple=function(_,f) TIMERS[#TIMERS+1]=f end}
 NOTICES={} notification={AddProgress=function(id,text) NOTICES[#NOTICES+1]={kind='progress',id=id,text=text} end,Kill=function(id) NOTICES[#NOTICES+1]={kind='kill',id=id} end,AddLegacy=function(text) NOTICES[#NOTICES+1]={kind='legacy',text=text} end}
@@ -27,7 +30,7 @@ NOTIFY_HINT=1 NOTIFY_ERROR=2
 surface={PlaySound=function() end}
 WINDOWED=true system={IsWindowed=function() return WINDOWED end}
 SINGLE=true HOST=false game={SinglePlayer=function() return SINGLE end}
-LocalPlayer=function() return {IsListenServerHost=function() return HOST end} end
+LocalPlayer=function() return {IsValid=function() return true end,IsListenServerHost=function() return HOST end} end
 COMMANDS={} concommand={Add=function(name,f) COMMANDS[name]=f end}
 ERRORS={} ErrorNoHalt=function(m) ERRORS[#ERRORS+1]=m end
 NETS={} net={Receive=function(name) NETS[#NETS+1]=name end}
@@ -141,6 +144,7 @@ local ready assert(#TIMERS>=1) hook.Add('MMDHL.FileAccessReady','test',function(
 INFO={available=false,reason='no_local_server'} SINGLE=false HOST=false
 local ok,text,code=FA.IsAvailable() assert(not ok and code=='unavailable_remote' and text==mmdhl.L'file_access.unavailable_remote')
 SINGLE=true ok,text,code=FA.IsAvailable() assert(text==mmdhl.L'file_access.unavailable_server_realm')
+SINGLE=false HOST=true ok,text,code=FA.IsAvailable() assert(text==mmdhl.L'file_access.unavailable_server_realm','the listen host read as a remote server') SINGLE=true HOST=false
 INFO={available=false,reason='disabled'} ok,text,code=FA.IsAvailable() assert(code=='disabled' and text==mmdhl.L'file_access.unavailable_disabled')
 INFO={available=true,reason='ok'}
 -- A pick: sanitized label, the other addon's script, nothing during the call.
@@ -252,7 +256,7 @@ print('PASS: MMDHLCanAccessUserFile only denies, and MMDHL.RequestUserFile forwa
 # ---- Every refusal code reads as a real phrase ----
 lua.execute(r'''
 for _,code in ipairs({'denied','auto_denied','auto_denied_session','busy','not_found','network','remote_drive','relative','parent','stream','device','invalid_path','denied_location','link','outside','hidden','too_large',
- 'offset_too_large','not_a_file','not_a_folder','released','unknown_request','unreadable','dialog_failed','too_many_items','denied_by_hook','disabled','unavailable_remote','no_local_server','worker_missing','needs_update','invalid_options','something_new'}) do
+ 'offset_too_large','not_a_file','not_a_folder','released','unknown_request','unreadable','dialog_failed','too_many_items','denied_by_hook','disabled','unavailable_remote','no_local_server','worker_missing','worker_unavailable','needs_update','invalid_options','something_new'}) do
  local text=mmdhl.FileAccess.Message(code,'detail')
  assert(isstring(text) and text~='' and not text:find('mmdhl.file_access',1,true),code..': '..tostring(text))
 end
@@ -309,3 +313,75 @@ STATES[SEQ]={state='granted',enabled=true,changed=true} GRANTS.enabled=true THIN
 assert(NOTICES[#NOTICES].kind=='kill' and box.checked==true)
 ''')
 print('PASS: the management window lists remembered folders, revokes them and switches file access through native')
+
+# ---- The installation check's verdict on the worker that shows the dialogs ----
+lua.execute(r'''
+local FA=mmdhl.FileAccess
+-- installation.lua's guard refuses the calls that start mmdhl_worker.exe with the check's reason
+-- (tests/test_file_access_worker_gate.py); its sentence reaches the addon inside the file access one.
+local why='lua/bin/mmdhl_worker.exe belongs to release 2.2.0; this addon needs 2.3.0.'
+assert(FA.Message('worker_unavailable',why)==mmdhl.L('file_access.worker_unavailable',{reason=why}))
+REFUSE={why,'worker_unavailable'}
+local refused=CALLBACK() assert(FA.Pick({addon='Gated'},refused.fn)==false) THINK()
+assert(refused.runs==1 and refused.args[1]==false and refused.args[3]=='worker_unavailable' and refused.args[2]==mmdhl.L('file_access.worker_unavailable',{reason=why}),tostring(refused.args[2]))
+-- IsAvailable says so whether file access is on or merely off; a remote server stays the reason there.
+local checked={} mmdhl.FeatureAvailable=function(feature) checked[#checked+1]=feature if WORKER_OK then return true end return false,why end
+INFO={available=true,reason='ok',enabled=true}
+local ok,text,code=FA.IsAvailable() assert(not ok and code=='worker_unavailable' and text==mmdhl.L('file_access.worker_unavailable',{reason=why}) and checked[#checked]=='imports')
+INFO={available=false,reason='disabled',enabled=false} ok,text,code=FA.IsAvailable() assert(not ok and code=='worker_unavailable')
+INFO={available=false,reason='no_local_server'} SINGLE=false ok,text,code=FA.IsAvailable() assert(code=='unavailable_remote') SINGLE=true
+-- The window: on, the switch still turns file access off (that needs no window)...
+INFO={available=true,reason='ok',enabled=true} GRANTS={enabled=true,grants={}}
+local box=FIND('DCheckBoxLabel',mmdhl.L'file_access.manage.enabled')
+hook.Run('MMDHL.InstallationChanged')
+local status=FIND('DLabel',mmdhl.L('file_access.worker_unavailable',{reason=why}))
+assert(status and status.visible and box.enabled==true and box.checked==true,'the switch cannot turn file access off while the worker is not allowed')
+box.OnChange(box,false) assert(LAST('SetEnabled')[1]==false)
+INFO={available=false,reason='disabled',enabled=false} for _,f in ipairs(TIMERS) do f() end THINK()
+assert(box.checked==false and box.enabled==false,'file access could be turned on without a worker the installation check allows')
+-- ...and once the check allows the worker (its self-test ended), the window follows.
+WORKER_OK=true hook.Run('MMDHL.InstallationChanged') assert(box.enabled==true and status.text==mmdhl.L'file_access.unavailable_disabled')
+mmdhl.FeatureAvailable=nil
+''')
+print('PASS: the installation check\'s verdict on the worker reaches addons and the window; the switch still turns file access off')
+
+# ---- While the worker's self-test runs: available, and what needs a window waits for the verdict ----
+lua.execute(r'''
+local FA=mmdhl.FileAccess
+for _,f in ipairs(TIMERS) do f() end THINK() THINK()
+local why=mmdhl.L('install.checking_feature',{feature='Model import'})
+WORKER_OK=false CHECKING=true
+mmdhl.FeatureAvailable=function() if WORKER_OK then return true end return false,why end
+mmdhl.GetInstallationStatus=function() return {probePending=CHECKING} end
+INFO={available=true,reason='ok',enabled=true}
+local changed=0 hook.Add('MMDHL.FileAccessChanged','verdict',function() changed=changed+1 end)
+hook.Run('MMDHL.InstallationChanged') THINK()
+assert(FA.IsAvailable()==true and changed==0,'file access read as unavailable while the worker self-test ran')
+-- The guard refuses what needs a window until the verdict: the request waits, nobody is called back.
+local picks=CALLED('Pick') REFUSE={why,'worker_unavailable'}
+local waited=CALLBACK() assert(FA.Pick({addon='Early'},waited.fn)==true)
+for i=1,3 do THINK() end assert(waited.runs==0 and CALLED('Pick')==picks+1,'a request refused during the self-test was not held')
+-- The self-test passes: asked again once, then answered as usual.
+CHECKING=false WORKER_OK=true hook.Run('MMDHL.InstallationChanged') THINK()
+assert(CALLED('Pick')==picks+2 and waited.runs==0 and changed==0,'the held request was not asked again once')
+STATES[SEQ]={state='granted',items={{handle=string.rep('9',32),name='late.json'}}} THINK()
+assert(waited.runs==1 and waited.args[1]==true)
+-- A verdict that changes what IsAvailable says runs MMDHL.FileAccessChanged once (from Think); one that does not, never.
+WORKER_OK=false hook.Run('MMDHL.InstallationChanged') assert(changed==0) THINK() assert(changed==1)
+hook.Run('MMDHL.InstallationChanged') THINK() assert(changed==1)
+WORKER_OK=true hook.Run('MMDHL.InstallationChanged') THINK() assert(changed==2)
+hook.Remove('MMDHL.FileAccessChanged','verdict') mmdhl.FeatureAvailable=nil mmdhl.GetInstallationStatus=nil
+''')
+print('PASS: during the worker self-test file access counts as available and requests wait for the verdict; a changed verdict runs MMDHL.FileAccessChanged')
+
+# ---- The realm count that gates file access is taken once a module opened, never before ----
+# localServerRealm() counts the server modules that opened in this process; nothing releases the
+# count of one that failed to open, which would leave file access offered on a remote server.
+module = (ROOT / 'native/module.cpp').read_text(encoding='utf-8')
+opening = module[module.index('GMOD_MODULE_OPEN(){'):module.index('GMOD_MODULE_CLOSE(){')]
+body, failure = opening.split('}catch(const std::exception& e){')
+assert body.count('acquireRuntimeRealm(') == 1 and 'acquireRuntimeRealm(' not in failure, 'the realm is counted more than once'
+acquired = body.index('acquireRuntimeRealm(ServerRealm)')
+assert all(acquired > body.rindex(step) for step in ('create_directories(', 'registerPropFunctions(', 'sweepJobFolders(')), 'the realm is counted before the module can still fail to open'
+assert failure.index('context.reset()') < failure.index('ThrowError'), 'a module that failed to open keeps its state'
+print('PASS: the server realm is counted only once its module opened')

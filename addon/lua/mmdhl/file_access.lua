@@ -27,6 +27,8 @@ local function message(code,detail)
  -- Native cannot tell a remote server from single player whose server part failed to load.
  if code=='no_local_server' or code=='unavailable_remote' then code=localHost() and 'no_server_realm' or 'unavailable_remote' end
  if code=='invalid_options' then return L('file_access.error.invalid_options',{error=tostring(detail or '')}) end
+ -- The installation check's own reason: a worker from another release, one that failed its self-test, the check still running.
+ if code=='worker_unavailable' then return L('file_access.worker_unavailable',{reason=tostring(detail or '')}) end
  if messages[code] then return L('file_access.error.'..messages[code]) end
  if unavailable[code] then return L('file_access.'..unavailable[code]) end
  return L('file_access.error.other',{error=tostring(detail or code or '?')})
@@ -37,17 +39,33 @@ local function noteOldBinary()
  if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'file_access.feature','2.3.0')
  else notification.AddLegacy(L'file_access.needs_update',NOTIFY_HINT,8) end
 end
+-- The dialogs run in mmdhl_worker.exe: the installation check's verdict on it applies, as to
+-- imports (installation.lua's guard refuses what would start it; a remembered folder still
+-- answers). While its self-test still runs, the first seconds after loading, there is no
+-- verdict yet: file access counts as available, and requests that need a window wait for it.
+local function workerChecking() local status=isfunction(mmdhl.GetInstallationStatus) and mmdhl.GetInstallationStatus() return istable(status) and status.probePending==true end
+local function workerReady()
+ if not isfunction(mmdhl.FeatureAvailable) then return true end
+ local ok,why=mmdhl.FeatureAvailable('imports')
+ if ok or workerChecking() then return true end
+ return false,why
+end
 -- ok, reason text, reason code. Old binaries and remote servers say why.
 function FA.IsAvailable()
  if not supported() then return false,message('needs_update'),'needs_update' end
  local info,err,code=decode(native.FileAccessInfo())
  if not istable(info) then return false,message(code or 'unavailable_remote',err),code or 'unavailable_remote' end
+ -- Asking needs the worker's windows, and so does turning file access on.
+ if info.available or info.reason=='disabled' then
+  local ready,why=workerReady() if not ready then return false,message('worker_unavailable',why),'worker_unavailable' end
+ end
  if info.available then return true end
  local reason=info.reason=='no_local_server' and 'unavailable_remote' or tostring(info.reason or 'unavailable_remote')
  return false,message(info.reason,info.reason),reason
 end
 -- ---- Callbacks: queued, then run one by one from Think ----
-local due,pending={},{}
+-- waiting: what the worker's self-test held up (workerReady), asked again once it ended.
+local due,pending,waiting={},{},{}
 local nextPoll=0
 local poll
 local function wake() hook.Add('Think','MMDHL.FileAccess',function() poll() end) end
@@ -82,6 +100,13 @@ local function notSaved() notification.AddLegacy(L'file_access.not_saved',NOTIFY
 -- Queued behind the callbacks, never run inside the poll: a listener that fails or asks
 -- again cannot lose an answer or add to `pending` while the poll walks it.
 local function changed() due[#due+1]={function() hook.Run('MMDHL.FileAccessChanged') end,{n=0}} wake() end
+-- IsAvailable follows the installation check's verdict on the worker (its self-test ended, the
+-- player accepted or repaired the files): addons hear that as a file access change.
+local workerWas=workerReady()==true
+hook.Add('MMDHL.InstallationChanged','MMDHL.FileAccess',function()
+ local ready=workerReady()==true
+ if ready~=workerWas then workerWas=ready changed() end
+end)
 local function finishRequest(p,status)
  if status.notSaved then notSaved() end
  if status.state~='granted' then fail(p.cb,status.code or 'denied',status.error)
@@ -117,10 +142,15 @@ local function check()
 end
 -- Answers found in this poll run in the same Think, after it.
 poll=function()
+ -- The worker's self-test ended: what waited for its verdict asks native again (and calls back from below).
+ if #waiting>0 and not workerChecking() then
+  local list=waiting waiting={}
+  for _,retry in ipairs(list) do local ok,err=pcall(retry) if not ok then ErrorNoHalt('[Model Hotloader file access] '..tostring(err)..'\n') end end
+ end
  if next(pending)~=nil then check() end
  local list=due due={}
  for _,entry in ipairs(list) do run(entry) end
- if next(pending)==nil and #due==0 then hook.Remove('Think','MMDHL.FileAccess') notice(nil) end
+ if next(pending)==nil and #due==0 and #waiting==0 then hook.Remove('Think','MMDHL.FileAccess') notice(nil) end
 end
 -- ---- Requests ----
 -- Text the native dialogs quote: whole UTF-8 characters, no control characters.
@@ -155,7 +185,11 @@ local function prepare(kind,opts,cb,path)
  if hook.Run('MMDHLCanAccessUserFile',label,copy)==false then fail(cb,'denied_by_hook') return end
  return request
 end
-local function submit(id,err,code,cb,entry)
+-- send() asks native: an id, or nil, the reason and its code. Refused only because the
+-- installation check still tests the worker: asked again once it has a verdict.
+local function submit(send,cb,entry)
+ local id,err,code=send()
+ if not id and code=='worker_unavailable' and workerChecking() then waiting[#waiting+1]=function() submit(send,cb,entry) end wake() return true end
  if not id then fail(cb,code or 'dialog_failed',err) return false end
  entry.kind='request' entry.cb=cb pending[id]=entry wake() return true
 end
@@ -167,8 +201,7 @@ function FA.Pick(opts,cb)
  local filters={}
  for _,f in ipairs(istable(opts.filters) and opts.filters or {}) do if istable(f) and isstring(f[1]) and isstring(f[2]) then filters[#filters+1]={clip(f[1],40),f[2]} end end
  if #filters>0 then payload.filters=filters end
- local id,err,code=call(native.FileAccessPick,util.TableToJSON(payload))
- return submit(id,err,code,cb,{label=request.addon})
+ return submit(function() return call(native.FileAccessPick,util.TableToJSON(payload)) end,cb,{label=request.addon})
 end
 -- An exact absolute path (C:\...). The player still answers a dialog unless they chose
 -- "always" for its folder before; opts: addon (required), folder, purpose.
@@ -177,8 +210,7 @@ function FA.RequestPath(path,opts,cb)
  if not isstring(path) then needCallback(cb) fail(cb,'invalid_path') return false end
  local request=prepare('path',opts,cb,path) if not request then return false end
  local payload={requester=request.addon,script=request.script,path=path,folder=request.folder,purpose=request.purpose,language=language()}
- local id,err,code=call(native.FileAccessRequest,util.TableToJSON(payload))
- return submit(id,err,code,cb,{label=request.addon})
+ return submit(function() return call(native.FileAccessRequest,util.TableToJSON(payload)) end,cb,{label=request.addon})
 end
 local function start(kind,value,opts,cb)
  if isfunction(opts) and cb==nil then opts,cb={},opts end
@@ -214,7 +246,9 @@ function FA.Revoke(id) if supported() and isstring(id) then if native.FileAccess
 function FA.SetEnabled(enabled,done)
  done=isfunction(done) and done or function() end
  if not supported() then noteOldBinary() deliver(done,false) return end
- local result=decode(native.FileAccessSetEnabled(enabled==true,language()))
+ local result,_,code=decode(native.FileAccessSetEnabled(enabled==true,language()))
+ -- Turning on asks in the worker's window: it waits like a request while the worker is checked.
+ if result==nil and code=='worker_unavailable' and workerChecking() then waiting[#waiting+1]=function() FA.SetEnabled(enabled,done) end wake() return end
  if istable(result) and result.request then pending[result.request]={kind='request',enable=true,cb=function(ok) done(ok==true) end} wake() return end
  if istable(result) and result.notSaved then notSaved() end
  hook.Run('MMDHL.FileAccessChanged') deliver(done,istable(result) and result.enabled==true)
@@ -248,9 +282,10 @@ function FA.OpenManager()
  local function refresh()
   if not IsValid(frame) then return end
   local state=FA.Grants()
-  -- The switch works while file access is available or merely turned off.
+  -- The switch works while file access is available or merely turned off, and it always
+  -- turns file access off (that needs no window).
   local okNow,why,code=FA.IsAvailable() status:SetText(okNow and '' or why) status:SetVisible(not okNow)
-  updating=true enabled:SetChecked(state.enabled==true) updating=false enabled:SetEnabled(okNow==true or code=='disabled')
+  updating=true enabled:SetChecked(state.enabled==true) updating=false enabled:SetEnabled(okNow==true or code=='disabled' or state.enabled==true)
   list:Clear()
   for _,g in ipairs(state.grants or {}) do
    local line=list:AddLine(tostring(g.requester or '?'),tostring(g.folder or '?'),(tonumber(g.used) or 0)>0 and os.date('%Y-%m-%d %H:%M',tonumber(g.used)) or '') line.grant=g.id
@@ -264,6 +299,8 @@ function FA.OpenManager()
  -- Turning on is confirmed natively; the box shows the native state, not the click.
  enabled.OnChange=function(_,value) if updating then return end FA.SetEnabled(value,function() refresh() end) timer.Simple(0,refresh) end
  hook.Add('MMDHL.FileAccessChanged',frame,function() refresh() end)
+ -- The worker's self-test ends, or the player accepts or repairs the installation.
+ hook.Add('MMDHL.InstallationChanged',frame,function() refresh() end)
  refresh()
 end
 concommand.Add('mmdhl_file_access',function() FA.OpenManager() end)

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <future>
 #include <optional>
+#include <set>
 #include <stdexcept>
 // File access for other addons (docs/FILE_ACCESS.md). Lua only asks: the player
 // answers in dialogs the worker shows (Lua cannot click another process's windows),
@@ -52,20 +53,29 @@ std::string displayPath(const fs::path& path);
 struct FileGrant {std::string id,requester;fs::path folder;int64_t created=0,used=0;};
 struct FileGrantStore {
  fs::path file;bool enabled=true;std::vector<FileGrant> grants;
- // A missing or unreadable file means no grants; entries that fail the policy are dropped.
- void load(const FilePolicy& policy);
- void save() const;
+ // The store a file's text describes; entries that fail the policy are dropped. false: the
+ // text is damaged (or of another schema), and the store is empty and on, as with no file.
+ bool parse(std::string_view text,const FilePolicy& policy);
+ // Writes the whole store; returns the text written.
+ std::string save() const;
  const FileGrant* covering(const std::string& requester,const fs::path& path) const;
 };
+// The store file's text: nullopt when there is none; throws while it cannot be read.
+std::optional<std::string> readGrantStore(const fs::path& file);
 // %LOCALAPPDATA%\ModelHotloader\file-access.json
 fs::path fileAccessStore();
 struct FileReadResult {std::string data;Json info;};
 // keepResultsMs: how long a finished read or listing waits to be collected before it is dropped.
 struct FileAccessConfig {fs::path worker,store,temp;FilePolicy policy;uint64_t keepResultsMs=30000;};
-// A read or listing on its own thread and when it finished (GetTickCount64; 0 while it runs).
-template<class T> struct FileWork {std::future<T> future;std::shared_ptr<std::atomic<uint64_t>> finished;};
-// One per client module. Lua calls arrive on the game thread; reads and listings run
-// on their own threads with copies of what they need.
+// A read or listing runs on a thread of its own that holds everything it needs, including
+// a reference to this library: nothing ever waits for it, and one stuck on a network share
+// that stopped answering ends on its own after the client module went away.
+struct FileTask;
+// Threads of reads and listings that have not ended yet, in this process.
+size_t fileAccessThreads();
+// One per client module. Lua calls arrive on the game thread. Turning file access off,
+// revoking a folder or unloading the module stops the reads and listings it concerns; what
+// another game process turned off or revoked applies at the latest on the next poll.
 class FileAccess {
 public:
  explicit FileAccess(FileAccessConfig config);
@@ -74,6 +84,8 @@ public:
  FileAccess& operator=(const FileAccess&)=delete;
  Json info();
  uint64_t pick(const Json& options);
+ // options "noDialog": the installation check does not allow the worker that shows the
+ // windows: only a remembered folder answers, anything else is refused "worker_unavailable".
  uint64_t request(const Json& options);
  Json poll(uint64_t id);
  uint64_t read(const std::string& handle,const Json& options);
@@ -100,18 +112,27 @@ private:
  std::map<std::string,std::shared_ptr<const Item>> items;
  std::map<std::string,unsigned> denials;
  unsigned refusals=0;
- std::map<uint64_t,FileWork<FileReadResult>> reads;
- std::map<uint64_t,FileWork<Json>> lists;
- std::vector<std::future<FileReadResult>> droppedReads;  // canceled: a read cannot be interrupted
- std::vector<std::future<Json>> droppedLists;
+ std::map<uint64_t,std::shared_ptr<FileTask>> tasks;  // reads and listings until collected
+ std::vector<std::shared_ptr<FileTask>> dropped;      // stopped ones until their threads end
+ // The store is shared with other game processes (another install, -multirun): a change
+ // applies here at once and goes into the newest file under a lock. Changes the file has
+ // not taken yet apply again over every newer copy, until one can be saved.
+ using StoreChange=std::function<void(FileGrantStore&)>;
+ std::vector<StoreChange> unsaved;
+ std::optional<std::string> storeText;  // the file as last read or written (nullopt: none)
+ bool storeRead=false;
  size_t running();
- bool persist();
- void available(const std::string& requester);
+ bool persist(const StoreChange& change,bool keep=true);
+ void refresh();
+ void adopt(FileGrantStore fresh);
+ void turnedOff();
+ void prune();
+ void available(const std::string& requester,bool worker=true);
  uint64_t enqueue(std::unique_ptr<Request> r);
  void pump();
  void start(Request& r);
  void finish(Request& r,const Json& answer);
- Json grant(Request& r,const ResolvedFile& target,const std::string& grantId);
+ Json grant(Request& r,const ResolvedFile& target,std::string grantId);
  void stop(Request& r);
  std::shared_ptr<const Item> item(const std::string& handle) const;
 };
