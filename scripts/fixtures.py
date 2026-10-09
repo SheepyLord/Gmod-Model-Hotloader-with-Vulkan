@@ -1,4 +1,4 @@
-"""Generate redistributable PMX 2.1 regression assets; no third-party model data."""
+"""Generate redistributable PMX 2.1 (and one PMD) regression assets; no third-party model data."""
 import pathlib,struct,math
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def pack(fmt,*v):return struct.pack('<'+fmt,*v)
@@ -126,6 +126,45 @@ def make(rope=False,cycle=False,texture=False,humanoid=False,joint=(0,1),materia
  b+=vec(1,.1,1,.5,.5,.5)+pack('iiii',0,10**9 if bad=='soft_iterations' else 6,0,4)+vec(.8,.8,.8)
  b+=pack('i',1)+pack('iIB',0,3,0)+pack('iII',2,3,7)
  return bytes(b)
+def make_pmd():
+ """A PMD humanoid under MMD control roots. nanoem lists PMD IK on the model, so evaluatePose
+ solves it (PMX IK stays on its bones and is not solved): leg and toe IK under 全ての親, and a
+ heel IK on each foot whose link Source does not drive, its goal hung from the toe IK goal
+ (left) or from 全ての親 itself (right), with vertices on the heels and on グルーブ."""
+ def name(s,n):e=s.encode('cp932');assert len(e)<n,s;return e+bytes(n-len(e))
+ bones=[('全ての親',(0,0,0),-1,1),('センター',(0,8,0),0,1),('グルーブ',(0,8.5,0),1,1),('lower body',(0,9,0),2,0),('upper body',(0,10,0),3,0),('upper body2',(0,13,0),4,0),('neck',(0,16,0),5,0),('head',(0,17,0),6,0)]
+ for side,sign in [('left',1),('right',-1)]:
+  parent=5
+  for part,x,y in [('shoulder',1,14),('arm',2,14),('elbow',5,13),('wrist',8,12)]:
+   bones.append((side+' '+part,(x*sign,y,0),parent,0));parent=len(bones)-1
+  parent=3
+  for part,y,z in [('leg',9,0),('knee',5,0),('ankle',1,0),('toe',.5,-1)]:
+   bones.append((side+' '+part,(sign,y,z),parent,0));parent=len(bones)-1
+ top=len(bones)
+ bones += [('左足IK親',(1,0,0),0,1),('左足ＩＫ',(1,1,0),top,2),('左つま先ＩＫ',(1,.5,-1),top+1,2)]
+ index={b[0]:i for i,b in enumerate(bones)}
+ for side,sign,goal in [('left',1,'左つま先ＩＫ'),('right',-1,'全ての親')]:
+  heel=len(bones);bones += [(side+' heel',(sign,.8,.4),index[side+' ankle'],0),(side+' heel tip',(sign,0,.4),heel,0),(side+' heel IK',(sign,0,.4),index[goal],2)]
+ index={b[0]:i for i,b in enumerate(bones)}
+ # (goal, effector, iterations, angle limit per step, links)
+ ik=[('左足ＩＫ','left ankle',40,.5,['left knee','left leg']),('左つま先ＩＫ','left toe',3,1,['left ankle']),('left heel IK','left heel tip',16,1,['left heel']),('right heel IK','right heel tip',16,1,['right heel'])]
+ # BDEF2 (bone, bone, percent on the first): the pelvis partly on グルーブ, then each heel.
+ vertices=[((-1,9,.5),'lower body','グルーブ',85),((1,9,.5),'lower body','lower body',100),((0,8.5,1),'グルーブ','グルーブ',100)]
+ for side,sign in [('left',1),('right',-1)]:
+  vertices += [((sign,.8,.6),side+' heel',side+' heel',100),((sign,0,.6),side+' heel tip',side+' heel tip',100),((sign*1.3,.4,.6),side+' heel',side+' heel tip',50)]
+ b=bytearray(b'Pmd'+pack('f',1)+name('MMDHL control roots',20)+name('CC0 procedural test geometry',256))
+ b+=pack('I',len(vertices))
+ for i,(p,first,second,weight) in enumerate(vertices):b+=vec(*p)+vec(0,0,-1)+vec((i%3)/2,i/len(vertices))+pack('hhBB',index[first],index[second],weight,0)
+ b+=pack('I',len(vertices))+pack('H'*len(vertices),*range(len(vertices)))
+ b+=pack('I',1)+vec(.3,.55,.8,1,8,.1,.1,.1,.15,.15,.15)+pack('BBI',255,1,len(vertices))+bytes(20)
+ b+=pack('H',len(bones))
+ for n,p,parent,kind in bones:b+=name(n,20)+pack('hhBh',parent,0,kind,0)+vec(*p)
+ b+=pack('H',len(ik))
+ for goal,effector,loops,limit,links in ik:b+=pack('hhBHf',index[goal],index[effector],len(links),loops,limit)+pack('h'*len(links),*[index[l] for l in links])
+ b+=pack('H',0)+pack('BBI',0,0,0) # morphs, display frames
+ b+=pack('B',1)+name('MMDHL control roots',20)+name('CC0 procedural test geometry',256)+b''.join(name(n,20) for n,*_ in bones) # English names
+ b+=b''.join(name('toon%02d.bmp'%(k+1),100) for k in range(10))
+ return bytes(b)
 if __name__=='__main__':
  out=ROOT/'tests/fixtures';out.mkdir(parents=True,exist_ok=True)
  for name,data in [('cloth21.pmx',make()),('rope21.pmx',make(True)),('native-cloth21.pmx',make(humanoid=True)),('native-rope21.pmx',make(rope=True,humanoid=True)),('textured21.pmx',make(texture=True)),('cycle.pmx',make(cycle=True)),('truncated.pmx',make()[:170])]:
@@ -147,6 +186,8 @@ if __name__=='__main__':
  (out/'native-far-morph.pmx').write_bytes(make(humanoid=True,island=True,morph_vertex=28,morph_offset=100))
  # MMD control roots above the pelvis with vertices, a follower body and IK goals under them (issue #6).
  (out/'native-control-root.pmx').write_bytes(make(humanoid=True,chain=2,control_root=True))
+ # MMD control roots in a PMD, whose IK evaluatePose solves: heel IK below the Source-driven ankles.
+ (out/'native-control-root.pmd').write_bytes(make_pmd())
  # Alpha-textured materials for the alpha-test coverage the RTX Remix renderer uses: a
  # quarter of the texels opaque, and a layer entirely below the 0.5 reference (alpha 100).
  (out/'cutout-quarter.png').write_bytes(png(4,4,b''.join(bytes((200,180,160,255 if i%4==0 else 0)) for i in range(16))))

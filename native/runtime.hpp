@@ -177,6 +177,10 @@ struct PoseHooks {
     std::function<void(size_t bone,btTransform& global,btTransform& effective,const btVector3& rest,const btTransform* parentGlobal)> physics;
     std::function<bool(size_t bone)> driven;
 };
+// Under Source control, the Source-driven bone each IK goal Source does not reach rides on as if
+// attached at rest (the chain's effector, or its nearest driven ancestor); -1 for other bones,
+// empty when no goal needs one.
+std::vector<int> ikAnchors(const Model&,const std::vector<int>& sourceControl);
 // sourceRoot: the model bone of the Source root (rig bone 0, the pelvis) under Source control;
 // the bones Source does not reach (control roots above the pelvis) ride with it.
 void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effective,int sourceRoot=-1);

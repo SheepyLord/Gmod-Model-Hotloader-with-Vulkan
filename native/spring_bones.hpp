@@ -26,7 +26,7 @@ public:
  // the character (a centre on the static avatar root cannot remove motion), and
  // each joint's nearest controlled ancestor is a point outside world geometry
  // for its contacts. `reference`: the hips bone the chains' damping is measured
- // against (-1 for plain VRM damping).
+ // against (-1 for plain VRM damping); the Source root, which root bones ride with.
  SpringSystem(const Model&,std::shared_ptr<const SpringSetup>,const std::vector<uint8_t>& controlled,int reference);
  // Rest shape at this animated pose, no velocity.
  void reset(const std::vector<btTransform>& skin);
@@ -37,7 +37,7 @@ public:
  using WorldContact=std::function<bool(const btVector3& outside,const btVector3& head,btVector3& tail,float radius,float length)>;
  void step(float seconds,const std::vector<btTransform>& skin,float gravityScale,float dragScale,const WorldContact* world);
  void hold(){previousLocal=currentLocal;}
- // Per joint: rotation relative to the parent bone's global rotation.
+ // Per joint: rotation relative to the parent bone's global rotation (`reference`'s for a root).
  const std::vector<btQuaternion>& previous()const{return previousLocal;}
  const std::vector<btQuaternion>& current()const{return currentLocal;}
  // Current tail positions (simulation space), for diagnostics and tests.
@@ -52,6 +52,9 @@ private:
  std::vector<State> state;std::vector<btQuaternion> previousLocal,currentLocal;std::vector<btTransform> global;
  btVector3 lastReference{0,0,0};bool haveReference=false;
  btTransform animated(const std::vector<btTransform>& skin,int bone)const{return skin[bone]*btTransform(btQuaternion::getIdentity(),model.bones[bone].position);}
+ // A root bone rides with `reference` under Source control (evaluatePose), so a joint on one is
+ // measured in that bone's skinning frame, the frame Secondary::feedback turns it in.
+ btTransform parentFrame(const std::vector<btTransform>& skin,int parent)const{return parent>=0?animated(skin,parent):reference>=0&&size_t(reference)<skin.size()?skin[size_t(reference)]:btTransform::getIdentity();}
  bool centred(const SpringSetup::Spring& s)const{return s.center>=0&&moving[s.center];}
  btTransform centre(const SpringSetup::Spring& s,const std::vector<btTransform>& skin)const;
  void place(const std::vector<btTransform>& skin,bool keepBend);

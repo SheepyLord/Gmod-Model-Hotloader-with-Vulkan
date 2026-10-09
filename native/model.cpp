@@ -406,6 +406,30 @@ const std::vector<float>& Instance::expandedMorphs() const {
     for(size_t i=0;i<weights.size();i++)if(instance.morphWeights[i])expand(int(i),instance.morphWeights[i],0);
     cachedMorphInputs=morphWeights;cachedMorphWeights=std::move(weights);return cachedMorphWeights;
 }
+std::vector<int> ikAnchors(const Model& m,const std::vector<int>& sourceControl){
+    std::vector<int> anchor;const size_t n=m.bones.size();if(!n||sourceControl.size()<n)return anchor;
+    auto controlled=[&](int i){return sourceControl[size_t(i)]>=0;};
+    auto set=[&](int goal,int on){if(anchor.empty())anchor.assign(n,-1);anchor[size_t(goal)]=on;};
+    // Walks the parent chain from `from`; the depth bound only guards a damaged hierarchy.
+    auto ancestor=[&](int from,auto&& match){for(int p=from,depth=0;p>=0&&depth<=int(n);p=m.bones[size_t(p)].parent,depth++)if(match(p))return p;return -1;};
+    // nanoem lists PMD IK on the model and keeps PMX IK on its bones.
+    std::vector<std::pair<int,int>> chains;nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    auto add=[&](const nanoem_model_constraint_t* c){int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(c)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(c));
+        // A goal at or above its own effector would drag the control roots along with the foot.
+        if(goal>=0&&end>=0&&size_t(goal)<n&&size_t(end)<n&&!controlled(goal)&&ancestor(end,[&](int p){return p==goal;})<0)chains.emplace_back(goal,end);};
+    for(size_t k=0;k<count;k++)add(constraints[k]);
+    for(auto& b:m.bones)if(auto c=b.source?nanoemModelBoneGetConstraintObject(b.source):nullptr)add(c);
+    // A goal whose effector Source drives (leg, toe IK) sits on that effector.
+    for(auto [goal,end]:chains)if(controlled(end))set(goal,end);
+    // Any other goal with nothing driven or anchored above it (a high-heel or hair IK hung from
+    // 全ての親) keeps its rest offset from the effector's nearest driven ancestor (the ankle, the
+    // head), not from the pelvis. Parents first: a goal hung below an anchored goal rides on it.
+    std::vector<int> effector(n,-1);for(auto [goal,end]:chains)if(!controlled(end)&&effector[size_t(goal)]<0)effector[size_t(goal)]=end;
+    for(auto goal:m.order){int end=effector[goal];if(end<0||(!anchor.empty()&&anchor[goal]>=0))continue;
+        if(ancestor(m.bones[goal].parent,[&](int p){return controlled(p)||(!anchor.empty()&&anchor[size_t(p)]>=0);})>=0)continue;
+        int on=ancestor(m.bones[size_t(end)].parent,controlled);if(on>=0)set(int(goal),on);}
+    return anchor;
+}
 void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut,int sourceRoot){
     local=manual;global.resize(local.size());skin.resize(local.size());
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){nanoem_rsize_t n=0;auto entries=nanoemModelMorphGetAllBoneMorphObjects(m.morphs[i],&n);for(size_t k=0;k<n;k++){
@@ -420,20 +444,12 @@ void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const st
     // control roots above the pelvis (全ての親, センター, グルーブ, 腰), other roots and the IK
     // goals below them. Left at rest in the instance frame (the world origin of a client
     // carrier), they pulled their vertices and follower bodies there (issue #6). Roots ride
-    // with the Source root (rig bone 0, the pelvis) as if attached at rest; the goal of an IK
-    // chain Source already poses (leg, toe) rides on its effector, so goals hung below it
-    // (heel IK) follow the foot. Frames are skinning transforms (rest model space to pose).
+    // with the Source root (rig bone 0, the pelvis) as if attached at rest; IK goals ride on
+    // their chain's Source-driven bone (ikAnchors), so goals hung below them (heel IK) follow
+    // the foot. Frames are skinning transforms (rest model space to pose).
     btTransform carrier;const btTransform* root=nullptr;std::vector<int> anchor;
     if(sourceControl&&sourcePose&&sourceRoot>=0&&size_t(sourceRoot)<sourcePose->size()){
-        carrier=(*sourcePose)[sourceRoot]*btTransform(btQuaternion::getIdentity(),-m.bones[sourceRoot].position);root=&carrier;
-        auto ride=[&](const nanoem_model_constraint_t* constraint){int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(constraint)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(constraint));
-            if(goal<0||end<0||size_t(goal)>=local.size()||size_t(end)>=local.size()||controlled(size_t(goal))||!controlled(size_t(end)))return;
-            // A goal above its own effector would drag the control roots along with the foot.
-            bool above=false;for(int p=end,depth=0;p>=0&&depth<=int(local.size());p=m.bones[p].parent,depth++)above|=p==goal;
-            if(!above){if(anchor.empty())anchor.assign(local.size(),-1);anchor[goal]=end;}};
-        // nanoem lists PMD IK on the model and keeps PMX IK on its bones.
-        for(size_t k=0;k<count;k++)ride(constraints[k]);
-        for(auto& b:m.bones)if(auto constraint=b.source?nanoemModelBoneGetConstraintObject(b.source):nullptr)ride(constraint);
+        carrier=(*sourcePose)[sourceRoot]*btTransform(btQuaternion::getIdentity(),-m.bones[sourceRoot].position);root=&carrier;anchor=ikAnchors(m,*sourceControl);
     }
     auto rebuild=[&](){for(auto i:m.order){auto& b=m.bones[i];auto t=local[i];
         if(b.inherit>=0&&b.inherit!=int(i)){auto inherited=b.localInherit?local[b.inherit]:effective[b.inherit];if(b.inheritRotation)t.setRotation(t.getRotation()*btQuaternion::getIdentity().slerp(inherited.getRotation(),b.coefficient));if(b.inheritTranslation)t.getOrigin()+=inherited.getOrigin()*b.coefficient;}
@@ -444,7 +460,7 @@ void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const st
         auto rest=b.position-(b.parent>=0&&on<0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
         global[i]=frame?*frame*t:t;
         if(controlled(i))global[i]=(*sourcePose)[i];
-        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:nullptr);
+        else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:root); // a root's frame is the pelvis carrier, as in SpringSystem
         if(sourceControl){effective[i]=frame?frame->inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
         skin[i]=global[i]*btTransform(btQuaternion::getIdentity(),-b.position);
     }};rebuild();

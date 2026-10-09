@@ -4,6 +4,7 @@
 #include "fitter.hpp"
 #include "rig.hpp"
 #include "rig_writer.hpp"
+#include "spring_bones.hpp"
 #include <fstream>
 #include <iostream>
 #include <cmath>
@@ -360,13 +361,14 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"character collision flag regression");}
     // Issue #6: Source drives the pelvis and limbs; nothing drives the MMD control roots above
     // the pelvis (全ての親 > センター > グルーブ), an unrelated root (操作中心) or the leg IK goals
-    // under 全ての親. They ride with the Source pelvis, and the goals of IK Source already poses
-    // with its effector, so a body far from the world origin keeps every vertex, follower body
-    // and IK goal with it: on both skinning paths, frame-synchronous and asynchronous.
+    // under 全ての親. They ride with the Source pelvis, and IK goals with their chain's driven
+    // bone, so a body far from the world origin keeps every vertex, follower body and IK goal
+    // with it: on both skinning paths, frame-synchronous and asynchronous. nanoem keeps PMX IK on
+    // its bones, which evaluatePose does not solve: the PMD below covers solved chains.
     try{
      auto m=parse(readFile("tests/fixtures/native-control-root.pmx"));
      auto bone=[&](const char* name){for(size_t i=0;i<m->bones.size();i++)if(m->bones[i].name==name)return i;throw std::runtime_error(std::string("no bone ")+name);};
-     const size_t groove=bone("グルーブ"),pelvis=bone("lower body"),ankle=bone("left ankle"),toe=bone("left toe"),legGoal=bone("左足ＩＫ"),toeGoal=bone("左つま先ＩＫ"),heelGoal=bone("left heel IK"),heel=bone("left heel");
+     const size_t groove=bone("グルーブ"),pelvis=bone("lower body"),ankle=bone("left ankle"),toe=bone("left toe"),legGoal=bone("左足ＩＫ"),toeGoal=bone("左つま先ＩＫ"),heelGoal=bone("left heel IK");
      const size_t control=m->vertices.size()-5; // BDEF2, BDEF4 and BDEF1 on グルーブ, BDEF1 on 操作中心, BDEF2 on 全ての親 and センター
      check(m->gpuSkin()->cpuVertex[control+1]&&!m->gpuSkin()->cpuVertex[control+2],"a small fourth control-root weight keeps CPU skinning, a whole one hardware skinning");
      // A bone's pose relative to another: the rest offset between them, unrotated (MMD units).
@@ -379,8 +381,8 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       auto toWorld=[&](const btVector3& mmd){return placed*(rigMeshBind(rig)*(toSource(mmd)*rig.scale));};
       std::string mode=std::string(gpu?" (hardware skinning, ":" (CPU skinning, ")+backend+")";
       present(1,1);
-      bool palettes=!gpu;if(gpu){const auto& s=*p.snapshot;palettes=s.gpu;for(int k=0;k<12&&palettes;k++)palettes=std::fabs(s.palette[groove*12+k]-s.palette[pelvis*12+k])<(k%4==3?.01f:1e-5f);}
-      check(palettes,("the groove's hardware-skinning matrix is the pelvis's under a rigid pose"+mode).c_str());
+      bool same=atRest(p.skin[pelvis].inverse()*p.skin[groove],{0,0,0});if(gpu){const auto& s=*p.snapshot;same=same&&s.gpu;for(int k=0;k<12&&same;k++)same=std::fabs(s.palette[groove*12+k]-s.palette[pelvis*12+k])<(k%4==3?.01f:1e-5f);}
+      check(same,("the groove's skinning matrix is the pelvis's under a rigid pose"+mode+(gpu?", in the hardware palette too":"")).c_str());
       p.requireCpuVertices();double error=0,radius=0;
       for(size_t i=0;i<m->vertices.size();i++){auto& d=p.snapshot->vertices[i];auto expected=toWorld(m->vertices[i].position);error=std::max(error,double((btVector3(d.x,d.y,d.z)-expected).length()));radius=std::max(radius,double((expected-placed.getOrigin()).length()));}
       check(error<.02,("vertices weighted to MMD control roots follow the Source pelvis far from the world origin"+mode).c_str());
@@ -388,23 +390,74 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       check(atRest(p.effectiveScratch[pelvis],{0,0,0}),("a Source-driven bone below the control roots keeps a true local pose"+mode).c_str());
       auto bodies=p.secondary->diagnostics()["bodyList"];auto w=bodies.at(3)["worldPosition"];
       check(bodies.at(3)["follower"].get<bool>()&&(btVector3(w[0],w[1],w[2])-toWorld({0,8,0})).length()<.02f,("a follower body on センター follows the body"+mode).c_str());
-      check(p.diagnostics()["floatingRoots"]==Json{{"roots",2},{"bones",8},{"vertices",5},{"bodies",1}},("diagnostics count the bones Source does not reach and what they carry"+mode).c_str());
+      // 全ての親, センター, グルーブ, 操作中心 and 左足IK親 ride with the pelvis; the leg and toe IK
+      // goals on the foot, with the heel IK goal hung below them.
+      auto diagnostics=p.diagnostics();
+      check(diagnostics["floatingRoots"]==Json{{"roots",2},{"bones",5},{"vertices",5},{"bodies",1}}&&diagnostics["anchoredGoals"]==Json{{"goals",2},{"bones",3},{"vertices",0},{"bodies",0}},("diagnostics count the bones Source does not reach, apart by what carries them, and what they carry"+mode).c_str());
       // Bend the left hip: the leg and toe IK goals ride on the Source-driven ankle and toe, and
-      // the heel IK goal hung below the toe IK goal follows the foot (the heel stays at rest on it).
+      // the heel IK goal hung below the toe IK goal follows the foot. Goal placement only: PMX IK
+      // is not solved.
       auto ankleBefore=p.global[ankle].getOrigin();int thigh=-1;for(size_t i=0;i<rig.bones.size();i++)if(rig.bones[i].name=="ValveBiped.Bip01_L_Thigh")thigh=int(i);
       auto hip=rig.bones[thigh].rest.getOrigin();btTransform bend=btTransform(btQuaternion::getIdentity(),hip)*btTransform(btQuaternion(btVector3(0,1,0),.9f),btVector3(0,0,0))*btTransform(btQuaternion::getIdentity(),-hip);
       std::vector<bool> below(rig.bones.size(),false);for(size_t i=0;i<rig.bones.size();i++)below[i]=int(i)==thigh||(rig.bones[i].parent>=0&&below[size_t(rig.bones[i].parent)]);
       for(size_t i=0;i<rig.bones.size();i++)palette[i]=placed*(below[i]?bend:btTransform::getIdentity())*rig.bones[i].rest;
       present(1+1./60,2);const auto& g=p.global;auto offset=[&](size_t a,size_t b){return m->bones[b].position-m->bones[a].position;};
       check((g[ankle].getOrigin()-ankleBefore).length()>2&&atRest(g[ankle].inverse()*g[legGoal],offset(ankle,legGoal))&&atRest(g[toe].inverse()*g[toeGoal],offset(toe,toeGoal)),("leg and toe IK goals ride on the Source-driven ankle and toe"+mode).c_str());
-      check(atRest(g[toe].inverse()*g[heelGoal],offset(toe,heelGoal))&&atRest(g[ankle].inverse()*g[heel],offset(ankle,heel)),("an IK goal hung below the toe IK goal follows the bent foot"+mode).c_str());
+      check(atRest(g[toe].inverse()*g[heelGoal],offset(toe,heelGoal)),("an IK goal hung below the toe IK goal follows the bent foot"+mode).c_str());
      }
+     // A VRM spring joint on a root bone (操作中心) rests relative to the pelvis the root rides
+     // with: under a turned far pose its tail stays where the turned body puts it.
+     {World host;host.poseSmoothing=false;auto& p=host.get(host.create(m,{{"backend","source"},{"presentationDriven",true},{"secondaryCollision",0}}));p.secondary.reset();const auto& rig=*p.sourceRig;
+      std::vector<btTransform> palette;for(auto& b:rig.bones)palette.push_back(placed*b.rest);p.submitPresentationPose(palette,1,1);p.evaluate(false);
+      const size_t n=m->bones.size(),root=bone("操作中心");auto setup=std::make_shared<SpringSetup>();setup->springs.push_back({"root",-1,{}});
+      SpringSetup::Joint joint;joint.spring=0;joint.bone=int(root);joint.axis=btVector3(0,0,-1);joint.length=1;joint.stiffness=4;setup->joints.push_back(joint);
+      setup->jointOfBone.assign(n,-1);setup->jointOfBone[root]=0;setup->isAffected.assign(n,0);setup->isAffected[root]=1;setup->affected={int(root)};
+      std::vector<uint8_t> driven(n,0);for(size_t i=0;i<n;i++)driven[i]=p.sourceControl[i]>=0;
+      SpringSystem springs(*m,setup,driven,rig.bones[0].mmd);springs.reset(p.skin);for(int k=0;k<30;k++)springs.step(1.f/60,p.skin,1,1,nullptr);
+      auto tail=p.skin[root]*(m->bones[root].position+joint.axis*joint.length);
+      check(driven[root]==0&&(springs.tails(p.skin)[0]-tail).length()<1e-3f,"a VRM spring joint on a root bone rests relative to the pelvis it rides with");}
      // Server instances are placed at their spawn point and follow the physical Source pose.
      {World host;auto& p=host.get(host.create(m,{{"backend","source"},{"position",{300,-200,40}},{"secondaryCollision",0}}));const auto& rig=*p.sourceRig;
       std::vector<btTransform> physical(18),manipulation(rig.bones.size(),btTransform::getIdentity());for(auto& b:rig.bones)if(b.physics>=0)physical[size_t(b.physics)]=placed*b.rest;
       p.submitSourcePose(physical,manipulation,1);p.evaluate(false);p.poseDirty=true;p.ensureSnapshot();double error=0;
       for(size_t i=0;i<m->vertices.size();i++){auto& d=p.snapshot->vertices[i];error=std::max(error,double((btVector3(d.x,d.y,d.z)-placed*(rigMeshBind(rig)*(toSource(m->vertices[i].position)*rig.scale))).length()));}
       check(error<.02,"vertices weighted to MMD control roots follow the physical Source pose of a server instance placed at its spawn point");}
+     // A PMD, whose IK evaluatePose solves: each heel IK turns a heel Source does not drive (below
+     // the driven ankle) toward its goal, hung from the toe IK goal (left) or from 全ての親 itself
+     // (right). With both hips bent far from the world origin the goals keep their rest offset
+     // from the feet, so the heels and their vertices stay at rest on the bent feet.
+     {auto d=parse(readFile("tests/fixtures/native-control-root.pmd"));
+      auto at=[&](const char* name){for(size_t i=0;i<d->bones.size();i++)if(d->bones[i].name==name)return i;throw std::runtime_error(std::string("no PMD bone ")+name);};
+      World host;host.poseSmoothing=false;auto& p=host.get(host.create(d,{{"backend","source"},{"presentationDriven",true},{"secondaryCollision",0}}));p.secondary.reset();const auto& rig=*p.sourceRig;
+      struct Side{size_t ankle,heel,goal;btTransform bend;};Side sides[2]={{at("left ankle"),at("left heel"),at("left heel IK")},{at("right ankle"),at("right heel"),at("right heel IK")}};
+      std::vector<int> bent(rig.bones.size(),-1);
+      for(int s=0;s<2;s++){int thigh=-1;for(size_t i=0;i<rig.bones.size();i++)if(rig.bones[i].name==(s?"ValveBiped.Bip01_R_Thigh":"ValveBiped.Bip01_L_Thigh"))thigh=int(i);if(thigh<0)throw std::runtime_error("no thigh in the PMD rig");
+       auto hip=rig.bones[size_t(thigh)].rest.getOrigin();sides[s].bend=btTransform(btQuaternion::getIdentity(),hip)*btTransform(btQuaternion(btVector3(0,1,0),s?-.6f:.9f),btVector3(0,0,0))*btTransform(btQuaternion::getIdentity(),-hip);
+       for(size_t i=0;i<rig.bones.size();i++)if(int(i)==thigh||(rig.bones[i].parent>=0&&bent[size_t(rig.bones[i].parent)]==s))bent[i]=s;}
+      bool chains=true;for(auto& s:sides)chains=chains&&p.sourceControl[s.ankle]>=0&&p.sourceControl[s.heel]<0&&p.sourceControl[s.goal]<0;
+      check(chains,"PMD heel IK chains hang below Source-driven ankles and are not Source-driven themselves");
+      auto anchor=ikAnchors(*d,p.sourceControl);
+      check(anchor.size()==d->bones.size()&&anchor[at("左足ＩＫ")]==int(sides[0].ankle)&&anchor[at("左つま先ＩＫ")]==int(at("left toe"))&&anchor[sides[0].goal]<0&&anchor[sides[1].goal]==int(sides[1].ankle)&&anchor[at("センター")]<0,
+            "IK goals ride on the driven effector, a goal hung from 全ての親 on its effector's nearest driven ancestor, a goal below an anchored goal on that goal");
+      std::vector<btTransform> palette;for(size_t i=0;i<rig.bones.size();i++)palette.push_back(placed*(bent[i]>=0?sides[bent[i]].bend:btTransform::getIdentity())*rig.bones[i].rest);
+      p.submitPresentationPose(palette,1,1);p.evaluate(false);p.poseDirty=true;p.ensureSnapshot();const auto& g=p.global;
+      auto offset=[&](size_t a,size_t b){return d->bones[b].position-d->bones[a].position;};
+      check(atRest(g[sides[0].ankle].inverse()*g[sides[0].heel],offset(sides[0].ankle,sides[0].heel))&&atRest(g[sides[1].ankle].inverse()*g[sides[1].heel],offset(sides[1].ankle,sides[1].heel)),
+            "solved PMD heel IK keeps each heel at rest on its bent foot, the goal below the toe IK goal and the goal under 全ての親 alike");
+      double error=0;for(size_t i=0;i<d->vertices.size();i++){const auto& v=d->vertices[i];int side=v.bones[0]==int(sides[0].heel)||v.bones[0]==int(at("left heel tip"))?0:v.bones[0]==int(sides[1].heel)||v.bones[0]==int(at("right heel tip"))?1:-1;
+       auto expected=placed*(side>=0?sides[side].bend:btTransform::getIdentity())*(rigMeshBind(rig)*(toSource(v.position)*rig.scale));auto& s=p.snapshot->vertices[i];error=std::max(error,double((btVector3(s.x,s.y,s.z)-expected).length()));}
+      check(error<.02,"PMD vertices on the heels follow the bent feet and those on グルーブ the pelvis, far from the world origin");
+      // Before 2.3.0 (no Source root): the goals stayed at the world origin and the solver turned the heels toward it.
+      std::vector<btTransform> local,global,skin,effective;std::vector<float> none(d->morphs.size(),0.f);evaluatePose(*d,p.manual,none,&p.sourceControl,&p.sourcePose,nullptr,local,global,skin,effective);
+      check(!atRest(global[sides[0].ankle].inverse()*global[sides[0].heel],offset(sides[0].ankle,sides[0].heel))&&!atRest(global[sides[1].ankle].inverse()*global[sides[1].heel],offset(sides[1].ankle,sides[1].heel)),
+            "the PMD heel IK chains are solved: with goals left at the world origin they turn the heels");
+      // Physics feedback gets the frame spring joints are measured in (SpringSystem): the pelvis
+      // carrier for a root bone, the parent for any other bone, an anchored goal too.
+      std::map<size_t,btTransform> frames;PoseHooks hooks;hooks.physics=[&](size_t i,btTransform&,btTransform&,const btVector3&,const btTransform* parent){if(parent)frames[i]=*parent;};
+      int root=rig.bones[0].mmd;evaluatePose(*d,p.manual,none,&p.sourceControl,&p.sourcePose,&hooks,local,global,skin,effective,root);
+      auto rides=[&](size_t bone,const btTransform& frame){return frames.count(bone)&&atRest(frame.inverse()*frames[bone],{0,0,0});};
+      check(root>=0&&rides(at("全ての親"),skin[size_t(root)])&&rides(at("左足ＩＫ"),global[at("左足IK親")])&&rides(sides[1].goal,global[at("全ての親")])&&rides(at("センター"),global[at("全ての親")]),
+            "physics feedback receives the pelvis carrier for a root bone and the parent for any other");}
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"control roots above the pelvis (issue #6)");}
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }
