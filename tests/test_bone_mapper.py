@@ -770,7 +770,8 @@ for i,k in ipairs({'KEY_Z','KEY_Y','KEY_TAB','KEY_ENTER','KEY_DELETE','KEY_BACKS
 MOUSE_LEFT=107 MOUSE_RIGHT=108 MOUSE_MIDDLE=109 TEXT_ALIGN_LEFT=0 TEXT_ALIGN_CENTER=1 TEXT_ALIGN_RIGHT=2 TEXT_ALIGN_BOTTOM=4 NOTIFY_ERROR=1 NOTIFY_GENERIC=0 NOTIFY_HINT=3
 GetConVar=function() return nil end
 LocalPlayer=function() return {IsListenServerHost=function() return false end,IsAdmin=function() return false end} end
-IsValid=function(v) return v~=nil and v~=false and not (type(v)=='table' and v.removed) end
+-- As GMod: a table is valid only through its own IsValid method (panels have one).
+IsValid=function(v) if not v or (type(v)=='table' and v.removed) then return false end local f=type(v)=='table' and v.IsValid if not f then return false end return f(v)~=false end
 TIMERS={} timer={Simple=function(_,fn) TIMERS[#TIMERS+1]=fn end,Create=function(name,_,_,fn) TIMERS[#TIMERS+1]=fn end,Remove=function() end}
 ACTIONS={} mmdhl.Action=function(action,id,ent,value) ACTIONS[#ACTIONS+1]={action,id,value} end
 ''')

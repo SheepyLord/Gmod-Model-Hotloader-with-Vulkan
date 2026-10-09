@@ -382,6 +382,9 @@ function BM.ShowWindow(state,opts)
  frame:SetTitle('') frame:SetSize(W,H) frame:Center() frame:MakePopup() frame:DockPadding(s(16),s(14),s(16),s(14))
  frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
  local win={state=state,frame=frame,s=s,f=f,view={mode='front',zoom=1,panX=0,panY=0},armed=nil,selected=nil,hover=nil,figure='body',transient=nil,searchText=''}
+ -- GMod's IsValid needs an IsValid method on a table: without it every IsValid(win)
+ -- is false and the window never receives its model.
+ function win:IsValid() return IsValid(self.frame) end
  frame.Window=win
  local accent=function() return state.reason=='rescue' and Colors.check or Colors.accent end
  frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Colors.window) draw.RoundedBoxEx(6,0,0,w,s(6),accent(),true,true,false,false) end
