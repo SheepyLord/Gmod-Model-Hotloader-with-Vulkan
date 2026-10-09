@@ -292,6 +292,31 @@ assert(BM.SamePins({a=1},{a=1}) and not BM.SamePins({a=1},{a=2}))
 SAY('PASS: fit mode starts from the fitter, guesses the missing parts, and saves only pins')
 ''')
 
+# ---- fit mode on the fitter's own answers (recorded by mmdhl_torso_tests --record-window) ----
+lua.globals().WINDOW_JSON = (FIX / 'proposal.json').read_text(encoding='utf-8')
+lua.execute(r'''
+local BM,VB=mmdhl.boneMapper,'ValveBiped.Bip01_'
+local f=util.JSONToTable(WINDOW_JSON)
+local idx={} for i,b in ipairs(f.inspect.skeleton.bones) do idx[b.name]=i-1 end
+local function state(current,pins) return BM.NewState('fit',{asset=string.rep('e',64),name='Torso',skeleton=f.inspect.skeleton,auto=f.inspect.auto,proposal=f.proposal,current=current,pins=pins,torso=current.torso}) end
+-- The fitter's torso: built 上半身 > 上半身3 > 上半身2 > 首根元, the chest is 上半身2; its notes are information.
+local s=state(f.proposal,{}) BM.Validate(s)
+assert(BM.Value(s,VB..'Spine2')==idx['上半身3'] and BM.Value(s,VB..'Spine4')==idx['上半身2'] and s.aliases[VB..'Spine4'][1]==idx['首根元'] and next(BM.Pins(s))==nil)
+local notes={} for _,i in ipairs(s.issues) do if i.code=='torso' then assert(i.severity=='info') notes[i.args.code]=true end end
+assert(notes.reordered and notes.band)
+-- Saved pins: the chest on the neck base, outside its band, moves with a synthesized chest.
+-- The window still shows the player's bone, and saving again keeps exactly the saved pins.
+s=state(f.current,f.pins)
+for _,i in ipairs(f.current.issues) do s.nativeIssues[#s.nativeIssues+1]={code=i.code=='band' and 'band' or 'native',severity=i.severity,slot=i.slot,args={message=i.text}} end
+BM.Validate(s)
+assert(BM.Value(s,VB..'Spine4')==idx['首根元'] and s.slots[VB..'Spine4'].origin=='fit_saved' and #s.aliases[VB..'Spine4']==0)
+assert(BM.Value(s,VB..'L_Toe0')==-1 and s.slots[VB..'L_Toe0'].origin=='fit_saved' and BM.Value(s,VB..'Spine2')==idx['上半身3'])
+assert(BM.SamePins(BM.Pins(s),f.pins),'saving again keeps the pins')
+local band=false for _,i in ipairs(BM.IssuesOf(s,VB..'Spine4')) do band=band or (i.code=='band' and i.severity=='warning') end
+assert(band and BM.StatusOf(s,VB..'Spine4')=='check')
+SAY('PASS: fit mode on the fitter\'s recorded answers: its torso and notes, and saved pins kept, a chest outside its band too')
+''')
+
 # ---- projection, picking, keys ----
 lua.execute(r'''
 local BM=mmdhl.boneMapper

@@ -172,13 +172,17 @@ function BM.NewState(mode,data)
    if value<0 and slot.required and (tonumber(suggestion.bone) or -1)>=0 and (tonumber(suggestion.confidence) or 0)>=.5 then g.suggested=suggestion.bone g.suggestedConfidence=suggestion.confidence end
    s.auto[slot.key]=g
    local c=now[slot.key] or b local cv=tonumber(c.mmd) or -1
+   -- A saved torso pin outside its band moves with a synthesized pivot (the fitter lists it
+   -- as an alias): it stays the player's choice, so saving again keeps it.
+   local pin,aliases=tonumber(s.savedPins[slot.key]),c.aliases or {}
+   for _,a in ipairs(aliases) do if pin and pin>=0 and a==pin then cv=pin end end
    local origin=(b.provenance=='conversion' and 'conversion') or 'auto'
    if s.savedPins[slot.key]~=nil then origin='fit_saved' end
    if cv<0 and slot.required then
     if g.suggested>=0 then s.slots[slot.key]={bone=g.suggested,origin='guess',confidence=g.suggestedConfidence or .5}
     else s.slots[slot.key]={bone=-1,origin=origin,confidence=0} end
    else s.slots[slot.key]={bone=cv,origin=cv<0 and (s.savedPins[slot.key]~=nil and 'fit_saved' or 'created') or origin,confidence=1} end
-   s.aliases[slot.key]=c.aliases or {}
+   s.aliases[slot.key]={} for _,a in ipairs(aliases) do if a~=cv then table.insert(s.aliases[slot.key],a) end end
   end end
   local used={} for _,v in pairs(s.slots) do if v.bone>=0 then used[v.bone]=(used[v.bone] or 0)+1 end end
   -- A suggestion never takes a bone another part already uses.
