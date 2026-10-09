@@ -1,5 +1,6 @@
 #include "model_notes.hpp"
 #include "vrm.hpp"
+#include "props/network_path.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <cstring>
@@ -67,6 +68,8 @@ bool textDocument(const fs::path& path){
  auto name=lower(path.filename().wstring());return name==L"license"||name==L"licence"||name==L"copying"||name==L"readme";
 }
 bool modelFile(const fs::path& path){auto e=lower(path.extension().wstring());return e==L".pmx"||e==L".pmd"||e==L".vrm"||e==L".fbx"||e==L".glb"||e==L".gltf"||e==L".dae";}
+// Files the importers take: characters, and OBJ and Blender files as static props.
+bool importable(const fs::path& path){auto e=lower(path.extension().wstring());return modelFile(path)||e==L".obj"||e==L".blend";}
 struct Reader{
  std::ifstream in;
  template<class T>bool value(T& v){return bool(in.read(reinterpret_cast<char*>(&v),sizeof v));}
@@ -148,6 +151,10 @@ std::string decodeText(std::span<const unsigned char> b,std::string& encoding){
  return text(w);
 }
 Json inspectModelNotes(const fs::path& model){
+ // The path comes from Lua: never one that makes Windows contact another computer, and
+ // only a model file, so this cannot read the text files beside any path.
+ if(props::networkPath(utf8(model.wstring())))throw std::runtime_error("Model terms are not read from network paths; use a mapped drive letter");
+ if(!model.is_absolute()||!importable(model))throw std::runtime_error("Model terms are read only beside a model file");
  std::error_code ec;if(!fs::is_regular_file(ioPath(model),ec))throw std::runtime_error("The selected model file no longer exists");
  Json out={{"file",utf8(model.filename().wstring())},{"embedded",Json::object()},{"readmes",Json::array()}};
  auto extension=lower(model.extension().wstring());

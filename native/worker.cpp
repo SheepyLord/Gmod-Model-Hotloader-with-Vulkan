@@ -188,6 +188,9 @@ int wmain(int argc,wchar_t** argv){
         }
         if(argc==3&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";auto j=readJson(request);auto options=j.value("options",Json::object());
             requestSource=j.value("source",std::string());requestKind=options.value("kind",std::string());
+            // Before anything opens it (the VRM sniff included): a path to another computer
+            // makes Windows sign in there. The client module refuses these too; job folders are in data/.
+            if(props::networkPath(requestSource))importFail("io.network","Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
             auto source=fs::path(wide(j.at("source").get<std::string>())),cache=fs::path(wide(j.at("cache").get<std::string>()));
             auto kind=options.value("kind",std::string());
             auto filename=utf8(source.filename().wstring());

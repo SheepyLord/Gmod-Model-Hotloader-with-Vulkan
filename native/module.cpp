@@ -26,6 +26,7 @@
 #include "jobs.hpp"
 #include "prop_bindings.hpp"
 #include "physics_profile.hpp"
+#include "props/network_path.hpp"
 namespace {
 using namespace mmd;using Lua=GarrysMod::Lua::ILuaBase;
 struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;};
@@ -64,6 +65,9 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
     for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
+    // Sources come from Lua (or registries in data/ that Lua can write): a path to another
+    // computer would make Windows sign in there. Mapped drive letters still work.
+    if(props::networkPath(source))throw std::runtime_error("Model Hotloader does not import from network paths (\\\\computer\\share). Copy the model to this computer, or open it through a mapped drive letter.");
     pruneJobs();
     Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
     writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"progress",0}});

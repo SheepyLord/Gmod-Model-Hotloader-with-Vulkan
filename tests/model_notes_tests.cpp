@@ -88,6 +88,12 @@ int main(){try{
  notes=inspectModelNotes(base/L"glb"/L"prop.glb");
  check(!notes.contains("vrm")&&notes["embedded"]["copyright"]=="CC BY 4.0 Someone","plain glTF: copyright only");
  bool rejected=false;try{inspectModelNotes(base/L"missing.pmx");}catch(...){rejected=true;}check(rejected,"missing file reported");
- std::cout<<"PASS: readme discovery (own folder, folder above, crowded folders), Shift-JIS/GBK/Big5/UHC/UTF-16/UTF-8 text, PMX/PMD comments, VRM 0.x/1.0 licences, glTF copyright\n";
+ // The path comes from Lua: only beside a local model file, never on another computer.
+ write(base/L"obj"/L"prop.obj",encode(L"v 0 0 0\n",CP_UTF8));write(base/L"obj"/L"readme.txt",encode(L"Terms",CP_UTF8));
+ check(inspectModelNotes(base/L"obj"/L"prop.obj")["readmes"].size()==1,"a static prop's readme");
+ for(auto path:{base/L"obj"/L"readme.txt",fs::path(L"\\\\127.0.0.1\\mmdhl-test\\a.pmx"),fs::path(L"//127.0.0.1/mmdhl-test/a.pmx"),fs::path(L"\\\\?\\UNC\\127.0.0.1\\s\\a.pmx"),fs::path(L"a.pmx")}){
+  rejected=false;try{inspectModelNotes(path);}catch(...){rejected=true;}check(rejected,"notes read beside a text file, a network path or a relative path");
+ }
+ std::cout<<"PASS: readme discovery (own folder, folder above, crowded folders), Shift-JIS/GBK/Big5/UHC/UTF-16/UTF-8 text, PMX/PMD comments, VRM 0.x/1.0 licences, glTF copyright, local model files only\n";
  return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
