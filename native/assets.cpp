@@ -4,6 +4,7 @@
 #include "vrm.hpp"
 #include "assets.hpp"
 #include "humanoid_slots.hpp"
+#include "import_error.hpp"
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincodec.h>
@@ -35,13 +36,30 @@ fs::path ioPath(const fs::path& path){
  if(value.starts_with(L"\\\\"))return L"\\\\?\\UNC\\"+value.substr(2);
  return L"\\\\?\\"+value;
 }
-Bytes readFile(const fs::path& path){std::ifstream f(ioPath(path),std::ios::binary|std::ios::ate);if(!f)throw std::runtime_error("Cannot read "+utf8(path.wstring()));auto size=f.tellg();if(size<0)throw std::runtime_error("Cannot determine file size");Bytes b(static_cast<size_t>(size));f.seekg(0);if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))throw std::runtime_error("Incomplete file read");return b;}
+// A stream cannot say why it failed to open: ask Windows the same question (missing,
+// in use, denied...) so the message and its code say what to do.
+static DWORD openError(const fs::path& io,bool writing){
+ std::error_code ec;if(!writing&&fs::is_directory(io,ec))return ERROR_DIRECTORY;
+ HANDLE h=CreateFileW(io.c_str(),writing?GENERIC_WRITE:GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,writing?CREATE_ALWAYS:OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+ if(h==INVALID_HANDLE_VALUE)return GetLastError();CloseHandle(h);if(writing)DeleteFileW(io.c_str());return 0;
+}
+Bytes readFile(const fs::path& path){
+ auto io=ioPath(path);std::ifstream f(io,std::ios::binary|std::ios::ate);auto name=utf8(path.wstring());
+ if(!f){if(auto error=openError(io,false))fileFailure("Cannot read",path,error);importFail("io.read","Cannot read "+name,{{"path",name}});}
+ auto size=f.tellg();if(size<0)importFail("io.read","Cannot read "+name+": its size cannot be determined",{{"path",name}});Bytes b(static_cast<size_t>(size));f.seekg(0);
+ if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))importFail("io.device","Cannot read "+name+": reading stopped after "+thousands(uint64_t(f.gcount()))+" of "+thousands(uint64_t(size))+" bytes (the drive may have been disconnected)",{{"path",name},{"read",int64_t(f.gcount())},{"size",uint64_t(size)}});
+ return b;
+}
 void writeAtomic(const fs::path& path,const std::function<void(std::ostream&)>& write){
  auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());
- {std::ofstream f(tmp,std::ios::binary|std::ios::trunc);bool written=bool(f);
-  if(written){try{write(f);}catch(...){f.close();std::error_code ec;fs::remove(tmp,ec);throw;}written=bool(f.flush());}
-  if(!written){f.close();std::error_code ec;fs::remove(tmp,ec);throw std::runtime_error("Cannot write output file: "+utf8(path.wstring()));}}
- for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED))throw std::runtime_error("Cannot commit output file: "+utf8(path.wstring()));Sleep(10);}
+ // Data that stops short on a nearly full drive is a full disk; otherwise the open says why.
+ auto failed=[&](DWORD error){std::error_code ec;fs::remove(tmp,ec);auto space=fs::space(output.parent_path(),ec);if(!error&&!ec&&space.available<(64ull<<20))error=ERROR_DISK_FULL;
+  if(error)fileFailure("Cannot write output file:",path,error);importFail("io.write","Cannot write output file: "+utf8(path.wstring()),{{"path",utf8(path.wstring())}});};
+ {std::ofstream f(tmp,std::ios::binary|std::ios::trunc);
+  if(!f)failed(openError(tmp,true));
+  try{write(f);}catch(...){f.close();std::error_code ec;fs::remove(tmp,ec);throw;}
+  if(!f.flush()){f.close();failed(0);}}
+ for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED)){std::error_code ec;fs::remove(tmp,ec);fileFailure("Cannot commit output file:",path,error);}Sleep(10);}
 }
 void writeAtomic(const fs::path& path,std::span<const unsigned char> b){writeAtomic(path,[&](std::ostream& f){f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));});}
 void writeJson(const fs::path& path,const Json& j){auto s=j.dump(2);writeAtomic(path,std::span(reinterpret_cast<const unsigned char*>(s.data()),s.size()));}
@@ -115,17 +133,17 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
  // 4096 textures never holds them all, plus a packed copy, in memory.
  std::map<std::string,GmaEntry> files;
  for(size_t i=0;i<manifest["materials"].size();i++){
-  auto& material=manifest["materials"][i];auto& texture=manifest["textures"][i];std::string base=texture.value("base","");
+  auto& material=manifest["materials"][i];auto& texture=manifest["textures"][i];std::string base=texture.value("base","");auto at=place("material",int64_t(i),material.value("name",""));
   std::string texturePath="models/debug/debugwhite";
   if(validId(base)){
    registerShortName(cache,"textures",base);texturePath="mmd/t/"+base.substr(0,16);auto derivative=cache/L"textures"/wide(base+".vtf");
    if(!fs::is_regular_file(derivative)){
     int width,height,channels;std::unique_ptr<unsigned char,decltype(&stbi_image_free)> decoded(nullptr,stbi_image_free);
     {auto png=readFile(cache/L"textures"/wide(base+".png"));decoded.reset(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4));}
-    if(!decoded)throw std::runtime_error("Cannot create Source texture derivative");
+    if(!decoded)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its cached image "+base.substr(0,16)+".png cannot be decoded",{{"where",Json::array({at})},{"texture",base}});
     // Caches from before 2.2 hold textures larger than 4096.
     Bytes scaled;const unsigned char* pixels=decoded.get();if(fitTexture(pixels,width,height,scaled))pixels=scaled.data();
-    if(width>65535||height>65535)throw std::runtime_error("Texture dimensions cannot be represented in the VTF format");
+    if(width>65535||height>65535)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its image is "+std::to_string(width)+" x "+std::to_string(height)+" pixels, more than the VTF format holds",{{"where",Json::array({at})},{"texture",base}});
     // Mip levels follow the 80-byte header smallest first; each level is a 2x2
     // box filter of the one above, built in place.
     std::vector<std::pair<int,int>> levels{{width,height}};while(levels.back().first>1||levels.back().second>1)levels.push_back({std::max(1,levels.back().first/2),std::max(1,levels.back().second/2)});
@@ -140,9 +158,10 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
    std::string path="materials/"+texturePath+".vtf";
    if(!files.contains(path)){
     std::ifstream in(ioPath(derivative),std::ios::binary);unsigned char header[80]{};std::error_code ec;auto size=fs::file_size(ioPath(derivative),ec);
-    if(!in||!in.read(reinterpret_cast<char*>(header),80)||ec||std::memcmp(header,"VTF\0",4)!=0)throw std::runtime_error("Invalid Source texture derivative header");
+    auto damaged=[&]{importFail("texture.derivative","The cached Source texture of "+placeText(at)+" is damaged ("+base.substr(0,16)+".vtf); delete it and import again",{{"where",Json::array({at})},{"texture",base}});};
+    if(!in||!in.read(reinterpret_cast<char*>(header),80)||ec||std::memcmp(header,"VTF\0",4)!=0)damaged();
     uint16_t width=0,height=0;std::memcpy(&width,header+16,2);std::memcpy(&height,header+18,2);uint64_t count=uint64_t(width)*height*4;
-    if(!width||!height||count>size-80)throw std::runtime_error("Invalid Source texture derivative");
+    if(!width||!height||count>size-80)damaged();
     files[path].file=derivative;
    }
   }
@@ -156,21 +175,28 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id){
  writeGma(package,files,"Model Hotloader materials "+id);
 }
 Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion* character){
-    auto report=[&](const char* stage,float value){if(!progress.empty())writeJson(progress,{{"state","running"},{"stage",stage},{"progress",value},{"filename",utf8(source.filename().wstring())}});};
-    report("Parsing skeleton, materials and physics",.05f);auto raw=readFile(source);
+    // Every step has a code (stageCode) the addon names in the player's language; the
+    // texture step also says which material it is on, for a failure or a crash report.
+    const auto filename=utf8(source.filename().wstring());
+    auto report=[&](const char* stage,const char* code,float value,const std::string& detail={},size_t current=0,size_t total=0){setImportStage(code);if(progress.empty())return;
+        Json status={{"state","running"},{"stage",stage},{"stageCode",code},{"progress",value},{"filename",filename}};if(!detail.empty())status.update({{"detail",detail},{"current",current},{"total",total}});writeJson(progress,status);};
+    report("Reading the file","read",.02f);auto raw=readFile(source);
     // VRM avatars become a PMX in memory with their embedded textures; spring
     // bones and licence metadata travel in the manifest (and so in its identity).
     const bool vrmSource=!character&&isVrmData(raw);std::map<std::string,Bytes> embedded;Json vrm,conversion;std::vector<std::string> converted;
-    if(vrmSource){report("Converting VRM avatar",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
+    if(vrmSource){report("Converting VRM avatar","convert_vrm",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
     // Characters in other formats arrive converted by the worker the same way (character_import.cpp).
-    if(character){report("Converting the character",.05f);conversion=std::move(character->conversion);conversion["sourceSha256"]=hash(raw);raw=std::move(character->pmx);embedded=std::move(character->textures);converted=std::move(character->warnings);}
+    if(character){report("Converting the character","convert_character",.05f);conversion=std::move(character->conversion);conversion["sourceSha256"]=hash(raw);raw=std::move(character->pmx);embedded=std::move(character->textures);converted=std::move(character->warnings);}
     const bool embeddedSource=vrmSource||character;
-    if(!embeddedSource&&(raw.size()<4||(std::memcmp(raw.data(),"PMX ",4)&&std::memcmp(raw.data(),"Pmd",3))))throw std::runtime_error("This file is not a character model this importer can read. Static 3D models (OBJ, BLEND) belong in Static Props.");
-    auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource)model->springs=SpringSetup::fromManifest(vrm,*model);
+    if(!embeddedSource&&(raw.size()<4||(std::memcmp(raw.data(),"PMX ",4)&&std::memcmp(raw.data(),"Pmd",3))))notCharacterFile(raw,source);
+    report("Parsing skeleton, materials and physics","parse",.06f);
+    auto model=parse(raw);for(auto& warning:converted)model->warnings.push_back(warning);if(vrmSource){ImportScope scope("Reading the VRM spring bones","vrm");model->springs=SpringSetup::fromManifest(vrm,*model);}
     if(character){model->springs=SpringSetup::fromManifest(conversion,*model);auto map=conversion.value("boneMap",Json::object());for(auto& [key,value]:map.items())model->conversionBoneMap[key]=value.get<int>();}
     Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;if(character)manifest["conversion"]=conversion;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
     std::map<std::wstring,std::pair<std::string,bool>> prepared;
     for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
+        auto image=material.base.substr(material.base.find_last_of("/\\")+1);
+        report("Preparing textures","textures",.1f+.8f*float(i)/std::max<size_t>(1,model->materials.size()),"Material "+std::to_string(i+1)+" of "+std::to_string(model->materials.size())+(material.name.empty()?std::string():" “"+cleanText(material.name)+"”")+(image.empty()?std::string():": "+cleanText(image)),i+1,model->materials.size());
         for(auto entry:std::array<std::pair<const char*,std::string>,3>{{{"base",material.base},{"sphere",material.sphere},{"toon",material.toon}}}){
             std::string id;bool localAlpha=false;if(!entry.second.empty())try{
                 if(embeddedSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
@@ -187,13 +213,18 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
             }catch(const std::exception& e){model->warnings.push_back(e.what());}
             textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;
         }
-        textures["alpha"]=alpha;manifest["textures"].push_back(textures);report("Preparing textures",.1f+.8f*float(i+1)/std::max<size_t>(1,model->materials.size()));
+        textures["alpha"]=alpha;manifest["textures"].push_back(textures);
     }
+    report("Saving to the cache","cache",.9f);
     manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
     auto directory=cache/L"assets"/wide(id);writeAtomic(directory/L"model.bin",raw);writeJson(directory/L"manifest.json",manifest);
-    auto registryPath=cache/L"sources.local.json";Json registry=fs::exists(registryPath)?readJson(registryPath):Json::object();registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
-    model->id=id;report("Preparing Source materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy",.94f);auto fit=prepareModelFit(*model,cache);
-    // The fit stays outside the manifest (and so outside the asset's identity).
+    // A damaged registry (Reload's source paths) must not block every import: start a new one.
+    auto registryPath=cache/L"sources.local.json";Json registry=Json::object();if(fs::exists(registryPath))try{registry=readJson(registryPath);}catch(const Json::exception&){}if(!registry.is_object())registry=Json::object();
+    registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
+    model->id=id;report("Preparing Source materials","materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy","fit",.94f);auto fit=prepareModelFit(*model,cache);
+    // The fit stays outside the manifest (and so outside the asset's identity). A failed
+    // one carries its facts as errorDetails too, like any import failure (the Lua reads either).
+    if(!fit.value("ok",true)&&!fit.contains("errorDetails"))fit["errorDetails"]={{"missing",fit.value("missing",Json::array())}};
     return {{"state","complete"},{"asset",id},{"info",manifest},{"fit",fit}};
 }
 Json importConverted(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion&& converted){return importAsset(source,cache,options,progress,&converted);}

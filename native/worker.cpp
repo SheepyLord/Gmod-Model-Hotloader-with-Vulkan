@@ -13,12 +13,39 @@
 #include <shobjidl.h>
 #include <atomic>
 #include <condition_variable>
+#include <csignal>
+#include <cstdio>
 #include <cwctype>
 #include <iostream>
 #include <mutex>
 #include <set>
 #include <thread>
 namespace {
+// A crash leaves no final status: the module reads the exit code, and one line per
+// crash from <job>/worker.log (which exception, in which module, at which step). The
+// handlers only format into the stack and append; the process then ends.
+wchar_t crashLog[1024]{};
+void crashLine(const char* line){
+    if(!crashLog[0])return;HANDLE h=CreateFileW(crashLog,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(h==INVALID_HANDLE_VALUE)return;DWORD written=0;WriteFile(h,line,DWORD(strlen(line)),&written,nullptr);CloseHandle(h);
+}
+LONG WINAPI crashed(EXCEPTION_POINTERS* e){
+    char module[MAX_PATH]="unknown";HMODULE owner=nullptr;auto address=e->ExceptionRecord->ExceptionAddress;uintptr_t offset=reinterpret_cast<uintptr_t>(address);
+    if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,static_cast<LPCSTR>(address),&owner)&&GetModuleFileNameA(owner,module,MAX_PATH))offset-=reinterpret_cast<uintptr_t>(owner);
+    const char* name=module;for(const char* c=module;*c;c++)if(*c=='\\'||*c=='/')name=c+1;
+    char line[512];snprintf(line,sizeof line,"unhandled exception 0x%08lX at %s+0x%llX during stage %s\r\n",e->ExceptionRecord->ExceptionCode,name,static_cast<unsigned long long>(offset),*mmd::importStage()?mmd::importStage():"start");
+    crashLine(line);return EXCEPTION_EXECUTE_HANDLER; // ends the process with the exception code, without an error dialog
+}
+void aborted(int){char line[160];snprintf(line,sizeof line,"abort during stage %s\r\n",*mmd::importStage()?mmd::importStage():"start");crashLine(line);}
+void watchCrashes(const mmd::fs::path& log){
+    wcsncpy_s(crashLog,log.c_str(),_TRUNCATE);
+    // No Windows error dialog may wait for a click in a hidden process, and abort() exits
+    // with code 3 (not a fail-fast report) so the module can tell the two apart.
+    SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);_set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
+    ULONG reserve=64*1024;SetThreadStackGuarantee(&reserve); // room to log a stack overflow
+    SetUnhandledExceptionFilter(crashed);signal(SIGABRT,aborted);
+    std::set_terminate([]{char line[160];snprintf(line,sizeof line,"std::terminate during stage %s\r\n",*mmd::importStage()?mmd::importStage():"start");crashLine(line);std::abort();});
+}
 // Characters for --inspect/--fit: PMX/PMD as-is, VRM and other formats through the
 // same conversion as import (FBX/glTF/DAE with the automatic bone assignment).
 std::shared_ptr<mmd::Model> loadCharacter(const mmd::fs::path& path){
@@ -142,7 +169,7 @@ props::Json deriveProp(const mmd::fs::path& cache,const props::Json& request,con
     return progress.complete({{"state","complete"},{"kind","static"},{"progress",1},{"stage","Preset saved"},{"asset",id},{"info",info}});
 }
 int wmain(int argc,wchar_t** argv){
-    using namespace mmd;fs::path status;std::string requestSource,requestKind;
+    using namespace mmd;fs::path status;std::string requestSource,requestKind;const uint64_t started=GetTickCount64();
     try {
         if(argc==2&&std::wstring(argv[1])==L"--version"){std::cout<<Json({{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"}}).dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--installation-test"){auto result=workerSelfTest(argc==4&&std::wstring(argv[3])==L"coacd");result["identity"]={{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"}};writeJson(argv[2],result);return 0;}
@@ -186,12 +213,15 @@ int wmain(int argc,wchar_t** argv){
             auto hr=dialog->Show(nullptr);shown=true;raise.join();
             Json result={{"state","cancelled"}};if(SUCCEEDED(hr)){IShellItem* item=nullptr;dialog->GetResult(&item);PWSTR p=nullptr;item->GetDisplayName(SIGDN_FILESYSPATH,&p);result={{"state","selected"},{"source",utf8(p)}};if(prop)result["kind"]="static";CoTaskMemFree(p);item->Release();}dialog->Release();CoUninitialize();writeJson(status,result);return 0;
         }
-        if(argc==3&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";auto j=readJson(request);auto options=j.value("options",Json::object());
+        // Test aid: the crash handlers on a deliberate crash (access, abort or terminate).
+        if(argc==4&&std::wstring(argv[1])==L"--crash-test"){watchCrashes(fs::path(argv[2])/L"worker.log");setImportStage("test");std::wstring how=argv[3];
+            if(how==L"abort")std::abort();if(how==L"terminate")std::terminate();RaiseException(EXCEPTION_ACCESS_VIOLATION,0,0,nullptr);return 0;}
+        if(argc==3&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";watchCrashes(request.parent_path()/L"worker.log");auto j=readJson(request);auto options=j.value("options",Json::object());
             requestSource=j.value("source",std::string());requestKind=options.value("kind",std::string());
             auto source=fs::path(wide(j.at("source").get<std::string>())),cache=fs::path(wide(j.at("cache").get<std::string>()));
             auto kind=options.value("kind",std::string());
             auto filename=utf8(source.filename().wstring());
-            auto report=[&](const char* code){return [&,code](const char* stage,float progress){writeJson(status,{{"state","running"},{"stage",stage},{"stageCode",code},{"progress",progress},{"filename",filename}});};};
+            auto report=[&](const char* code){return [&,code](const char* stage,float progress){setImportStage(code);writeJson(status,{{"state","running"},{"stage",stage},{"stageCode",code},{"progress",progress},{"filename",filename}});};};
             auto extension=source.extension().wstring();for(auto& c:extension)c=wchar_t(towlower(c));
             bool mmdFile=extension==L".pmx"||extension==L".pmd"||isVrmPath(source);
             Json result;
@@ -209,15 +239,20 @@ int wmain(int argc,wchar_t** argv){
             else result=kind=="derive"?deriveProp(cache,options,status):kind=="blend_scene"?listBlend(source,options,status):kind=="static"?importProp(source,cache,options,status):importAsset(source,cache,options,status);
             if(kind!="derive")result["source"]=requestSource;writeJson(status,result);return 0;}
         std::cerr<<"mmdhl_worker --inspect model.pmx | --request request.json | --pick job-directory [static]\n";return 2;
-    }catch(const std::exception& e){
-        Json j={{"state","failed"},{"error",e.what()}};
-        // A structured failure names the part at fault, so the bone window can reopen on it.
-        if(auto failure=dynamic_cast<const ImportError*>(&e)){j["errorCode"]=failure->code;j["errorDetails"]=failure->details;}
+    }catch(...){
+        // Any exception becomes a sentence with a code (import_error.hpp); a structured
+        // failure names the part at fault, so the bone window can reopen on it.
+        auto failure=describeException(std::current_exception());
+        Json j={{"state","failed"},{"error",failure["error"]},{"errorCode",failure["errorCode"]},{"errorDetails",failure["errorDetails"]},{"context",failure["context"]},{"exceptionType",failure["exceptionType"]},
+            {"elapsed_ms",GetTickCount64()-started},{"worker",{{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID}}}};
         if(!status.empty()){
-            try{auto last=readJson(status);for(auto key:{"stage","stageCode","filename","detail"})if(last.contains(key)&&last[key].is_string())j[key]=last[key];}catch(...){}
-            if(!requestSource.empty()){j["source"]=requestSource;if(!j.contains("filename"))j["filename"]=utf8(fs::path(wide(requestSource)).filename().wstring());}
-            if(!requestKind.empty())j["kind"]=requestKind;
-            try{writeJson(status,j);}catch(...){}
+            // The step that failed is the last one the import reported.
+            try{auto last=readJson(status);for(auto key:{"stage","stageCode","filename","detail"})if(last.contains(key)&&last[key].is_string())j[key]=last[key];for(auto key:{"current","total"})if(last.contains(key)&&last[key].is_number())j[key]=last[key];}catch(...){}
+            if(!j.contains("stageCode")&&*importStage())j["stageCode"]=importStage();
+            if(!requestSource.empty()){j["source"]=requestSource;if(!j.contains("filename"))try{j["filename"]=utf8(fs::path(wide(requestSource)).filename().wstring());}catch(...){}}
+            j["kind"]=requestKind.empty()?std::string("character"):requestKind;
+            // Names come from model files: never let one invalid byte lose the report.
+            try{auto text=j.dump(2,' ',false,Json::error_handler_t::replace);writeAtomic(status,std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));}catch(...){}
         }
-        std::cerr<<j.dump()<<std::endl;return 1;}
+        std::cerr<<j.dump(-1,' ',false,Json::error_handler_t::replace)<<std::endl;return 1;}
 }
