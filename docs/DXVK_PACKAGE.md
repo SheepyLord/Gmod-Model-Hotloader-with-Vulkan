@@ -81,8 +81,8 @@ checkout the renderer was built from. With `--renderer` the packages are `<name>
   - another `d3d9.dll` (RTX Remix, ReShade);
   - an unreadable file.
 - The installation banner shows it as "Renderer: …".
-- The renderer never disables a feature and is never an unverified file. The engine loads it, not the addon, and
-  other tools legitimately own that file.
+- The renderer is only reported: it is never an issue, not even a warning about files the addon does not know, and
+  never disables a feature. The engine loads it, not the addon, and other tools legitimately own that file.
 - `tests/test_installation.py` covers every case and checks that the server realm never reads the file.
 
 ## Solvers in the addon

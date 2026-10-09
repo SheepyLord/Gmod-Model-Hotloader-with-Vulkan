@@ -1,5 +1,6 @@
 """Publish a native release from a finished "Build drop-in package" run, with the
-Workshop policy that accepts it.
+Workshop policy that records and recommends it (the addon runs native files it
+does not know too, with a warning; the policy decides which run without one).
 
   python scripts/publish-native-release.py publish --run <id> --notes whats-new.md [--dry-run]
   python scripts/publish-native-release.py supersede <older-label> --note note.md
@@ -18,10 +19,11 @@ publish:
  3. The record is appended to addon/lua/mmdhl/native_policy.lua with the release
     link and the recommended release's alternative link, approved and made the
     recommended release. Earlier records and approvals stay. The policy is evaluated
-    for every approved release (client and server must load without issues),
-    check-i18n.py and check-lua-tests.py run, and addon.gma is built with gmad from
-    the committed addon folder (files git does not track never reach it) and checked
-    against it. If any of this fails, GitHub and the repository stay as they were.
+    for every approved release (on client and server its files must raise no
+    issue, not even a warning), check-i18n.py and check-lua-tests.py run, and
+    addon.gma is built with gmad from the committed addon folder (files git does
+    not track never reach it) and checked against it. If any of this fails, GitHub
+    and the repository stay as they were.
  4. The GitHub release <label> is created at the run's commit with both zips.
     --notes holds the "What's new" list; the rest of the notes (requirements,
     packages, install, checksums) is standard. A release or tag is never replaced or
@@ -225,7 +227,7 @@ def add_release(policy, record, url):
 
 
 def evaluate(policy, key):
-    """Every approved release must load on client and server without issues; the new one is the download."""
+    """Every approved release must raise no issue, not even a warning, on client and server; the new one is the download."""
     sys.path.insert(0, str(ROOT / 'tests'))
     from lupa import LuaRuntime
     from lua_i18n import attach

@@ -10,46 +10,72 @@ end
 local function featureNames() return {core=L'install.feature.core',imports=L'install.feature.imports',detailedCollision=L'install.feature.detailed_collision',rendering=L'install.feature.rendering',physics=L'install.feature.physics'} end
 local function describe(v)
  local feature,message=featureNames()[v.feature] or v.component or L'install.feature.installation',M.Localize(v.message)
- local line=v.feature=='detailedCollision' and L('install.issue_hull_fallback',{feature=feature,message=message}) or L('install.issue',{feature=feature,message=message})
- return v.accepted and line..' '..L'install.accepted_tag' or line
+ return v.feature=='detailedCollision' and L('install.issue_hull_fallback',{feature=feature,message=message}) or L('install.issue',{feature=feature,message=message})
 end
--- The listen-server host (or single player) shares the server's data folder and
--- may accept the server's unverified files together with its own.
+-- The listen-server host (or single player) runs the server's files too.
 local function hostsServer() return game.SinglePlayer() or (IsValid(LocalPlayer()) and LocalPlayer():IsListenServerHost()) end
-local function acceptable(s) return s and s.unverified and not s.blocked and s.fingerprint end
--- This client's problems that installing the recommended package fixes. They read
--- as one instruction (install.binary_problem); detailed lines are for the tooltip
--- and Copy diagnostics.
-local downloadable={missing=true,unreadable=true,mixed_installation=true,damaged_or_unrecognized=true,outdated=true,unapproved_release=true}
+-- This client's problems (the module did not load) that installing the recommended
+-- package fixes. They read as one instruction (install.binary_problem); detailed lines
+-- are for the tooltip and Copy diagnostics. When Windows refused the module, its files
+-- did not run either: the warnings that say they run anyway (runsAnyway) join it.
+local downloadable={missing=true,unreadable=true,mixed_builds=true}
+-- Warnings that say the installed module runs anyway: files this addon does not know, a
+-- release too old to check and an outdated one.
+local function runsAnyway(v) return v.warning and (v.identity or v.code=='outdated' or v.code=='outdated_release') end
+-- Whether Windows refused a status's module (require failed): nothing of it runs. A Recheck
+-- while nothing is loaded says a restart loads the files; they run then.
+local function refused(s)
+ for _,v in ipairs(s and s.issues or {}) do if v.code=='loader_failed' and not v.warning then return true end end
+ return false
+end
+-- Whether this realm's module loaded (CheckInstallation turns core off when it did not).
+-- The update windows and the banner's update line say it runs or keeps working, so while it
+-- did not, the problem notice and the installation window speak instead.
+local function moduleLoaded() local s=M.GetInstallationStatus() return not (s and istable(s.features) and s.features.core==false) end
 -- An outdated release still runs: the update reminder speaks for it, so its warning is
 -- listed but never pending, and the server's is for its administrator (installation window).
 -- So is the warning of a compatibility policy newer than the binary while an update is known.
 local function covered(v,update) return v.code=='outdated_release' or (v.code=='compatibility_fallback' and istable(update)) end
+-- A server's files this addon does not know are its administrator's business: the
+-- installation window lists them, the banner and the notice do not. The listen-server
+-- host (or single player) is that administrator and runs the server's files in its own
+-- game: for it they read as its own (the one install.binary_unrecognized line, pending).
+local function serverOnly(v) return v.warning and v.identity and not hostsServer() end
 local function messages(detailed)
- local result,pending,binary={},0,false
+ local result,pending,binary,unknown={},0,false,false
  local status=M.GetInstallationStatus()
  local server=M.serverInstallation
- if (status and status.acceptedIssues) or (server and server.unverifiedAccepted) then result[#result+1]=L'install.unverified.in_use' end
+ local ownRefused,serverRefused=refused(status),refused(server)
  for _,v in ipairs(status and status.issues or {}) do
-  if not v.accepted and not covered(v,status.update) then pending=pending+1 end
-  if not detailed and not v.accepted and downloadable[v.code] then binary=true else result[#result+1]=describe(v) end
+  if not covered(v,status.update) then pending=pending+1 end
+  if not detailed and ((not v.warning and downloadable[v.code]) or (ownRefused and runsAnyway(v))) then binary=true
+  -- Files this addon does not know (they run anyway) read as one line too.
+  elseif not detailed and v.warning and v.identity then unknown=true
+  else result[#result+1]=describe(v) end
  end
- if binary then table.insert(result,1,L'install.binary_problem') end
  for _,v in ipairs(server and server.issues or {}) do
-  if detailed or v.code~='outdated_release' then result[#result+1]=L('install.server_issue',{issue=describe(v)}) end
-  if not v.accepted and not covered(v,server.update) then pending=pending+1 end
+  -- The host's server files join that line, unless the server's module did not load (its
+  -- loader line speaks for them).
+  if not detailed and v.warning and v.identity then unknown=unknown or not (serverOnly(v) or serverRefused)
+  elseif detailed or v.code~='outdated_release' then result[#result+1]=L('install.server_issue',{issue=describe(v)}) end
+  if not covered(v,server.update) and not serverOnly(v) then pending=pending+1 end
  end
- if acceptable(server) and not hostsServer() then result[#result+1]=L'install.unverified.server_admin' end
+ if binary then table.insert(result,1,L'install.binary_problem') elseif unknown then table.insert(result,1,L'install.binary_unrecognized') end
  return result,pending,binary
 end
--- Dismiss hides the banner and the notice until the unaccepted problems change;
--- the installation window still lists them.
+-- Dismiss hides the banner and the notice until the problems change; the installation
+-- window still lists them. A warning about files this addon does not know comes back for
+-- other files (its detail).
 local dismissedPath='mmd_hotloader/installation_dismissed.txt'
 local function problemsKey()
- local parts={}
+ local parts,own={},false
  local status,server=M.GetInstallationStatus(),M.serverInstallation
- for _,v in ipairs(status and status.issues or {}) do if not v.accepted and not covered(v,status.update) then parts[#parts+1]=tostring(v.code)..'|'..tostring(v.component)..'|'..tostring(v.message) end end
- for _,v in ipairs(server and server.issues or {}) do if not v.accepted and not covered(v,server.update) then parts[#parts+1]='server|'..tostring(v.code)..'|'..tostring(v.component)..'|'..tostring(v.message) end end
+ local function part(v) return tostring(v.code)..'|'..tostring(v.component)..'|'..tostring(v.message)..(v.detail and '|'..tostring(v.detail) or '') end
+ for _,v in ipairs(status and status.issues or {}) do if not covered(v,status.update) then parts[#parts+1]=part(v) own=own or (v.warning==true and v.identity==true) end end
+ -- The host's server files count too, except beside its own such warnings: the same line
+ -- speaks for both, and the server's status comes about a second after the notice checks
+ -- Dismiss, which would bring a dismissed notice back on every map.
+ for _,v in ipairs(server and server.issues or {}) do if not covered(v,server.update) and not serverOnly(v) and not (own and v.warning and v.identity) then parts[#parts+1]='server|'..part(v) end end
  table.sort(parts) return table.concat(parts,'\n')
 end
 function M.InstallationDismissed()
@@ -96,10 +122,11 @@ local function advisoryText(update)
  local text=L(key)
  return text~='mmdhl.'..key and text or L'install.update.advisory'
 end
--- The banner's line while an update is due; the installation window always has it.
+-- The banner's line while an update is due; the installation window always has it, while
+-- the module runs (the line says everything keeps working; the update tag stays).
 local function updateLine(always)
  local update=always and M.NativeUpdate() or M.NativeUpdateDue()
- if not update or update.required then return nil end
+ if not update or update.required or not moduleLoaded() then return nil end
  local line=L('install.update.banner',{recommended=tostring(update.recommended),installed=tostring(update.installed)})
  return update.advisory and line..' '..advisoryText(update) or line
 end
@@ -113,28 +140,6 @@ local function serverUpdateLine()
  if not (hostsServer() or (IsValid(p) and p:IsAdmin())) or (hostsServer() and own and own.installed==update.installed) then return nil end
  return L('install.update.server',{installed=tostring(update.installed),recommended=tostring(update.recommended)})
 end
-function M.CanAcceptUnverifiedNative()
- return not not (acceptable(M.GetInstallationStatus()) or (hostsServer() and acceptable(M.serverInstallation)))
-end
-function M.UsingUnverifiedNative()
- local status=M.GetInstallationStatus()
- return not not ((status and status.unverifiedAccepted) or (hostsServer() and M.serverInstallation and M.serverInstallation.unverifiedAccepted))
-end
--- Acceptance takes effect when the addon loads again (map change or restart).
-function M.AcceptUnverifiedNative()
- local status,server=M.GetInstallationStatus(),M.serverInstallation
- if acceptable(status) then M.SetUnverifiedAccepted('client',status.fingerprint) end
- if hostsServer() and acceptable(server) then M.SetUnverifiedAccepted('server',server.fingerprint) end
- Derma_Message(L'install.unverified.accepted',L'install.window_title',L'common.ok')
-end
-function M.RevokeUnverifiedNative()
- M.SetUnverifiedAccepted('client',nil)
- if hostsServer() then M.SetUnverifiedAccepted('server',nil) end
- Derma_Message(L'install.unverified.revoked',L'install.window_title',L'common.ok')
-end
-function M.ConfirmUnverifiedNative()
- Derma_Query(L'install.unverified.warning',L'install.unverified.title',L'install.unverified.confirm',M.AcceptUnverifiedNative,L'common.cancel')
-end
 -- Which d3d9.dll the game renders through (installation.lua reports it; it never blocks a feature).
 local function rendererLine(status)
  local r=status and status.renderer
@@ -142,11 +147,19 @@ local function rendererLine(status)
  if r.kind=='dxvk' then return r.current and L'install.renderer.dxvk' or L('install.renderer.dxvk_release',{release=tostring(r.release)}) end
  return r.kind=='d3d9' and L'install.renderer.d3d9' or L'install.renderer.other'
 end
--- Also returns how many problems the player has not accepted.
+-- The installed release, or for files this addon does not know the loaded module's own
+-- label and build.
+local function nativeVersion(status)
+ if status and status.installed then return tostring(status.installed) end
+ local module=status and istable(status.loaded) and istable(status.loaded.module) and status.loaded.module
+ if module and isstring(module.release) then return module.release..(isstring(module.build) and ' ('..module.build..')' or '') end
+ return L'install.not_verified'
+end
+-- Also returns how many problems and warnings the banner raises.
 function M.InstallationSummary()
  local status=M.GetInstallationStatus()
  local issues,pending=messages()
- local versions=L('install.native_release',{version=tostring(status and status.installed or L'install.not_verified')})..'   '..L('install.recommended_release',{version=tostring(status and status.recommended or L'install.unknown_version')})
+ local versions=L('install.native_release',{version=nativeVersion(status)})..'   '..L('install.recommended_release',{version=tostring(status and status.recommended or L'install.unknown_version')})
  if M.NativeUpdate() then versions=versions..' '..L'install.update.available_tag' end
  local renderer=rendererLine(status)
  if renderer then versions=versions..'   '..renderer end
@@ -178,8 +191,6 @@ function M.AddInstallationBanner(parent,always)
  local alt=button(L'install.button.download_alternative',function() local url=alternative() if url then gui.OpenURL(url) end end,170)
  local copy=button(L'install.button.copy_diagnostics',function() SetClipboardText(util.TableToJSON({installation=M.GetInstallationStatus(),server=M.serverInstallation},true)) end)
  local recheck=button(L'install.button.recheck',function() M.CheckInstallation(true) end,90)
- local useAnyway=button(L'install.button.use_anyway',function() M.ConfirmUnverifiedNative() end,120)
- local stopUsing=button(L'install.button.stop_using',function() M.RevokeUnverifiedNative() end,200)
  -- Dismiss hides the problems first; with none left, the update line (Skip this version).
  local function skips() local _,pending=messages() return updateLine()~=nil and (pending==0 or M.InstallationDismissed()) end
  -- At the right edge, so a narrow window cannot push it out of view.
@@ -191,10 +202,10 @@ function M.AddInstallationBanner(parent,always)
   local text,versions,details,pending=M.InstallationSummary()
   local mirror=alternative()
   local update,server=updateLine(always),always and serverUpdateLine()
-  -- Accepted (Use anyway) and dismissed warnings stay listed in the installation window only;
-  -- an update line shows the banner by itself, never as a problem.
+  -- Dismissed warnings stay listed in the installation window only; an update line shows
+  -- the banner by itself, never as a problem.
   panel:SetVisible(always or (pending>0 and not M.InstallationDismissed()) or update~=nil) panel:SetTall((always and 190 or 150)*scale)
-  alt:SetVisible(mirror~=nil) useAnyway:SetVisible(M.CanAcceptUnverifiedNative()) stopUsing:SetVisible(M.UsingUnverifiedNative()) dismiss:SetVisible(not always and (pending>0 or update~=nil)) controls:InvalidateLayout()
+  alt:SetVisible(mirror~=nil) dismiss:SetVisible(not always and (pending>0 or update~=nil)) controls:InvalidateLayout()
   dismiss:SetTooltip(skips() and L('install.update.dismiss_tip',{recommended=tostring(M.NativeUpdateDue().recommended)}) or L'install.button.dismiss_tip')
   local lines={versions}
   for _,line in ipairs({update or false,server or false,mirror and L('install.alternative_link',{url=mirror}) or false}) do if line then lines[#lines+1]=line end end
@@ -205,7 +216,7 @@ function M.AddInstallationBanner(parent,always)
  hook.Add('MMDHL.InstallationChanged',panel,refresh) refresh()
  -- Windows stay open across a language switch (the spawn-menu copy is rebuilt with the menu).
  hook.Add('MMDHL.LanguageChanged',panel,function()
-  label(get,L'install.button.download') label(alt,L'install.button.download_alternative') label(copy,L'install.button.copy_diagnostics') label(recheck,L'install.button.recheck') label(useAnyway,L'install.button.use_anyway') label(stopUsing,L'install.button.stop_using')
+  label(get,L'install.button.download') label(alt,L'install.button.download_alternative') label(copy,L'install.button.copy_diagnostics') label(recheck,L'install.button.recheck')
   label(dismiss,L'install.button.dismiss')
   summary:SetFont(bodyFont()) refresh()
  end)
@@ -231,15 +242,16 @@ local function updateWindowOpen() return IsValid(M.updateWindow) and M.updateWin
 -- Whether the update window opens on this map: once per game run, before the problem
 -- notice, which waits until it closes. A problem the download fixes says so itself, so
 -- then it stays closed. A required update stands in for the notice, and Dismiss in the
--- banner silences it as it does the notice.
+-- banner silences it as it does the notice. Both windows say the module runs: while it
+-- did not load, neither opens and the notice speaks for the failure.
 local function updateComing()
  local update=M.NativeUpdateDue()
- if not update or M.updateNoticeShown or remindedThisRun() then return false end
+ if not update or M.updateNoticeShown or remindedThisRun() or not moduleLoaded() then return false end
  if update.required then return not M.InstallationDismissed() end
  local _,_,binary=messages() return not binary
 end
 local function notify()
- -- Warnings the player already accepted or dismissed do not raise the notice.
+ -- Warnings the player dismissed do not raise the notice.
  local _,pending,binary=messages()
  if M.installationNoticeShown or pending==0 or M.InstallationDismissed() or not IsValid(LocalPlayer()) then return end
  -- Never beside the update window (its OnClose asks again); a required update's window was this map's notice.
@@ -253,11 +265,13 @@ local function notify()
  timer.Simple(20,function() if IsValid(panel) then panel:Remove() end end)
 end
 -- The update window: Download (the releases page only) or the mirror, then Remind me
--- later (the next game run), Skip this version or Don't remind me again. A required
--- update (a module this Lua cannot use) cannot be skipped.
+-- later (the next game run), Skip this version or Don't remind me again. A needed
+-- update (a module this addon cannot check: too old, or another interface) cannot be
+-- skipped; it still runs. While the module did not load, the installation window opens
+-- instead (its Download buttons and the update tag): this one says the module runs.
 function M.OpenNativeUpdate()
  local update=M.NativeUpdate()
- if not update then return M.OpenInstallation() end
+ if not update or not moduleLoaded() then return M.OpenInstallation() end
  if updateWindowOpen() then M.updateWindow:MakePopup() return M.updateWindow end
  -- Opened by hand too, it is this map's reminder.
  local frame=vgui.Create('DFrame') M.updateWindow=frame M.updateNoticeShown=true

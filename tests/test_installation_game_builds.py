@@ -2,8 +2,10 @@
 game and a native module whose compatibility report marks libraries "unverified"
 (native releases from 2.1.0-native.6 report them instead of refusing). They keep
 running: rendering and physics stay on, with one warning that disables nothing and
-that Dismiss hides. Neither an accepted warning nor a plain warning is ever given
-as the reason a feature is off."""
+that Dismiss hides. A module from before these checks (no CheckCompatibility) relies on
+its own guards: rendering and physics stay on with one game_unchecked warning, also after
+the map's InitPostEntity refresh. A warning (an unverified build, a runtime loaded from
+elsewhere) is never given as the reason a feature is off: only a real failure is."""
 from pathlib import Path
 import json, sys
 from lupa import LuaRuntime
@@ -17,7 +19,7 @@ policy = lua_policy(ROOT / 'addon/lua/mmdhl/native_policy.lua')
 release = policy['releases'][policy['recommended']]
 
 
-def session(server, libraries, accepted=None, loaded_path=None, ready=True, issues=()):
+def session(server, libraries, loaded_path=None, ready=True, issues=(), check_compatibility=True):
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(f'unpack=table.unpack; mmdhl={{}}; SERVER={"true" if server else "false"} CLIENT=not SERVER')
     attach(lua); lua.execute('L=mmdhl.L')
@@ -33,7 +35,6 @@ def session(server, libraries, accepted=None, loaded_path=None, ready=True, issu
     disk = {'MOD/lua/bin/' + f['name']: f for f in release['files'].values()}
     disk['BASE_PATH/bin/win64/' + release['files']['runtime']['name']] = release['files']['runtime']
     g.PY_DISK = lua.table_from({k: lua.table_from({'size': v['size'], 'sha256': v['sha256']}) for k, v in disk.items()})
-    g.PY_DATA = lua.table_from({'mmd_hotloader/unverified_native.json': accepted} if accepted else {})
     game = 'C:\\game\\'
     role = 'server' if server else 'client'
     module = dict(release=release['release'], build=release['build'], installApi=1, api=1, platform='win64', size=release['files'][role]['size'], sha256=release['files'][role]['sha256'],
@@ -45,24 +46,26 @@ def session(server, libraries, accepted=None, loaded_path=None, ready=True, issu
     lua.execute(r'''
 util={JSONToTable=function(s) return PY_DECODE(s) end,TableToJSON=function(t) return PY_ENCODE(t) end,AddNetworkString=function() end}
 file={}
-function file.Exists(p,s) if s=='DATA' then return PY_DATA[p]~=nil end return PY_DISK[s..'/'..p]~=nil end
+function file.Exists(p,s) if s=='DATA' then return false end return PY_DISK[s..'/'..p]~=nil end
 function file.Open(p,m,s) local f=PY_DISK[s..'/'..p] return {Size=function() return f.size end,Read=function(_,n) return string.rep('x',n) end,Close=function() end} end
-function file.Read(p,s) return PY_DATA[p] end
-function file.Write(p,c) PY_DATA[p]=c end
+function file.Read() return nil end
+function file.Write() end
 function file.CreateDir() end
 net={Start=function() end,WriteString=function() end,Broadcast=function() end,Receive=function() end,SendToServer=function() end}
-hook={Add=function() end,Run=function() end}
+HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end,Run=function() end}
 timer={Create=function() end,Remove=function() end,Simple=function() end}
 concommand={Add=function() end}
 system={IsWindows=function() return true end} jit={arch='x64'}
 game={IsDedicated=function() return false end,SinglePlayer=function() return true end}
 CurTime=function() return 0 end RealTime=function() return 0 end MsgN=function() end
-istable=function(v) return type(v)=='table' end
+istable=function(v) return type(v)=='table' end isstring=function(v) return type(v)=='string' end
 function include(p) if p=='mmdhl/native_policy.lua' then return util.JSONToTable(PY_POLICY) end return {} end
 function require() mmdhl_native={GetInstallationInfo=function() return PY_INFO end,ConfigureCompatibility=function() return '{"configured":true}' end,
- CheckCompatibility=function() return PY_REPORT end,StartInstallationProbe=function() return false,'no worker in this test' end} end
+ CheckCompatibility=PY_CHECKS and function() return PY_REPORT end or nil,GetCapabilities=function() return '{"version":"2.1.0-native.5"}' end,
+ StartInstallationProbe=function() return false,'no worker in this test' end} end
 ''')
     g.PY_POLICY = json.dumps(policy)
+    g.PY_CHECKS = check_compatibility
     source = (ROOT / 'addon/lua/mmdhl/installation.lua').read_text(encoding='utf8')
     hashed = "value={size=size,sha256=util.SHA256(bytes),path=search..'/'..path}"
     assert hashed in source
@@ -90,11 +93,27 @@ problem = dict(code='game_incompatible', component='client.dll', message='Requir
 _, M, s = session(False, [(n, 'unverified') for n in client], ready=False, issues=[problem])
 ok, why = M.FeatureAvailable('rendering')
 assert not s.features.rendering and not ok and why == problem['message'], why
-# Nor is a warning the player accepted (a runtime loaded elsewhere).
+# Nor is a loaded runtime that is not the checked file (loaded from elsewhere): a warning beside it.
 elsewhere = r'C:\game\mmdhl_runtime_win64.dll'
-_, M, first = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere)
-_, M, s = session(False, [(n, 'tested') for n in client], accepted=json.dumps({'client': first.fingerprint}), loaded_path=elsewhere, ready=False, issues=[problem])
-assert any(v.code == 'loaded_mismatch' and v.accepted for v in s.issues.values())
+_, M, s = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere)
+mismatch = [v for v in s.issues.values() if v.code == 'loaded_mismatch']
+assert s.features.core and s.features.rendering and len(mismatch) == 1 and mismatch[0].warning and M.FeatureAvailable('rendering') is True
+_, M, s = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere, ready=False, issues=[problem])
+assert any(v.code == 'loaded_mismatch' and v.warning for v in s.issues.values()) and s.features.core
 ok, why = M.FeatureAvailable('rendering')
 assert not ok and why == problem['message'], why
 print('PASS: unverified game builds keep running with one dismissible warning; real failures, not warnings, are the reason a feature is off')
+
+# A module from before game build checks (no CheckCompatibility): its own guards decide; rendering
+# (physics on the server) stays on with one game_unchecked warning, also after InitPostEntity.
+for server, feature in ((False, 'rendering'), (True, 'physics')):
+    lua, M, s = session(server, [], check_compatibility=False)
+    unchecked = [v for v in s.issues.values() if v.code == 'game_unchecked']
+    assert s.features.core and s.features[feature] and M.FeatureAvailable(feature) is True and M.native is not None, [v.code for v in s.issues.values()]
+    assert len(unchecked) == 1 and unchecked[0].warning and unchecked[0].feature == feature and unchecked[0].component == 'game' and not s.blocked
+    assert M.Localize(unchecked[0].message) == M.Localize(M.L('install.warning.game_unchecked', lua.table_from({'recommended': policy['recommended']})))
+    # It also lacks installation verification: an outdated warning, the update it needs.
+    assert [v.code for v in s.issues.values() if v.code == 'outdated'] == ['outdated'] and s.update.required
+    lua.eval('HOOKS.InitPostEntity')['MMDHL.InstallationCompatibility']()
+    assert [v.code for v in s.issues.values()].count('game_unchecked') == 1 and s.features[feature], 'the map refresh repeated or dropped the warning'
+print('PASS: a module without game build checks keeps rendering and physics on with one game_unchecked warning')

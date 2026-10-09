@@ -1,13 +1,19 @@
-"""The native update reminder (installation_ui.lua) against a simulated client: the
-window opens a few seconds after joining, once per game run (not again on the next map);
-Skip this version lasts until a newer release is recommended; Don't remind me again turns
-mmdhl_native_update_reminder off for good, and the installation window's checkbox turns it
-back on; a pending binary problem keeps it closed, other problems' notice waits until it
-closes (also when VGUI deletes the closed window a frame later), and a required update
-replaces the problem notice once per game run unless dismissed; Download opens only the
-public releases page, the mirror only a plain https address. The banner shows an update as
-a line, never as a problem (Dismiss hides problems first, then skips the release), and the
-installation window always does, with the server's update for its administrators; a
+"""The native update reminder and the installation notice (installation_ui.lua) against a
+simulated client: the window opens a few seconds after joining, once per game run (not again
+on the next map); Skip this version lasts until a newer release is recommended; Don't remind
+me again turns mmdhl_native_update_reminder off for good, and the installation window's
+checkbox turns it back on; Download opens only the public releases page, the mirror only a
+plain https address. A pending binary problem (the module did not load because its files are
+missing, unreadable or from two builds) keeps the window closed and raises the download
+notice; other problems' and warnings' notice waits until it closes (also when VGUI deletes the
+closed window a frame later). A needed update (a module this addon cannot check, which still
+runs) cannot be skipped and replaces the notice once per game run unless dismissed; later maps
+get the ordinary notice for its warning. Files this addon does not know run: their warnings
+raise the ordinary notice once per map (never the download notice) until dismissed, another
+build of a file raises it again, a server's such warnings never reach the player, and a build
+older than the recommended release gets the ordinary, skippable window. The banner shows an
+update as a line, never as a problem (Dismiss hides problems first, then skips the release),
+and the installation window always does, with the server's update for its administrators; a
 language switch relabels the window. Also the dialog other features show for a native
 function the binary lacks."""
 from pathlib import Path
@@ -222,7 +228,7 @@ print("PASS: Don't remind me again turns the reminder off for good; the checkbox
 # --- Never beside the problem notice. A pending binary problem keeps the window closed (the
 # notice says to download); other problems' notice waits until the window closes.
 DATA.pop(STATE, None)
-missing = {'code': 'missing', 'component': 'worker', 'message': 'Missing lua/bin/mmdhl_worker.exe', 'feature': 'imports'}
+missing = {'code': 'missing', 'component': 'worker', 'message': 'Missing lua/bin/mmdhl_worker.exe', 'feature': 'imports', 'cause': True}
 new_run(); lua, g = session(status(issues=[missing])); join(lua)
 assert not windows(g, title), 'the update window opened beside a binary problem'
 assert len(notices(g, 'install.notice_binary')) == 1, 'the problem notice is missing'
@@ -230,6 +236,16 @@ assert len(notices(g, 'install.notice_binary')) == 1, 'the problem notice is mis
 new_run(); lua, g = session(status(issues=[missing])); g.mmdhl.DismissInstallation(); join(lua)
 assert not windows(g, title) and not g.mmdhl.installationNoticeShown, 'the update window opened beside a dismissed binary problem'
 DATA.pop(DISMISSED)
+# The module did not load: its runtime missing, a file unreadable, or module and runtime from two
+# builds explained it (their warnings became problems). The download notice, and no update window.
+loader = {'code': 'loader_failed', 'component': 'module', 'message': "Native module could not load: Couldn't load module library!", 'feature': 'core'}
+for cause in ({'code': 'missing', 'component': 'runtime', 'message': 'Missing bin/win64/mmdhl_runtime_win64.dll', 'feature': 'core', 'cause': True},
+              {'code': 'unreadable', 'component': 'client', 'message': 'Cannot read lua/bin/gmcl_mmdhl_win64.dll', 'feature': 'core', 'cause': True},
+              {'code': 'mixed_builds', 'component': 'runtime', 'message': 'two builds', 'feature': 'core', 'identity': True, 'cause': True, 'detail': 'a/b'}):
+    new_run(); lua, g = session(status(issues=[cause, loader])); join(lua)
+    assert not windows(g, title) and len(notices(g, 'install.notice_binary')) == 1 and not notices(g), cause['code']
+    banner = g.mmdhl.AddInstallationBanner(g.panel('DPanel'))
+    assert banner.visible is True and banner.children[2].children[1].text.endswith(L(g, 'install.binary_problem') + '\n' + L(g, 'install.issue', feature=L(g, 'install.feature.core'), message=loader['message'])), banner.children[2].children[1].text
 # A warning (a game build no profile describes, after every Garry's Mod update): the window
 # first, the notice once it closes; later maps of the run get the notice at once.
 warning = {'code': 'game_unverified', 'component': 'game', 'message': 'untested', 'feature': 'rendering', 'warning': True}
@@ -256,30 +272,104 @@ for issues in ([outdated], [outdated, fallback]):
     _, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 0 and not g.mmdhl.InstallationDismissed()
 lua, g = session(status(installed='2.3.0', issues=[fallback])); join(lua)
 _, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 1 and len(notices(g)) == 1
-# A module this Lua cannot use: the window, worded as required and without skipping, instead of
-# the notice; once per game run (it takes the mouse and keyboard), later maps get the notice.
-blocked = {'code': 'outdated', 'component': 'module', 'message': 'no verification', 'feature': 'core'}
-required = status(issues=[blocked], required=True)
+# A module this addon cannot check (a release without installation verification, or another
+# interface) still runs, with a warning (install.error.no_verification): the window, worded as
+# needed (it runs anyway) and without skipping, instead of the notice; once per game run (it takes
+# the mouse and keyboard). Later maps get the ordinary notice for the warning: nothing failed to
+# load, so it is not the download notice.
+unchecked = {'code': 'outdated', 'component': 'module', 'message': 'no verification', 'feature': 'core', 'warning': True}
+required = status(issues=[unchecked], required=True, approved=None)
 new_run(); lua, g = session(required); join(lua)
 frame = windows(g, L(g, 'install.update.title_required'))
-assert len(frame) == 1 and not g.mmdhl.installationNoticeShown, 'a required update did not open its window'
+assert len(frame) == 1 and not g.mmdhl.installationNoticeShown, 'a needed update did not open its window'
 frame = frame[0]
+assert find(frame, L(g, 'install.update.text_required', installed='2.2.0', recommended='2.3.0') + '\n\n' + L(g, 'install.alternative_link', url=MIRROR)) is not None, 'the window does not say the module runs anyway'
 assert find(frame, L(g, 'install.update.button.skip')).visible is False and find(frame, L(g, 'install.update.button.never')).visible is False and find(frame, L(g, 'common.close')) is not None
+_, _, _, pending = g.mmdhl.InstallationSummary(); assert pending == 1, 'the warning of a module this addon cannot check is not pending'
 # Closed, it was this map's notice.
 frame.Close(frame); lua.execute('RunTimers()')
-assert not g.mmdhl.installationNoticeShown, 'the notice repeated the required update'
+assert not g.mmdhl.installationNoticeShown, 'the notice repeated the needed update'
 new_map(); lua, g = session(required); join(lua)
-assert not windows(g) and len(notices(g, 'install.notice_binary')) == 1, 'a required update opened its window again in the same game run'
-# Dismiss in the banner silences both, as it did the notice, until the problems change.
+assert not windows(g) and len(notices(g)) == 1 and not notices(g, 'install.notice_binary'), 'a needed update opened its window again in the same game run, or its warning got the download notice'
+# Skip this version does not apply to it: the next game run opens it again.
+lua.eval('function() mmdhl.SkipNativeUpdate() end')()
+new_run(); lua, g = session(required); join(lua)
+assert len(windows(g, L(g, 'install.update.title_required'))) == 1, 'a needed update was skipped'
+# Dismiss in the banner silences both, as it did the notice, until the warnings change.
 new_run(); lua, g = session(required); g.mmdhl.DismissInstallation(); join(lua)
-assert not windows(g) and not g.mmdhl.installationNoticeShown, 'Dismiss did not silence the required update'
+assert not windows(g) and not g.mmdhl.installationNoticeShown, 'Dismiss did not silence the needed update'
 DATA.pop(DISMISSED)
 # With reminders off, the notice as before.
 CONVARS['mmdhl_native_update_reminder'] = '0'
 new_run(); lua, g = session(required); join(lua)
-assert not windows(g) and g.mmdhl.installationNoticeShown
+assert not windows(g) and g.mmdhl.installationNoticeShown and len(notices(g)) == 1
 CONVARS['mmdhl_native_update_reminder'] = '1'
-print('PASS: the update window never opens beside the problem notice; other notices follow it; a required update replaces it once per run')
+print('PASS: the update window never opens beside the download notice; other notices follow it; a needed update replaces the notice once per run')
+
+# --- Files this addon does not know (a test build, a newer release, modified or mixed files) run.
+DATA.pop(STATE, None)
+BUILD = 'feedfacecafe-20261009T120000Z'
+unknown = {'code': 'damaged_or_unrecognized', 'component': 'client', 'message': 'gmcl_mmdhl_win64.dll matches no release', 'feature': 'core', 'warning': True, 'identity': True, 'detail': '2746368:' + 'a' * 64}
+two_builds = {'code': 'mixed_builds', 'component': 'runtime', 'message': 'two builds', 'feature': 'core', 'warning': True, 'identity': True, 'cause': True, 'detail': BUILD + '/0123456789ab-20261001T000000Z'}
+
+
+def unknown_build(issues, label='2.3.0', update=None):
+    """Loaded files this addon does not know: no installed release; the loaded module reports its
+    own label and build. update: what the loaded module's label is due (none by default)."""
+    s = status(installed='2.3.0', recommended='2.3.0', issues=issues)
+    del s['installed']
+    s['loaded'] = {'module': {'release': label, 'build': BUILD}}
+    if update: s['update'] = update
+    return s
+
+
+# Their warnings raise the ordinary notice once per map (Lua session), never the download notice;
+# the banner shows one warning line and the loaded module's own label and build.
+new_run(); lua, g = session(unknown_build([unknown, two_builds])); join(lua)
+assert not windows(g) and len(notices(g)) == 1 and not notices(g, 'install.notice_binary'), 'files this addon does not know raised no notice, or the download notice'
+banner = g.mmdhl.AddInstallationBanner(g.panel('DPanel'))
+text = banner.children[2].children[1].text
+assert banner.visible is True and text.endswith(L(g, 'install.binary_unrecognized')) and L(g, 'install.binary_problem') not in text, text
+assert L(g, 'install.native_release', version='2.3.0 (' + BUILD + ')') in text, text
+new_map(); lua, g = session(unknown_build([unknown, two_builds])); join(lua)
+assert len(notices(g)) == 1, 'the next map gave no notice'
+# Dismiss hides the banner and silences the notice until the files change.
+banner = g.mmdhl.AddInstallationBanner(g.panel('DPanel'))
+find(banner.children[1], L(g, 'install.button.dismiss')).DoClick()
+assert banner.visible is False and g.mmdhl.InstallationDismissed()
+new_map(); lua, g = session(unknown_build([unknown, two_builds])); join(lua)
+assert not notices(g) and not g.mmdhl.installationNoticeShown and g.mmdhl.AddInstallationBanner(g.panel('DPanel')).visible is False, 'the dismissed warnings came back'
+# Another build of the module (another size and SHA-256, the same sentence) brings both back.
+rebuilt = dict(unknown, detail='2746370:' + 'b' * 64)
+new_map(); lua, g = session(unknown_build([rebuilt, two_builds])); join(lua)
+assert len(notices(g)) == 1 and g.mmdhl.AddInstallationBanner(g.panel('DPanel')).visible is True, 'another build stayed dismissed'
+DATA.pop(DISMISSED)
+# A server's files this addon does not know are its administrator's: no notice and no banner for
+# the player; the installation window's details list them as the server's.
+server = {'schema': 1, 'realm': 'server', 'features': {'core': True, 'physics': True}, 'issues': [dict(unknown, component='server', message='gmsv_mmdhl_win64.dll matches no release'), two_builds]}
+new_run(); lua, g = session(status(installed='2.3.0'), server=server); g.SP = False; join(lua)
+assert not notices(g) and not g.mmdhl.installationNoticeShown and not windows(g), 'a server\'s files this addon does not know raised the player\'s notice'
+assert g.mmdhl.AddInstallationBanner(g.panel('DPanel')).visible is False
+g.COMMANDS['mmdhl_installation'](); installation = windows(g, L(g, 'install.window_title'))[0]
+label = installation.children[1].children[2].children[1]
+line = L(g, 'install.server_issue', issue=L(g, 'install.issue', feature=L(g, 'install.feature.core'), message='gmsv_mmdhl_win64.dll matches no release'))
+assert line in label.tooltip and line not in label.text, 'the installation window does not list the server\'s warning in its details'
+# A build older than the recommended release (its own label): the ordinary window, which can be
+# skipped, then the notice for its warnings once the window closes.
+older = unknown_build([unknown], label='2.2.0', update={'installed': '2.2.0', 'recommended': '2.3.0', 'url': RELEASES + '/tag/2.3.0', 'altUrl': MIRROR})
+new_run(); lua, g = session(older); join(lua)
+frame = windows(g, title)
+assert len(frame) == 1 and not notices(g), 'an older build this addon does not know got no ordinary reminder, or the notice beside it'
+frame = frame[0]
+assert find(frame, L(g, 'install.update.text', installed='2.2.0', recommended='2.3.0') + '\n\n' + L(g, 'install.alternative_link', url=MIRROR)) is not None
+assert find(frame, L(g, 'install.update.button.skip')).visible is not False and find(frame, L(g, 'install.update.button.never')).visible is not False and find(frame, L(g, 'install.update.button.later')) is not None
+find(frame, L(g, 'install.update.button.skip')).DoClick(); lua.execute('RunTimers()')
+assert json.loads(DATA[STATE])['skipped'] == '2.3.0' and not windows(g) and len(notices(g)) == 1 and not notices(g, 'install.notice_binary')
+new_run(); lua, g = session(older); join(lua)
+assert not windows(g) and len(notices(g)) == 1, 'a skipped release reminded again, or the warnings lost their notice'
+DATA.pop(STATE, None)
+print('PASS: files this addon does not know raise the ordinary notice until dismissed (another build brings it back), never for a server\'s files; '
+      'an older such build gets the skippable reminder')
 
 # --- The banner: a line while due (nothing pending), hidden once skipped; the window always has it.
 DATA.pop(STATE, None)

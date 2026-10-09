@@ -62,12 +62,16 @@ API and its limits).
 
 The decision is made in the native module, where Lua cannot reach it:
 
-* The dialogs run in a separate process (`mmdhl_worker.exe`), and only while
-  the installation check allows that worker, as for model imports (a worker
-  from another release, or one that failed its self-test, shows nothing, and
-  requests wait while the self-test still runs; turning file access off, and
-  a request a remembered folder answers, need no dialog). Lua can
-  click Derma buttons and override hooks, but not windows of another process.
+* The dialogs run in a separate process (`mmdhl_worker.exe`), and only once
+  that worker has passed its self-test, as for model imports (one that failed
+  it shows nothing, and requests wait while the self-test still runs; turning
+  file access off, and a request a remembered folder answers, need no dialog).
+  A worker from another build than the rest of the installation (a test build,
+  files from different releases) only adds a warning to the installation
+  status. A worker without these dialogs (2.2 and older) exits without an
+  answer: the request fails as `dialog_failed`, and nothing is granted, nor is
+  file access turned on, without the player's answer. Lua can click Derma
+  buttons and override hooks, but not windows of another process.
   Their sentences are compiled into the module in the player's language; only
   the addon's name, its reported script, its stated purpose and a short title
   come from Lua. They are shown in quotes or marked as reported and not verified,
@@ -210,13 +214,13 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
 `dialog_failed`, `too_many_items`, `invalid_options`, `denied_by_hook`,
 `needs_update`, `unavailable_remote`, `disabled` (also for a read or listing
 the player turned file access off during), `worker_missing`,
-`worker_unavailable` (the installation check does not allow the worker that
-shows the dialogs; the message carries its reason. `RequestPath` still gets a
-path inside a folder the player always allowed for the addon, which needs no
-window. While the check still tests the worker, in the first seconds after
-Model Hotloader loads, `IsAvailable()` says `true` and requests wait for its
-verdict). A read or listing of a folder the player revoked meanwhile ends
-with `released`.
+`worker_unavailable` (the worker that shows the dialogs failed its self-test,
+so the installation check keeps it off; the message carries its reason.
+`RequestPath` still gets a path inside a folder the player always allowed for
+the addon, which needs no window. While the check still tests the worker, in
+the first seconds after Model Hotloader loads, `IsAvailable()` says `true` and
+requests wait for its verdict). A read or listing of a folder the player
+revoked meanwhile ends with `released`.
 
 ### Hooks
 
@@ -233,10 +237,9 @@ with `released`.
   `IsAvailable()` says so).
 * `MMDHL.FileAccessChanged()`: a folder was remembered or revoked, the switch
   changed, or the installation check's verdict on the worker changed what
-  `IsAvailable()` says (its self-test failed, or the player repaired the
-  files): ask `IsAvailable()` again. After a request it runs from the `Think`
-  poll after that request's callback; a listener that raises an error is
-  reported and changes nothing else.
+  `IsAvailable()` says (its self-test failed): ask `IsAvailable()` again. After
+  a request it runs from the `Think` poll after that request's callback; a
+  listener that raises an error is reported and changes nothing else.
 
 ## Technical reference
 
@@ -251,9 +254,9 @@ with `released`.
 * Client module functions (JSON strings in and out; a refusal returns `nil`,
   the English reason and its code): `FileAccessInfo()`,
   `FileAccessPick(json)`, `FileAccessRequest(json)` (both return an id;
-  `"noDialog":true`, which the installation check's guard adds while it does
-  not allow the worker, lets only a remembered folder answer and refuses
-  anything else as `worker_unavailable`),
+  `"noDialog":true`, which the installation check's guard adds until the
+  worker has passed its self-test, lets only a remembered folder answer and
+  refuses anything else as `worker_unavailable`),
   `FileAccessPoll(id)` (`pending` with `dialog` and `position`, `granted` with
   `items`, `denied`, `failed`), `FileAccessRead(handle, json)` /
   `FileAccessPollRead(id)` (`false` while running, then `data, infoJson`),

@@ -14,8 +14,9 @@ the files are built from is published in the public repository (PUBLIC_REPOSITOR
 
 The Lua addon is not included: Workshop is its only distribution channel, and a
 loose copy in garrysmod/addons would override the Workshop addon and its update
-notices. The Workshop Lua accepts these binaries once their native-release.json
-record (release, build, sizes and SHA-256) is added to native_policy.lua.
+notices. The Workshop Lua runs these binaries whether it knows them or not: until
+their native-release.json record (release, build, sizes and SHA-256) is added to
+native_policy.lua, External Models shows a warning that it does not know them.
 """
 import argparse, hashlib, json, os, pathlib, re, shutil, zipfile
 
@@ -53,6 +54,8 @@ STEPS = '''
      and the libraries built into these files
 3. Start Garry's Mod and open Q > External Models. Missing or mismatched files
    are reported there with repair instructions.{renderer_check}
+   Files the Workshop addon does not know yet (a test build, a release newer
+   than the addon) still run, with a warning there.
 
 The Microsoft Visual C++ x64 Redistributable is required.
 '''

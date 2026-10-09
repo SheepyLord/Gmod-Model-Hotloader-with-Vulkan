@@ -2,9 +2,15 @@
 client sends the request and the server checks its own installation. A server
 whose native module did not load answers a character or prop spawn (and the
 physics editor) at once with its problem, worded as the server's ("Server: …"),
-instead of letting the client wait for its timeout; a server whose physics is unavailable words its refusal the
-same way. Runs client.lua's and library.lua's request functions, installation.lua
-as a server without native files, and server.lua's spawn check."""
+instead of letting the client wait for its timeout; a server whose physics is
+unavailable words its refusal the same way. A server always tries the module file it
+has: one this addon does not know whose runtime is missing is still required, and when
+Windows refuses it the answer names the missing runtime (the problem that explains the
+failure), never the module's warning; a consistent build this addon does not know
+(other hashes, one build ID in module and runtime) loads with every server feature,
+its warnings reach the server console before require, and the pooled handlers stay
+silent. Runs client.lua's and library.lua's request functions, installation.lua as a
+dedicated server (without native files, then with them), and server.lua's spawn check."""
 from pathlib import Path
 import sys
 from lupa import LuaRuntime
@@ -53,9 +59,14 @@ mmdhl.Action('remove',nil,{EntIndex=function() return 42 end})
 assert(#SENT==2 and SENT[2].values[1]=='remove' and SENT[2].values[3]==42 and SENT[2].sent,'an action was not sent')
 ''')
 
-# A dedicated server without its native files: installation.lua alone, as autorun loads it.
-server = LuaRuntime(unpack_returned_tuples=True)
-server.execute(r'''
+policy = lua_policy(root / 'addon/lua/mmdhl/native_policy.lua')
+
+
+def dedicated():
+    """A dedicated server (a Lua session of its own) with installation.lua loaded, as autorun
+    loads it; its files (FILES) start empty."""
+    server = LuaRuntime(unpack_returned_tuples=True)
+    server.execute(r'''
 SERVER=true CLIENT=false
 unpack=table.unpack jit={arch='x64'}
 math.Clamp=function(v,lo,hi) return math.min(math.max(v,lo),hi) end
@@ -63,36 +74,49 @@ istable=function(v) return type(v)=='table' end
 IsValid=function(e) return e~=nil end
 mmdhl={}
 ''')
-attach(server)
-policy = lua_policy(root / 'addon/lua/mmdhl/native_policy.lua')
-def convert(x):
-    if isinstance(x, dict): return server.table_from({k: convert(v) for k, v in x.items()})
-    if isinstance(x, list): return server.table_from([convert(v) for v in x])
-    return x
-server.globals().POLICY = convert(policy)
-server.execute(r'''
+    attach(server)
+    def convert(x):
+        if isinstance(x, dict): return server.table_from({k: convert(v) for k, v in x.items()})
+        if isinstance(x, list): return server.table_from([convert(v) for v in x])
+        return x
+    server.globals().POLICY = convert(policy)
+    server.execute(PRELUDE)
+    server.execute(source('installation.lua'))
+    return server
+
+
+PRELUDE = r'''
 include=function(path) if path=='mmdhl/native_policy.lua' then return POLICY end return {} end
--- The server's files (none at first) and the unverified file set its administrator accepted.
-FILES={} ACCEPTED=nil
+isstring=function(v) return type(v)=='string' end
+-- The server's files (none at first), by their bytes. A Model Hotloader binary carries its build ID among them.
+FILES={}
 file={Exists=function(path,search) return FILES[search..'/'..path]~=nil end,
  Open=function(path,_,search) local bytes=FILES[search..'/'..path] return {Size=function() return #bytes end,Read=function() return bytes end,Close=function() end} end,
- Read=function(path) if path=='mmd_hotloader/unverified_native.json' and ACCEPTED then return 'accepted' end end,CreateDir=function() end,Write=function() end}
+ Read=function() end,CreateDir=function() end,Write=function() end}
 system={IsWindows=function() return true end} game={IsDedicated=function() return true end}
 -- As in GMod: net.Start refuses a name util.AddNetworkString never pooled.
 POOLED={}
 util={AddNetworkString=function(name) POOLED[name]=true end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,
- JSONToTable=function(s) if s=='accepted' then return {server=ACCEPTED} end local n=tostring(s):match('"request":(%d+)') if n then return {request=tonumber(n)} end end}
+ JSONToTable=function(s) local n=tostring(s):match('"request":(%d+)') if n then return {request=tonumber(n)} end end}
 HANDLERS={} READ={} SENT={}
 net={Receive=function(name,f) HANDLERS[name]=f end,ReadString=function() return table.remove(READ,1) end,ReadUInt=function() return table.remove(READ,1) end,
  Start=function(name) if not POOLED[name] then error('Calling net.Start with unpooled message name "'..name..'"',2) end SENT[#SENT+1]={name=name,values={}} end,WriteString=function(v) table.insert(SENT[#SENT].values,v) end,
  WriteUInt=function(v) table.insert(SENT[#SENT].values,v) end,Send=function(p) SENT[#SENT].to=p end,Broadcast=function() SENT[#SENT].broadcast=true end}
 concommand={Add=function() end} hook={Add=function() end,Run=function() end} timer={Create=function() end,Remove=function() end}
-NOW=100 CurTime=function() return NOW end MsgN=function() end
-''')
-server.execute(source('installation.lua'))
+-- What happened, in order: the server console's lines and each require of the native module,
+-- which Windows refuses with REQUIRE_ERROR or which leaves NATIVE as mmdhl_native.
+EVENTS={} REQUIRED=0 REQUIRE_ERROR=nil NATIVE=nil
+NOW=100 CurTime=function() return NOW end MsgN=function(text) EVENTS[#EVENTS+1]='console: '..text end
+function require(name) assert(name=='mmdhl') REQUIRED=REQUIRED+1 EVENTS[#EVENTS+1]='require' if REQUIRE_ERROR then error(REQUIRE_ERROR,0) end mmdhl_native=NATIVE end
+function INDEX(text) for i,v in ipairs(EVENTS) do if v==text then return i end end end
+PLAYER={}
+'''
+
+# A dedicated server without its native files: nothing to load, require is never called.
+server = dedicated()
 server.execute(r'''
 assert(mmdhl.CheckInstallation()==false and mmdhl.loadError,'the server without native files loaded')
-PLAYER={}
+assert(REQUIRED==0,'the server required a module it does not have')
 local function request(channel,...) READ={...} SENT={} HANDLERS[channel](0,PLAYER) local out={} for _,m in ipairs(SENT) do out[m.name]=m end return out end
 local expected='Server: Native runtime: Missing lua/bin/gmsv_mmdhl_win64.dll. Reinstall the native package and restart. The server administrator must resolve this.'
 local sent=request('mmdhl_action','spawn',string.rep('a',64),0,'{"request":7,"role":"ragdoll"}')
@@ -119,17 +143,59 @@ assert(mmdhl.Localize(reply.values[3])==mmdhl.Localize(mmdhl.L'physics_editor.er
 NOW=120 sent=request('mmdhl_physics',1,78,'close',{},0) assert(not sent.mmdhl_physics_status,'closing the editor was answered')
 ''')
 
-# A modified server module the administrator accepted, but no runtime: the answer
-# names the missing runtime, not the accepted file listed before it.
+# A server module this addon does not know (other bytes) without its runtime: the module is
+# still required (its warning reaches the console first), and Windows refuses it. The answer
+# names the missing runtime, the problem that explains the failure, not the module's warning
+# listed before it.
 server.execute(r'''
 FILES['MOD/lua/bin/gmsv_mmdhl_win64.dll']='modified module'
-mmdhl.CheckInstallation() ACCEPTED=mmdhl.GetInstallationStatus().fingerprint
+EVENTS={} REQUIRE_ERROR='The specified module could not be found.'
 assert(mmdhl.CheckInstallation()==false,'the server without its runtime loaded')
-local issues=mmdhl.GetInstallationStatus().issues
-assert(issues[1].accepted and issues[1].component=='server' and not issues[2].accepted and issues[2].component=='runtime','expected the accepted module before the missing runtime')
+assert(REQUIRED==1,'the server did not try the module file it has')
+local s=mmdhl.GetInstallationStatus()
+local issues=s.issues
+assert(#issues==3 and issues[1].code=='damaged_or_unrecognized' and issues[1].component=='server' and issues[1].warning==true and issues[1].identity==true,'expected the module\'s warning first')
+assert(issues[2].code=='missing' and issues[2].component=='runtime' and issues[2].warning==nil and issues[2].cause==true,'the missing runtime did not become the problem')
+assert(issues[3].code=='loader_failed' and issues[3].warning==nil and mmdhl.Localize(issues[3].message):find('The specified module could not be found.',1,true))
+assert(not s.features.core and not s.features.physics and s.blocked and mmdhl.native==nil)
+local warned=INDEX('console: [Model Hotloader / server] '..mmdhl.Localize(issues[1].message))
+assert(warned and warned<INDEX('require'),'the module\'s warning did not reach the console before require')
 READ={'spawn',string.rep('a',64),0,'{"request":8}'} SENT={} NOW=200 HANDLERS.mmdhl_action(0,PLAYER)
 local text=mmdhl.Localize(SENT[1].values[3])
 assert(SENT[1].name=='mmdhl_spawn_status' and text=='Server: Native runtime: Missing mmdhl_runtime_win64.dll. Reinstall the native package and restart. The server administrator must resolve this.',text)
+''')
+
+# A consistent build this addon does not know (a fresh GitHub Actions build: other hashes, one
+# build ID in the module and the runtime) on a server that starts with it: it loads with every
+# server feature and warnings only, which reach the server console before require. The pooled
+# handlers stay silent: server.lua answers the requests.
+dedicated().execute(r'''
+local BUILD='feedfacecafe-20261009T120000Z'
+FILES['MOD/lua/bin/gmsv_mmdhl_win64.dll']='server module '..BUILD
+FILES['BASE_PATH/mmdhl_runtime_win64.dll']='runtime '..BUILD
+local function loaded(path,bytes) return {release='2.3.0',build=BUILD,installApi=1,api=1,platform='win64',size=#bytes,sha256=util.SHA256(bytes),path=path,expectedPath=path} end
+local INFO={module=loaded('D:\\GMod Server\\garrysmod\\lua\\bin\\gmsv_mmdhl_win64.dll',FILES['MOD/lua/bin/gmsv_mmdhl_win64.dll']),runtime=loaded('D:\\GMod Server\\mmdhl_runtime_win64.dll',FILES['BASE_PATH/mmdhl_runtime_win64.dll'])}
+CHECKS=0
+NATIVE={GetInstallationInfo=function() return INFO end,ConfigureCompatibility=function() return {configured=true} end,
+ CheckCompatibility=function() CHECKS=CHECKS+1 return {ready=true,pending=false,issues={},libraries={}} end}
+assert(mmdhl.CheckInstallation()==true,'a server module this addon does not know did not load')
+local s=mmdhl.GetInstallationStatus()
+assert(REQUIRED==1 and mmdhl.native~=nil and mmdhl.loadError==nil and CHECKS==1,'the module was not used')
+assert(s.features.core and s.features.physics and not s.blocked and s.unverified and s.installed==nil and s.update==nil)
+assert(#s.issues==2 and s.issues[1].component=='server' and s.issues[2].component=='runtime','expected one warning per file, no loaded_mismatch and no mixed builds')
+assert(s.files.server.actual.build==BUILD and s.files.runtime.actual.build==BUILD,'the build IDs were not read: nothing told the builds agree')
+for _,v in ipairs(s.issues) do
+ assert(v.code=='damaged_or_unrecognized' and v.warning==true and v.identity==true,v.code)
+ local printed=INDEX('console: [Model Hotloader / server] '..mmdhl.Localize(v.message))
+ assert(printed and printed<INDEX('require'),'a warning did not reach the server console before require')
+end
+assert(mmdhl.FeatureAvailable('physics')==true and mmdhl.FeatureAvailable('core')==true)
+assert(mmdhl.NativeReleaseAtLeast('2.3.0') and mmdhl.NativeReleaseAtLeast(POLICY.recommended) and not mmdhl.NativeReleaseAtLeast('2.4.0'),'the loaded module\'s own label does not decide')
+for _,channel in ipairs({'mmdhl_action','mmdhl_prop_action','mmdhl_physics','mmdhl_share'}) do
+ NOW=NOW+10 READ={'spawn',string.rep('a',64),0,'{"request":5}'} SENT={}
+ HANDLERS[channel](0,PLAYER)
+ assert(#SENT==0 and #READ==4,channel..' was answered by the installation check of a server whose module loaded')
+end
 ''')
 
 # A server whose native module loaded but whose physics is unavailable refuses the spawn itself.
@@ -140,4 +206,6 @@ local result,why
 mmdhl.Spawn(PLAYER,string.rep('a',64),{},function(ent,err) result,why=ent,err end)
 assert(result==nil and mmdhl.Localize(why)=='Server: Native character physics: Game interface slot replaced or outside expected library The server administrator must resolve this.',mmdhl.Localize(why))
 ''')
-print('PASS: the client sends spawns and actions whatever the server reported; a server without native files answers spawns at once with its blocking problem (not an accepted one); a physics refusal is worded as the server\'s')
+print('PASS: the client sends spawns and actions whatever the server reported; a server without native files answers spawns at once with its problem; '
+      'a server module this addon does not know is always tried (a missing runtime, not its warning, explains a failure; a consistent build loads '
+      'and the pooled handlers stay silent); a physics refusal is worded as the server\'s')

@@ -8,16 +8,30 @@ local function decode(value,err)
  return value
 end
 M.Decode=decode
--- Unverified issues (hash or release mismatches) can be accepted by the player:
--- they stay listed, marked accepted, but no longer disable features. Missing or
--- unreadable files and incompatible APIs are never overridable.
-local function issue(status,code,component,message,feature,unverified)
- local accepted=unverified and status.unverifiedAccepted or nil
- status.issues[#status.issues+1]={code=code,component=component,message=message,feature=feature or 'core',unverified=unverified or nil,accepted=accepted}
- if accepted then status.acceptedIssues=true return end
- -- blocked: a core problem that accepting unverified files would not fix.
- if unverified then status.unverified=true elseif (feature or 'core')=='core' then status.blocked=true end
- if not feature or feature=='core' then for key in pairs(status.features) do status.features[key]=false end else status.features[feature]=false end
+-- Model Hotloader always tries its native files; it never refuses them. An issue without
+-- warning is a problem: something that keeps a feature off (the module did not load, the
+-- worker did not start, the game build failed its compatibility check). Every other issue
+-- is a warning that disables nothing, above all files that match no release this addon
+-- knows: a test build, a newer release, modified, damaged or mixed files.
+local function issue(status,code,component,message,feature)
+ local v={code=code,component=component,message=message,feature=feature or 'core'}
+ status.issues[#status.issues+1]=v
+ if v.feature=='core' then status.blocked=true for key in pairs(status.features) do status.features[key]=false end else status.features[v.feature]=false end
+ return v
+end
+-- extra.identity: the files are not a release this addon knows or approves (one banner
+-- line speaks for all of them). extra.detail: what tells this warning from an earlier
+-- one, for Dismiss. extra.cause: it explains a failure, and becomes the problem when
+-- loading (or, for its feature, the worker's self-test) fails.
+local function warn(status,code,component,message,feature,extra)
+ local v={code=code,component=component,message=message,feature=feature or 'core',warning=true}
+ for k,x in pairs(extra or {}) do v[k]=x end
+ if v.identity then status.unverified=true end
+ status.issues[#status.issues+1]=v
+ return v
+end
+local function promote(status,feature)
+ for _,v in ipairs(status.issues) do if v.warning and v.cause and (feature==nil or v.feature==feature) then v.warning=nil end end
 end
 local function featureName(key)
  local names={core=L'install.feature.core',imports=L'install.feature.imports',detailedCollision=L'install.feature.detailed_collision',rendering=L'install.feature.rendering',physics=L'install.feature.physics'}
@@ -58,21 +72,27 @@ local function approved(policy,id)
  for _,v in ipairs(policy.approved or {}) do if v==id then return true end end
  return false
 end
--- Pure policy evaluator: reader returns {size,sha256,path}, or nil and an error.
--- env.accepted is the fingerprint of an unverified file set the player accepted.
+-- File names when the policy cannot name them (it is missing or broken).
+local defaultFiles={client={name='gmcl_mmdhl_win64.dll'},server={name='gmsv_mmdhl_win64.dll'},runtime={name='mmdhl_runtime_win64.dll'},worker={name='mmdhl_worker.exe'},coacd={name='lib_coacd.dll'}}
+-- Pure policy evaluator: reader returns {size,sha256,path[,build]}, or nil and an error.
+-- It never turns a feature off: it lists what CheckInstallation should know when it loads
+-- the files, as warnings.
 function M.EvaluateInstallation(policy,reader,env)
  local s={schema=1,realm=env.server and 'server' or 'client',issues={},files={},features={core=true,imports=not env.server,detailedCollision=not env.server,rendering=not env.server,physics=env.server},recommended=policy.recommended}
- local releases=policy.releases or {}
+ local releases=type(policy.releases)=='table' and policy.releases or {}
  local recommended=releases[policy.recommended]
  s.download=recommended and recommended.url
  -- A mirror for players who cannot reach GitHub (set by update-native-policy.ps1 -AltReleaseUrl).
  s.downloadAlt=recommended and recommended.altUrl
- if not env.windows or env.arch~='x64' then issue(s,'unsupported_platform','platform',L'install.error.unsupported_platform') return s end
- if policy.schema~=1 or not recommended then issue(s,'policy_invalid','addon',L'install.error.policy_invalid') return s end
+ -- No binary exists for another platform: this says why nothing loads.
+ if not env.windows or env.arch~='x64' then warn(s,'unsupported_platform','platform',L'install.error.unsupported_platform','core',{cause=true}) return s end
+ -- Without the list of releases the files are only read, never compared.
+ if policy.schema~=1 or not recommended then warn(s,'policy_invalid','addon',L'install.error.policy_invalid') recommended=nil end
  local role=env.server and 'server' or 'client'
- local own=reader('lua/bin/'..recommended.files[role].name,'MOD',recommended.files[role].size)
+ local names=recommended and recommended.files or defaultFiles
+ local own=reader('lua/bin/'..names[role].name,'MOD',names[role].size)
  local selected
- if own then
+ if own and recommended then
   for id,release in pairs(releases) do
    if release.files[role].sha256==own.sha256 and release.files[role].size==own.size then selected=release s.installed=id break end
   end
@@ -80,39 +100,37 @@ function M.EvaluateInstallation(policy,reader,env)
  local known=selected
  selected=selected or recommended
  s.expected=selected
+ local files=selected and selected.files or defaultFiles
  -- The runtime the game loads. Clients load it from bin/win64. srcds_win64.exe
  -- looks beside itself first, then in bin/win64, where the native package puts it.
- local runtime=selected.files.runtime
+ local runtime=files.runtime
  local runtimePath='bin/win64/'..runtime.name
  if env.dedicated then
   local function present(path) local found,err=reader(path,'BASE_PATH',runtime.size) return found~=nil or err~='missing' end
   if present(runtime.name) or not present(runtimePath) then runtimePath=runtime.name end
  end
- local checks={{role,'lua/bin/'..selected.files[role].name,'MOD','core'}, {'runtime',runtimePath,'BASE_PATH','core'}}
+ local checks={{role,'lua/bin/'..files[role].name,'MOD','core'}, {'runtime',runtimePath,'BASE_PATH','core'}}
  if not env.server then
-  checks[#checks+1]={'worker','lua/bin/'..selected.files.worker.name,'MOD','imports'}
-  checks[#checks+1]={'workerRuntime','lua/bin/'..selected.files.runtime.name,'MOD','imports'}
-  checks[#checks+1]={'coacd','lua/bin/'..selected.files.coacd.name,'MOD','detailedCollision'}
+  checks[#checks+1]={'worker','lua/bin/'..files.worker.name,'MOD','imports'}
+  checks[#checks+1]={'workerRuntime','lua/bin/'..files.runtime.name,'MOD','imports'}
+  checks[#checks+1]={'coacd','lua/bin/'..files.coacd.name,'MOD','detailedCollision'}
  end
- -- Acceptance covers exactly these bytes: any changed file asks again.
+ -- The exact bytes checked, for diagnostics.
  local parts={}
  for _,check in ipairs(checks) do
-  local actual=reader(check[2],check[3],selected.files[check[1]=='workerRuntime' and 'runtime' or check[1]].size)
+  local actual=reader(check[2],check[3],files[check[1]=='workerRuntime' and 'runtime' or check[1]].size)
   parts[#parts+1]=check[1]..'='..(actual and actual.size..':'..actual.sha256 or 'missing')
  end
  s.fingerprint=s.realm..';'..table.concat(parts,';')
- -- Loading anyway extends the accepted fingerprint with the loaded files (CheckInstallation).
- local accepted=type(env.accepted)=='string' and env.accepted or ''
- s.unverifiedAccepted=(accepted==s.fingerprint or accepted:sub(1,#s.fingerprint+8)==s.fingerprint..';loaded:') or nil
  -- An older known release runs and gets the update reminder (s.update, never an issue):
- -- one no longer approved adds a warning that disables nothing. Releases without
- -- installation verification (installApi 0) cannot be checked after loading: they need
- -- the update. A newer release this addon does not know stays unverified.
+ -- one no longer approved adds a warning. So do a recorded release newer than the
+ -- recommended one that is not approved, and a release without installation
+ -- verification (installApi 0), which the reminder also offers to replace.
  if known then
   local older=s.installed~=policy.recommended and olderBuild({release=s.installed,build=known.build},{release=policy.recommended,build=recommended.build})
   local ok=approved(policy,s.installed)
-  if known.installApi~=1 then issue(s,'outdated','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}))
-  elseif not ok and not older then issue(s,'unapproved_release','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}),nil,true)
+  if known.installApi~=1 then warn(s,'outdated','module',L('install.error.no_verification',{recommended=policy.recommended}))
+  elseif not ok and not older then warn(s,'unapproved_release','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}),nil,{identity=true,detail=s.installed})
   elseif not ok then s.issues[#s.issues+1]={code='outdated_release',component='module',feature='core',warning=true,message=L('install.warning.outdated_release',{installed=s.installed,recommended=policy.recommended})} end
   if older or known.installApi~=1 then
    -- policy.revoked: {label = i18n key} for releases with a known problem; still run, with that advisory.
@@ -122,31 +140,36 @@ function M.EvaluateInstallation(policy,reader,env)
  end
  for _,check in ipairs(checks) do
   local key,path,search,feature=unpack(check)
-  local expected=selected.files[key=='workerRuntime' and 'runtime' or key]
+  local expected=files[key=='workerRuntime' and 'runtime' or key]
   local actual,err=reader(path,search,expected.size)
-  s.files[key]={relative=path,search=search,expected=expected,actual=actual,error=err}
-  if not actual then issue(s,err=='missing' and 'missing' or 'unreadable',key,err=='missing' and L('install.error.file_missing',{path=path}) or L('install.error.file_unreadable',{path=path}),feature)
-  elseif actual.size~=expected.size or actual.sha256~=expected.sha256 then
+  s.files[key]={relative=path,search=search,expected=selected and expected or nil,actual=actual,error=err}
+  if not actual then warn(s,err=='missing' and 'missing' or 'unreadable',key,err=='missing' and L('install.error.file_missing',{path=path}) or L('install.error.file_unreadable',{path=path}),feature,{cause=true})
+  elseif selected and (actual.size~=expected.size or actual.sha256~=expected.sha256) then
    local other
    for id,release in pairs(releases) do local f=release.files[key=='workerRuntime' and 'runtime' or key] if f and f.sha256==actual.sha256 and f.size==actual.size then other=id break end end
-   issue(s,other and 'mixed_installation' or 'damaged_or_unrecognized',key,other and L('install.error.file_mixed',{path=path,release=other,required=selected.release}) or L('install.error.file_unrecognized',{path=path}),feature,true)
+   warn(s,other and 'mixed_installation' or 'damaged_or_unrecognized',key,other and L('install.error.file_mixed',{path=path,release=other,required=selected.release}) or L('install.error.file_unrecognized',{path=path}),feature,{identity=true,detail=actual.size..':'..actual.sha256})
   end
+ end
+ -- The module and the runtime it links share C++ types: from two builds they may fail to
+ -- load or crash Garry's Mod, so CheckInstallation prints this before loading them. Each
+ -- binary carries its build ID; files this addon does not know are fine while they agree.
+ local module,linked=s.files[role].actual,s.files.runtime.actual
+ if module and linked and type(module.build)=='string' and type(linked.build)=='string' and module.build~=linked.build then
+  warn(s,'mixed_builds','runtime',L('install.warning.mixed_builds',{module=s.files[role].relative,build=module.build,runtime=s.files.runtime.relative,runtimeBuild=linked.build}),nil,{identity=true,cause=true,detail=module.build..'/'..linked.build})
  end
  -- The renderer (bin/win64/d3d9.dll) is reported, never required: the Vulkan
  -- package ships the patched DXVK there, the no-Vulkan package leaves Source's
  -- Direct3D 9, and RTX Remix or other tools may own the file.
  if not env.server then
-  local actual,err=reader('bin/win64/d3d9.dll','BASE_PATH',selected.renderer and selected.renderer.size)
+  local actual,err=reader('bin/win64/d3d9.dll','BASE_PATH',selected and selected.renderer and selected.renderer.size)
   local function same(record) return type(record)=='table' and record.size==actual.size and record.sha256==actual.sha256 end
   if not actual then s.renderer={kind=err=='missing' and 'd3d9' or 'other',error=err~='missing' and err or nil}
-  elseif same(selected.renderer) then s.renderer={kind='dxvk',release=selected.release,current=true}
+  elseif selected and same(selected.renderer) then s.renderer={kind='dxvk',release=selected.release,current=true}
   else
    s.renderer={kind='other'}
    for id,release in pairs(releases) do if same(release.renderer) then s.renderer={kind='dxvk',release=id} break end end
   end
  end
- if not s.installed and s.features.core and not s.acceptedIssues then s.installed=selected.release end
- if not s.features.core then s.features.imports=false s.features.detailedCollision=false s.features.rendering=false s.features.physics=false end
  return s
 end
 
@@ -156,6 +179,12 @@ local rawNative
 local loadedIdentity
 local loggedIssues={}
 local lastFingerprint
+-- The build ID every Model Hotloader binary carries (<commit>-YYYYMMDDTHHMMSSZ), read
+-- before loading it; nil for other files.
+local function buildOf(path,bytes)
+ if not path:find('mmdhl',1,true) or path:sub(-4)~='.dll' then return nil end
+ return bytes:match('%x%x%x%x%x%x%x%x%x%x%x%x%-%d%d%d%d%d%d%d%dT%d%d%d%d%d%dZ')
+end
 local function readerForSession()
  local cache={}
  return function(path,search)
@@ -170,7 +199,7 @@ local function readerForSession()
     local size=f:Size()
     -- Refuse unexpectedly enormous files rather than allocate unbounded memory.
     if size<0 or size>128*1024*1024 then err='invalid_size'
-    else local bytes=f:Read(size) if not bytes or #bytes~=size then err='short_read' else value={size=size,sha256=util.SHA256(bytes),path=search..'/'..path} end end
+    else local bytes=f:Read(size) if not bytes or #bytes~=size then err='short_read' else value={size=size,sha256=util.SHA256(bytes),path=search..'/'..path} value.build=buildOf(path,bytes) end end
     f:Close()
    end
   end
@@ -178,26 +207,18 @@ local function readerForSession()
  end
 end
 function M.GetInstallationStatus() return status end
--- Accepted unverified file sets, one per realm. A listen server's client and
--- server share this data folder; a dedicated server has its own.
-local acceptancePath='mmd_hotloader/unverified_native.json'
-local function acceptedFingerprints() return util.JSONToTable(file.Read(acceptancePath,'DATA') or '') or {} end
-function M.SetUnverifiedAccepted(realm,fingerprint)
- local all=acceptedFingerprints() all[realm]=fingerprint
- file.CreateDir('mmd_hotloader') file.Write(acceptancePath,util.TableToJSON(all))
-end
 function M.FeatureAvailable(feature)
  if not status or not status.features.core then return false,(M.loadError or L'install.unavailable_repair') end
  if status.features[feature]==false then
-  -- Accepted (Use anyway) and plain warnings disable nothing, so they are never the reason.
-  for _,v in ipairs(status.issues) do if not v.accepted and not v.warning and (v.feature==feature or v.feature=='core') then return false,v.message end end
+  -- Warnings disable nothing, so they are never the reason.
+  for _,v in ipairs(status.issues) do if not v.warning and (v.feature==feature or v.feature=='core') then return false,v.message end end
   return false,L('install.checking_feature',{feature=featureName(feature)})
  end
  return true
 end
 local function publicStatus()
  return {schema=1,realm='server',recommended=status.recommended,installed=status.installed,features=status.features,issues=status.issues,
-  fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,unverifiedAccepted=status.unverifiedAccepted,update=status.update}
+  fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,update=status.update}
 end
 -- Whether release a (build ID ab) comes before release b (bb) in the update reminder's
 -- order; a build of the same label never does.
@@ -206,7 +227,8 @@ local function releaseBefore(a,ab,b,bb)
  return olderBuild({release=a,build=ab},{release=b,build=bb})
 end
 -- Whether this realm's native module is release label or newer, in the update reminder's
--- order: the release its files match, else (accepted unverified files) the loaded module's own.
+-- order: the release its files match, else (files this addon does not know) the loaded
+-- module's own.
 function M.NativeReleaseAtLeast(label)
  local releases=policy.releases or {}
  local loaded=status and status.loaded and status.loaded.module
@@ -215,25 +237,37 @@ function M.NativeReleaseAtLeast(label)
  if type(label)~='string' or type(current)~='string' then return false end
  return not releaseBefore(current,build,label,releases[label] and releases[label].build)
 end
--- A loaded module this Lua cannot use: the update reminder offers the download, worded as
--- required, when it is older than the recommended release (nil: too old to say which).
--- installed is the module's own label (the files on disk may say otherwise). The same or
--- a newer release needs a restart or another addon version: its problem says so.
+-- A loaded module this addon may not drive correctly (too old to check, another
+-- interface): the update reminder offers the download, worded as needed, when it is older
+-- than the recommended release (nil: too old to say which). installed is the module's own
+-- label (the files on disk may say otherwise).
 local function requireUpdate(installed,build)
  local recommended=(policy.releases or {})[policy.recommended] or {}
  if installed~=nil and not (type(installed)=='string' and type(policy.recommended)=='string' and releaseBefore(installed,build,policy.recommended,recommended.build)) then return end
  status.update={installed=installed,recommended=policy.recommended,url=recommended.url,altUrl=recommended.altUrl,required=true}
 end
+-- Files this addon does not know, from a release older than the recommended one: the
+-- ordinary reminder.
+local function offerUpdate(installed,build)
+ local recommended=(policy.releases or {})[policy.recommended]
+ if status.update or not recommended or type(installed)~='string' or type(policy.recommended)~='string' then return end
+ if releaseBefore(installed,build,policy.recommended,recommended.build) then status.update={installed=installed,recommended=policy.recommended,url=recommended.url,altUrl=recommended.altUrl} end
+end
 local updateLogged
+-- Every issue once per session in the console, warnings too.
+local function logIssues()
+ for _,v in ipairs(status.issues) do local key=v.code..'/'..v.component..'/'..v.message if not loggedIssues[key] then loggedIssues[key]=true MsgN('[Model Hotloader / '..status.realm..'] '..M.Localize(v.message)) end end
+end
 local function notifyChanged()
- -- The problem that stops the addon: accepted files and warnings never do.
+ -- The problem that stops the addon: warnings never do, nor a problem of one feature (a
+ -- missing worker or CoACD file that a failed load made a problem cannot explain it).
  local blocking
- for _,v in ipairs(status.issues) do if not v.accepted and not v.warning then blocking=v.message break end end
+ for _,v in ipairs(status.issues) do if not v.warning and v.feature=='core' then blocking=v.message break end end
  M.loadError=not status.features.core and (blocking or L'install.unavailable') or nil
  local encoded=util.TableToJSON(publicStatus())
  if encoded~=lastFingerprint then
   lastFingerprint=encoded
-  for _,v in ipairs(status.issues) do local key=v.code..'/'..v.component..'/'..v.message if not loggedIssues[key] then loggedIssues[key]=true MsgN('[Model Hotloader / '..status.realm..'] '..M.Localize(v.message)..(v.accepted and ' '..M.Localize(L'install.accepted_tag') or '')) end end
+  logIssues()
   -- An approved older release has no issue to print: one line tells the administrator.
   if SERVER and status.update and status.update.approved and not updateLogged then
    updateLogged=true MsgN('[Model Hotloader / server] '..M.Localize(L('install.update.server',{installed=tostring(status.update.installed),recommended=tostring(status.update.recommended)})))
@@ -245,12 +279,12 @@ end
 if SERVER then
  util.AddNetworkString('mmdhl_install_status')
  -- Pool operational channels before native loading: healthy clients still run
- -- their initialization hooks when this server's native installation fails.
+ -- their initialization hooks when this server's native module does not load.
  -- Clients do not check the server's status first, so a spawn request gets this
  -- server's problem as its answer instead of waiting for the client's timeout.
  local spawnReplies={mmdhl_action='mmdhl_spawn_status',mmdhl_prop_action='mmdhl_prop_status'}
  -- The physics editor's reply channel: physics_editor.lua, which pools it too, does not load
- -- when this check fails, and net.Start refuses a name that was never pooled.
+ -- when the module does not, and net.Start refuses a name that was never pooled.
  util.AddNetworkString('mmdhl_physics_status')
  for _,name in ipairs({'mmdhl_action','mmdhl_actor_registration','mmdhl_arms_preview','mmdhl_catalog','mmdhl_collision_mesh','mmdhl_forget_assets','mmdhl_material_visibility','mmdhl_native_morph','mmdhl_native_morphs','mmdhl_notice','mmdhl_physics','mmdhl_physics_reset','mmdhl_player_clear','mmdhl_player_selection','mmdhl_prop_action','mmdhl_prop_attach','mmdhl_prop_attach_open','mmdhl_prop_catalog','mmdhl_prop_collision','mmdhl_prop_forget','mmdhl_prop_status','mmdhl_scene','mmdhl_scene_active','mmdhl_share','mmdhl_spawn_status'}) do
   util.AddNetworkString(name)
@@ -271,19 +305,6 @@ if SERVER then
    net.Start('mmdhl_install_status') net.WriteString(util.TableToJSON(publicStatus())) net.Send(p)
   end)
  end
- -- Dedicated servers accept or revoke unverified native files from the server console.
- local function reply(p,message)
-  MsgN('[Model Hotloader / server] '..M.Localize(message)) if IsValid(p) then p:ChatPrint(M.Localize(message)) end
- end
- concommand.Add('mmdhl_accept_unverified_native',function(p)
-  if IsValid(p) and not p:IsSuperAdmin() then return end
-  if not status or not status.unverified or status.blocked or not status.fingerprint then reply(p,L'install.unverified.nothing') return end
-  M.SetUnverifiedAccepted('server',status.fingerprint) reply(p,L'install.unverified.accepted')
- end)
- concommand.Add('mmdhl_revoke_unverified_native',function(p)
-  if IsValid(p) and not p:IsSuperAdmin() then return end
-  M.SetUnverifiedAccepted('server',nil) reply(p,L'install.unverified.revoked')
- end)
  net.Receive('mmdhl_install_status',function(_,p)
   if not status or (p.MMDHLNextInstallStatus or 0)>CurTime() then return end p.MMDHLNextInstallStatus=CurTime()+5
   net.Start('mmdhl_install_status') net.WriteString(util.TableToJSON(publicStatus())) net.Send(p)
@@ -313,54 +334,52 @@ local function expectedPaths(key,info)
  if root and status.files.runtime then paths[2]=root..'/'..normalize(status.files.runtime.relative) end
  return paths
 end
--- The loaded files that loading anyway accepts, appended to the installation fingerprint.
-local function loadedFingerprint(info)
- local parts={}
- for _,key in ipairs({'module','runtime'}) do local found=info and info[key] or {} parts[#parts+1]=key..'='..tostring(found.size)..':'..tostring(found.sha256) end
- return ';loaded:'..table.concat(parts,',')
-end
--- On a mismatch, also returns whether the player may load anyway: another
--- interface never loads; other bytes or another location may, once accepted.
+-- Whether Garry's Mod loaded the files this check read. On a mismatch, also returns
+-- whether the loaded files share this addon's interface (installation API, native API,
+-- platform): other bytes, another build or another location do; an unknown or other
+-- interface does not.
 local function identitiesMatch(info)
  for _,key in ipairs({'module','runtime'}) do
   local record=status.files[key=='module' and status.realm or 'runtime']
   local found=info and info[key]
   local message=key=='module' and L'install.error.loaded_module_mismatch' or L'install.error.loaded_runtime_mismatch'
-  if not (found and found.installApi==1 and found.api==status.expected.api and found.platform=='win64') then return false,message,false end
+  if not (found and found.installApi==1 and found.api==(status.expected and status.expected.api or 1) and found.platform=='win64') then return false,message,false end
   local valid=false
   for _,path in ipairs(expectedPaths(key,info)) do if normalize(found.path)==path then valid=true end end
-  -- Accepted unverified files are identified by their bytes on disk, not by a release.
-  if valid and status.unverifiedAccepted then valid=record.actual~=nil and found.sha256==record.actual.sha256
-  elseif valid then valid=found.release==status.expected.release and found.build==status.expected.build and found.sha256==record.expected.sha256 end
+  -- Files this addon does not know are identified by their bytes on disk, not by a release.
+  if valid and not status.installed then valid=record~=nil and record.actual~=nil and found.sha256==record.actual.sha256
+  elseif valid then valid=record~=nil and found.release==status.expected.release and found.build==status.expected.build and found.sha256==record.expected.sha256 end
   if not valid then return false,message,true end
  end
  return true
 end
--- A loaded file that does not match stops the addon until the player accepts
--- exactly these loaded files (Use anyway); true when loading may continue.
+-- A loaded file that is not the checked one (or that this addon cannot check) is a warning
+-- about files this addon does not know (identity): Model Hotloader uses what Garry's Mod
+-- loaded. Another interface also asks for the update when the module is older.
 local function checkLoaded(info)
- local ok,message,overridable=identitiesMatch(info)
+ local ok,message,sameInterface=identitiesMatch(info)
  if ok then return true end
- if not overridable then
-  issue(status,'restart_required','module',message)
-  local module=type(info)=='table' and type(info.module)=='table' and info.module
-  if module and type(module.release)=='string' then requireUpdate(module.release,module.build) end
-  return false
- end
- status.fingerprint=status.fingerprint..loadedFingerprint(info)
- status.unverifiedAccepted=acceptedFingerprints()[status.realm]==status.fingerprint or nil
- issue(status,'loaded_mismatch','module',message,nil,true)
- return status.features.core
+ local module=type(info)=='table' and type(info.module)=='table' and info.module
+ if not sameInterface and module and type(module.release)=='string' then requireUpdate(module.release,module.build) end
+ warn(status,'loaded_mismatch','module',message,nil,{identity=true,detail=module and tostring(module.sha256) or 'unknown'})
+ return true
 end
 local function removeIssues(feature)
  for i=#status.issues,1,-1 do if status.issues[i].feature==feature then table.remove(status.issues,i) end end
 end
 function M.RefreshGameCompatibility()
  if not rawNative or not status.features.core then return end
- local ok,value,err=pcall(rawNative.CheckCompatibility)
- local report=ok and decode(value,err)
  local feature=SERVER and 'physics' or 'rendering'
  removeIssues(feature)
+ -- A module from before this addon checked game builds relies on its own guards.
+ if type(rawNative.CheckCompatibility)~='function' then
+  status.features[feature]=true
+  warn(status,'game_unchecked','game',L('install.warning.game_unchecked',{recommended=tostring(policy.recommended)}),feature)
+  notifyChanged()
+  return
+ end
+ local ok,value,err=pcall(rawNative.CheckCompatibility)
+ local report=ok and decode(value,err)
  status.features[feature]=report and report.ready==true or false
  status.compatibility=report
  if not report then issue(status,'game_check_failed','game',tostring(err or value),feature)
@@ -413,10 +432,15 @@ local function guardedNative(native)
 end
 local function startProbe()
  if not CLIENT or not status.features.imports then return end
+ -- A module from before the self-test: imports run unchecked.
+ if type(rawNative.StartInstallationProbe)~='function' then return end
  local coacd=status.features.detailedCollision
  status.features.imports=false status.probePending=true
+ local function failed(why)
+  promote(status,'imports') issue(status,'worker_failed','worker',why,'imports').probe=true
+ end
  local started,err=rawNative.StartInstallationProbe(coacd)
- if not started then status.probePending=false issue(status,'worker_failed','worker',tostring(err),'imports') notifyChanged() return end
+ if not started then status.probePending=false failed(tostring(err)) notifyChanged() return end
  -- The native probe gives up after about 11 s, but starting the process is not
  -- bounded (antivirus scans); an unanswered probe must not leave imports pending.
  local deadline=RealTime()+30
@@ -427,16 +451,18 @@ local function startProbe()
    result=nil
   end
   timer.Remove('MMDHL.InstallationWorker') status.probePending=false
-  if not result then issue(status,'worker_failed','worker',why or L'install.error.worker_failed','imports')
+  if not istable(result) then failed(why or L'install.error.worker_failed')
   else
-   local mismatch
-   -- Accepted unverified files have no approved release: the worker must match its own runtime bytes.
-   if status.unverifiedAccepted then local runtime=status.files.workerRuntime and status.files.workerRuntime.actual mismatch=result.identity.build~=result.runtime.build or not runtime or result.runtime.sha256~=runtime.sha256
-   else mismatch=result.identity.release~=status.expected.release or result.identity.build~=status.expected.build or result.runtime.build~=status.expected.build or result.runtime.sha256~=status.expected.files.runtime.sha256 end
-   if mismatch then issue(status,'mixed_installation','worker',L'install.error.worker_mismatch','imports',true) end
-   if not mismatch or status.unverifiedAccepted then status.features.imports=true
-    if coacd and not result.coacd then issue(status,'dependency_failed','coacd',result.coacdError or L'install.error.coacd_failed','detailedCollision') end
-   end
+   local identity,runtime=istable(result.identity) and result.identity or {},istable(result.runtime) and result.runtime or {}
+   -- The worker and its runtime copy share C++ types: they must come from one build (or
+   -- imports may fail in the worker). Files this addon does not know are fine while they
+   -- agree with each other and with the runtime copy read from disk.
+   local mismatch=identity.build~=runtime.build
+   if not mismatch and status.installed then mismatch=identity.release~=status.expected.release or identity.build~=status.expected.build or runtime.sha256~=status.expected.files.runtime.sha256
+   elseif not mismatch then local copy=status.files.workerRuntime and status.files.workerRuntime.actual mismatch=not copy or runtime.sha256~=copy.sha256 end
+   if mismatch then warn(status,'mixed_installation','worker',L'install.error.worker_mismatch','imports',{identity=true,probe=true,detail=tostring(identity.build)..'/'..tostring(runtime.build)}) end
+   status.features.imports=true
+   if coacd and not result.coacd then promote(status,'detailedCollision') issue(status,'dependency_failed','coacd',result.coacdError or L'install.error.coacd_failed','detailedCollision').probe=true end
   end
   notifyChanged()
  end)
@@ -465,45 +491,83 @@ local function configureCompatibility(compat)
  end
  return nil,err
 end
-local compatibilityFallback
-local function fallbackWarning()
- if compatibilityFallback then status.issues[#status.issues+1]={code='compatibility_fallback',component='compatibility',message=compatibilityFallback,feature='core',warning=true} end
+-- What loading found out, kept for Recheck: the policy the module would not take at all
+-- (its own checks then decide, as for another ABI family), or the libraries it took
+-- without.
+local configureError,compatibilityFallback
+-- What the loaded module says about itself, on the first load and on every Recheck.
+local function assessLoaded()
+ status.loaded=loadedIdentity
+ if type(rawNative.GetInstallationInfo)=='function' then checkLoaded(loadedIdentity) end
+ if type(rawNative.GetInstallationInfo)~='function' or type(rawNative.ConfigureCompatibility)~='function' or type(rawNative.CheckCompatibility)~='function' then
+  -- From before installation verification: it runs, with the update offered as needed. A
+  -- release the policy records without verification (installApi 0) has its warning already.
+  local ok,capabilities=pcall(function() return decode(rawNative.GetCapabilities()) end)
+  local listed=false for _,v in ipairs(status.issues) do if v.code=='outdated' then listed=true end end
+  if not listed then warn(status,'outdated','module',L('install.error.no_verification',{recommended=tostring(policy.recommended)})) end
+  requireUpdate(ok and istable(capabilities) and isstring(capabilities.version) and capabilities.version or nil)
+ elseif not status.installed then
+  local module=istable(loadedIdentity) and istable(loadedIdentity.module) and loadedIdentity.module
+  if module then offerUpdate(module.release,module.build) end
+ end
+ if configureError then warn(status,'policy_invalid','compatibility',configureError) end
+ if compatibilityFallback then warn(status,'compatibility_fallback','compatibility',compatibilityFallback) end
 end
 function M.CheckInstallation(recheck)
  if recheck and status and status.probePending then return status end
  local previous=status
- status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),arch=jit.arch,dedicated=SERVER and game.IsDedicated(),accepted=acceptedFingerprints()[SERVER and 'server' or 'client']})
+ status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),arch=jit.arch,dedicated=SERVER and game.IsDedicated()})
  if recheck then
-  status.loaded=loadedIdentity
-  if not rawNative or not status.features.core then issue(status,'restart_required','module',L'install.error.restart_to_load')
-  elseif checkLoaded(loadedIdentity) and previous then
+  -- Garry's Mod never loads a DLL twice: what did not load needs a restart.
+  if not rawNative then promote(status) issue(status,'restart_required','module',L'install.error.restart_to_load') notifyChanged() return status end
+  assessLoaded()
+  if previous then
    -- Runtime failures are carried over below; valid files alone do not mean a restart repairs them.
+   -- A failure that missing or unreadable files explained (promoted when it failed) is theirs:
+   -- while they still fail they explain it again; repaired, a restart may repair it.
+   local repaired={}
+   for _,v in ipairs(previous.issues) do if v.cause and not v.warning then repaired[v.feature]=true end end
+   for _,v in ipairs(status.issues) do if v.cause and repaired[v.feature]~=nil then repaired[v.feature]=false end end
+   local carried=function(v) return (v.probe and not repaired[v.feature]) or v.code=='game_incompatible' end
    local runtime={}
-   for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then runtime[v.feature]=true end end
+   for _,v in ipairs(previous.issues) do if carried(v) and not v.warning then runtime[v.feature]=true end end
    for key,allowed in pairs(previous.features) do
     if not allowed and status.features[key] and not runtime[key] then issue(status,'restart_required',key,L('install.error.restart_to_enable',{feature=featureName(key)}),key) end
     status.features[key]=status.features[key] and allowed
    end
-   for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then status.issues[#status.issues+1]=v end end
+   for _,v in ipairs(previous.issues) do if carried(v) then status.issues[#status.issues+1]=v end end
+   for feature,fixed in pairs(repaired) do if not fixed then promote(status,feature) end end
   end
-  if status.features.core and rawNative then fallbackWarning() M.RefreshGameCompatibility() end
+  M.RefreshGameCompatibility()
   notifyChanged() return status
  end
- if not status.features.core then notifyChanged() return false end
- local ok,err=pcall(require,'mmdhl')
- if not ok or not istable(mmdhl_native) then issue(status,'loader_failed','module',L('install.error.loader_failed',{reason=tostring(err)})) notifyChanged() return false end
- rawNative=mmdhl_native
- if not rawNative.GetInstallationInfo or not rawNative.ConfigureCompatibility or not rawNative.CheckCompatibility then
-  local ok,capabilities=pcall(function() return decode(rawNative.GetCapabilities()) end)
-  issue(status,'outdated','module',L('install.error.no_verification',{recommended=tostring(policy.recommended)})) requireUpdate(ok and istable(capabilities) and isstring(capabilities.version) and capabilities.version or nil) notifyChanged() return false
+ -- Nothing loaded: the warnings that explain why become the problems, and everything is off.
+ local function unloaded(problem)
+  promote(status)
+  if problem then issue(status,'loader_failed','module',problem) end
+  status.blocked=true for key in pairs(status.features) do status.features[key]=false end
+  notifyChanged() return false
  end
- loadedIdentity=decode(rawNative.GetInstallationInfo())
- if not checkLoaded(loadedIdentity) then notifyChanged() return false end
- local compat=include('mmdhl/compatibility_policy.lua')
- local configured,configError,without=configureCompatibility(compat)
- if not configured then issue(status,'policy_invalid','compatibility',tostring(configError)) notifyChanged() return false end
- compatibilityFallback=without and L('install.warning.compatibility_fallback',{libraries=without,recommended=tostring(policy.recommended)}) fallbackWarning()
- status.loaded=loadedIdentity
+ -- The files are always tried. With no module file (or none for this platform) there is
+ -- nothing to load. Warnings reach the console first, so a crash while loading leaves its
+ -- reason in console.log.
+ local own=status.files[status.realm]
+ if not own or own.error=='missing' then return unloaded() end
+ logIssues()
+ local ok,err=pcall(require,'mmdhl')
+ if not ok or not istable(mmdhl_native) then return unloaded(L('install.error.loader_failed',{reason=tostring(err)})) end
+ rawNative=mmdhl_native
+ if type(rawNative.GetInstallationInfo)=='function' then
+  local identityOk,info=pcall(rawNative.GetInstallationInfo)
+  loadedIdentity=identityOk and decode(info) or nil
+ end
+ if type(rawNative.ConfigureCompatibility)=='function' then
+  local compat=include('mmdhl/compatibility_policy.lua')
+  local configured,configError,without=configureCompatibility(compat)
+  if not configured then configureError=tostring(configError)
+  elseif without then compatibilityFallback=L('install.warning.compatibility_fallback',{libraries=without,recommended=tostring(policy.recommended)}) end
+ end
+ assessLoaded()
  M.native=guardedNative(rawNative)
  M.RefreshGameCompatibility()
  startProbe()

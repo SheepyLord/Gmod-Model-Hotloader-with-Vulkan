@@ -27,7 +27,7 @@ local function message(code,detail)
  -- Native cannot tell a remote server from single player whose server part failed to load.
  if code=='no_local_server' or code=='unavailable_remote' then code=localHost() and 'no_server_realm' or 'unavailable_remote' end
  if code=='invalid_options' then return L('file_access.error.invalid_options',{error=tostring(detail or '')}) end
- -- The installation check's own reason: a worker from another release, one that failed its self-test, the check still running.
+ -- The installation check's own reason: a worker that failed its self-test (or did not start), the check still running.
  if code=='worker_unavailable' then return L('file_access.worker_unavailable',{reason=tostring(detail or '')}) end
  if messages[code] then return L('file_access.error.'..messages[code]) end
  if unavailable[code] then return L('file_access.'..unavailable[code]) end
@@ -100,8 +100,8 @@ local function notSaved() notification.AddLegacy(L'file_access.not_saved',NOTIFY
 -- Queued behind the callbacks, never run inside the poll: a listener that fails or asks
 -- again cannot lose an answer or add to `pending` while the poll walks it.
 local function changed() due[#due+1]={function() hook.Run('MMDHL.FileAccessChanged') end,{n=0}} wake() end
--- IsAvailable follows the installation check's verdict on the worker (its self-test ended, the
--- player accepted or repaired the files): addons hear that as a file access change.
+-- IsAvailable follows the installation check's verdict on the worker (its self-test ended, or a
+-- Recheck changed it): addons hear that as a file access change.
 local workerWas=workerReady()==true
 hook.Add('MMDHL.InstallationChanged','MMDHL.FileAccess',function()
  local ready=workerReady()==true
