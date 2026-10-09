@@ -16,8 +16,10 @@ API and its limits).
   exact file or folder and a **request window** asks **Allow once**, **Always
   allow this addon here** or **Deny**. Deny is the default button, and the
   Allow buttons wake up a moment after the window appears, so a key or click
-  meant for the game cannot answer it. The picker starts in Documents and
-  remembers its own last folder, apart from the model import picker.
+  meant for the game cannot answer it. The picker's **Allow reading** button
+  does the same, so a stray Enter cannot choose the folder the picker opens
+  in. The picker starts in Documents and remembers its own last folder, apart
+  from the model import picker.
 * The windows are Windows dialogs shown by Model Hotloader's worker, not game
   menus. In a full-screen game they open behind it: a notice in the top right
   corner says so; press **Alt+Tab** to answer.
@@ -264,5 +266,6 @@ of a folder the player revoked meanwhile ends with `released`.
   window read the file again, so another process's revocations apply at once.
 * Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
-  variable and is never packaged; the shipped worker has no such path) and
-  `tests/test_file_access.py`.
+  variable and is never packaged; the shipped worker has no such path. With
+  `MMDHL_FA_UI_TESTS=1` it also opens the real folder picker on the desktop and
+  checks that an OK sent at once chooses nothing) and `tests/test_file_access.py`.

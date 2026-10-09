@@ -309,3 +309,15 @@ STATES[SEQ]={state='granted',enabled=true,changed=true} GRANTS.enabled=true THIN
 assert(NOTICES[#NOTICES].kind=='kill' and box.checked==true)
 ''')
 print('PASS: the management window lists remembered folders, revokes them and switches file access through native')
+
+# ---- The realm count that gates file access is taken once a module opened, never before ----
+# localServerRealm() counts the server modules that opened in this process; nothing releases the
+# count of one that failed to open, which would leave file access offered on a remote server.
+module = (ROOT / 'native/module.cpp').read_text(encoding='utf-8')
+opening = module[module.index('GMOD_MODULE_OPEN(){'):module.index('GMOD_MODULE_CLOSE(){')]
+body, failure = opening.split('}catch(const std::exception& e){')
+assert body.count('acquireRuntimeRealm(') == 1 and 'acquireRuntimeRealm(' not in failure, 'the realm is counted more than once'
+acquired = body.index('acquireRuntimeRealm(ServerRealm)')
+assert all(acquired > body.rindex(step) for step in ('create_directories(', 'registerPropFunctions(', 'sweepJobFolders(')), 'the realm is counted before the module can still fail to open'
+assert failure.index('context.reset()') < failure.index('ThrowError'), 'a module that failed to open keeps its state'
+print('PASS: the server realm is counted only once its module opened')

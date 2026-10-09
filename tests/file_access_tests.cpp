@@ -4,8 +4,9 @@
 // is the shipped worker: its --request refuses network sources and cache folders before
 // opening them, and takes the cache folder from its command line when the game names one.
 // Also: turning file access off, revoking a folder and closing the module stop the reads
-// and listings they concern, also reads that wait on a file that does not answer, and two
-// game processes share the store without writing back each other's old state.
+// and listings they concern, also reads that wait on a file that does not answer; two
+// game processes share the store without writing back each other's old state; and, with
+// MMDHL_FA_UI_TESTS=1, the real folder picker takes no OK in its first moment.
 #include "file_access.hpp"
 #include "props/network_path.hpp"
 #include <windows.h>
@@ -341,6 +342,14 @@ int wmain(int argc,wchar_t** argv){try{
   fs::remove(root/L"blocker2");fs::create_directories(root/L"blocker2");
   check(!later.setEnabled(false,"en").contains("notSaved"),"the store was not written once it could be");
   auto saved=readJson(root/L"blocker2"/L"file-access.json");check(!saved.value("enabled",true)&&saved["grants"].size()==1&&saved["grants"][0]["requester"]=="Later","the unsaved folder was lost: "+saved.dump());}
+ // ---- The real folder picker: an Enter or click at once chooses nothing ----
+ // It shows a window on this desktop, so it runs only when MMDHL_FA_UI_TESTS is set.
+ if(GetEnvironmentVariableW(L"MMDHL_FA_UI_TESTS",nullptr,0)){
+  FileAccess ui({config.worker,root/L"store10"/L"file-access.json",config.temp,policy});answer(L"ui-pick");SetEnvironmentVariableW(L"MMDHL_FA_TEST_FOLDER",(root/L"allowed").c_str());
+  auto picked=wait(ui,ui.pick({{"requester","Picker"},{"folder",true}}));auto shown=logged(log).back();
+  check(shown.contains("uiPick")&&shown["uiPick"].value("refusedAtOnce",false),"the picker took an OK at once: "+shown.dump()+" "+picked.dump());
+  check(picked.value("state","")=="granted"&&picked["items"][0].value("name","")=="allowed","the picker after its button woke up: "+picked.dump());
+ }else std::cout<<"note: the real folder picker was not shown (set MMDHL_FA_UI_TESTS=1 on a desktop)\n";
  fa.reset();releaseRuntimeRealm(true);check(!localServerRealm(),"the server realm count");
  std::cout<<"PASS: path policy, links and final paths, limits, text, grants store, local-session rule, dialogs, stopped reads and the shared store\n";
  return 0;

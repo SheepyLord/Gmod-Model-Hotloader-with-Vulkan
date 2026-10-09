@@ -8,6 +8,7 @@
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <atomic>
+#include <functional>
 #include <thread>
 namespace mmd {
 namespace {
@@ -122,8 +123,8 @@ std::wstring size(uint64_t bytes,const Text& t){
 }
 // No owner window: an owned dialog would disable the game window and leave it disabled
 // if this process is killed. The game started this process, so it may take the foreground.
-void raise(const std::wstring& title,std::atomic<bool>& shown){
- for(int i=0;i<60&&!shown.load();i++){if(HWND h=FindWindowExW(nullptr,nullptr,L"#32770",title.c_str())){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId()){ShowWindow(h,SW_SHOW);SetForegroundWindow(h);return;}}Sleep(50);}
+void raise(const std::wstring& title,std::atomic<bool>& shown,const std::function<void()>& raised){
+ for(int i=0;i<60&&!shown.load();i++){if(HWND h=FindWindowExW(nullptr,nullptr,L"#32770",title.c_str())){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId()){ShowWindow(h,SW_SHOW);SetForegroundWindow(h);raised();return;}}Sleep(50);}
 }
 constexpr int AllowOnce=1001,AllowAlways=1002,Deny=1003;
 // The allow buttons wake up a moment after the window appears, so a click or Enter
@@ -134,6 +135,41 @@ HRESULT CALLBACK dialogEvents(HWND window,UINT event,WPARAM wParam,LPARAM,LONG_P
  if(event==TDN_TIMER&&!*armed&&wParam>=1200){*armed=true;for(int id:{AllowOnce,AllowAlways})SendMessageW(window,TDM_ENABLE_BUTTON,id,TRUE);}
  return S_OK;
 }
+// The picker's Allow reading button wakes up the same moment after the window appears and
+// after it takes the foreground: a stray Enter or click cannot choose anything, such as the
+// folder the picker opens in. The dialog refuses OK until then; the button looks disabled.
+constexpr ULONGLONG ArmingMs=1200;
+class PickerArming final : public IFileDialogEvents {
+public:
+ std::atomic<ULONGLONG> armedAt{GetTickCount64()+ArmingMs};
+ // Counted again from now (never shortened): the window appeared or was raised.
+ void restart(){auto at=GetTickCount64()+ArmingMs;for(auto was=armedAt.load();was<at&&!armedAt.compare_exchange_weak(was,at);){}}
+ IFACEMETHODIMP QueryInterface(REFIID id,void** out) override{
+  if(!out)return E_POINTER;
+  if(id==__uuidof(IUnknown)||id==__uuidof(IFileDialogEvents)){*out=static_cast<IFileDialogEvents*>(this);AddRef();return S_OK;}
+  *out=nullptr;return E_NOINTERFACE;
+ }
+ // It lives on pick()'s stack, unadvised before it goes.
+ IFACEMETHODIMP_(ULONG) AddRef() override{return 2;}
+ IFACEMETHODIMP_(ULONG) Release() override{return 1;}
+ IFACEMETHODIMP OnFileOk(IFileDialog*) override{return GetTickCount64()>=armedAt.load()?S_OK:S_FALSE;}
+ // The first folder it shows is the moment the window appears.
+ IFACEMETHODIMP OnFolderChange(IFileDialog* dialog) override{
+  if(shown)return S_OK;shown=true;restart();
+  IOleWindow* ole=nullptr;HWND window=nullptr;if(SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&ole)))){ole->GetWindow(&window);ole->Release();}
+  if(HWND ok=window?GetDlgItem(window,IDOK):nullptr;ok&&IsWindowEnabled(ok)){EnableWindow(ok,FALSE);SetTimer(window,reinterpret_cast<UINT_PTR>(this),100,wake);}
+  return S_OK;
+ }
+ IFACEMETHODIMP OnFolderChanging(IFileDialog*,IShellItem*) override{return S_OK;}
+ IFACEMETHODIMP OnSelectionChange(IFileDialog*) override{return S_OK;}
+ IFACEMETHODIMP OnShareViolation(IFileDialog*,IShellItem*,FDE_SHAREVIOLATION_RESPONSE*) override{return S_OK;}
+ IFACEMETHODIMP OnTypeChange(IFileDialog*) override{return S_OK;}
+ IFACEMETHODIMP OnOverwrite(IFileDialog*,IShellItem*,FDE_OVERWRITE_RESPONSE*) override{return S_OK;}
+private:
+ bool shown=false;
+ // The timer's id is the arming (it outlives the window: pick() waits for the dialog).
+ static void CALLBACK wake(HWND window,UINT,UINT_PTR id,DWORD){if(GetTickCount64()<reinterpret_cast<PickerArming*>(id)->armedAt.load())return;KillTimer(window,id);if(HWND ok=GetDlgItem(window,IDOK))EnableWindow(ok,TRUE);}
+};
 using TaskDialogFunction=HRESULT(WINAPI*)(const TASKDIALOGCONFIG*,int*,int*,BOOL*);
 // Returns the pressed button; the worker's manifest selects Common Controls 6, which has
 // TaskDialogIndirect. Without it a plain message box offers Allow once or Deny.
@@ -198,7 +234,14 @@ Json pick(const Json& request,const Text& t){
  FILEOPENDIALOGOPTIONS options=FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST|FOS_NOCHANGEDIR|FOS_DONTADDTORECENT|(folder?FOS_PICKFOLDERS:FOS_FILEMUSTEXIST)|(multiple?FOS_ALLOWMULTISELECT:0);
  dialog->SetOptions(options);dialog->SetTitle(title.c_str());dialog->SetOkButtonLabel(t.pickOk);
  // Its own remembered folder: an addon's picker does not open where models were imported from.
- static const GUID client={0x5b0e6c1d,0x3f4a,0x4d8e,{0x9a,0x61,0x2c,0x7e,0x14,0xb3,0x58,0xf2}};dialog->SetClientGuid(client);
+#ifndef MMDHL_FILE_ACCESS_TESTING
+ static const GUID client={0x5b0e6c1d,0x3f4a,0x4d8e,{0x9a,0x61,0x2c,0x7e,0x14,0xb3,0x58,0xf2}};
+#else
+ // The test worker remembers nothing for the real picker and starts in the folder it is given.
+ static const GUID client={0x5b0e6c1d,0x3f4a,0x4d8e,{0x9a,0x61,0x2c,0x7e,0x14,0xb3,0x58,0xf3}};
+ if(auto start=field(request,"testFolder");!start.empty()){IShellItem* item=nullptr;if(SUCCEEDED(SHCreateItemFromParsingName(start.c_str(),nullptr,IID_PPV_ARGS(&item)))){dialog->SetFolder(item);item->Release();}}
+#endif
+ dialog->SetClientGuid(client);
  IShellItem* documents=nullptr;if(SUCCEEDED(SHGetKnownFolderItem(FOLDERID_Documents,KF_FLAG_DEFAULT,nullptr,IID_PPV_ARGS(&documents)))){dialog->SetDefaultFolder(documents);documents->Release();}
  IFileDialogCustomize* custom=nullptr;
  if(SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&custom)))){
@@ -210,7 +253,9 @@ Json pick(const Json& request,const Text& t){
   if(!said.empty())custom->AddText(1,said.c_str());
   custom->AddText(2,t.pickNote);custom->Release();
  }
- std::atomic<bool> shown{false};std::thread raising([&]{raise(title,shown);});
+ PickerArming arming;DWORD cookie=0;if(FAILED(dialog->Advise(&arming,&cookie)))cookie=0;
+ struct Unadvise{IFileDialog* dialog;DWORD cookie;~Unadvise(){if(cookie)dialog->Unadvise(cookie);}} unadvise{dialog,cookie};
+ std::atomic<bool> shown{false};std::thread raising([&]{raise(title,shown,[&]{arming.restart();});});
  auto hr=dialog->Show(nullptr);shown=true;raising.join();
  if(FAILED(hr))return {{"answer","cancelled"}};
  IShellItemArray* results=nullptr;if(FAILED(dialog->GetResults(&results)))return {{"answer","cancelled"}};
@@ -221,13 +266,36 @@ Json pick(const Json& request,const Text& t){
 }
 #ifdef MMDHL_FILE_ACCESS_TESTING
 // Test worker only (tests/file_access_worker.cpp, never packaged): the answer comes from
-// MMDHL_FA_TEST_ANSWER instead of a window, so CTest runs without a desktop.
+// MMDHL_FA_TEST_ANSWER instead of a window, so CTest runs without a desktop ("ui-pick"
+// shows the real picker; tests ask for it only when MMDHL_FA_UI_TESTS is set).
 std::wstring environment(const wchar_t* name){wchar_t buffer[4096]{};auto n=GetEnvironmentVariableW(name,buffer,4096);return n&&n<4096?std::wstring(buffer,n):std::wstring();}
+void testLog(const Json& entry){
+ if(auto log=environment(L"MMDHL_FA_TEST_LOG");!log.empty()){auto line=entry.dump()+"\n";if(HANDLE f=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);f!=INVALID_HANDLE_VALUE){DWORD n=0;WriteFile(f,line.data(),DWORD(line.size()),&n,nullptr);CloseHandle(f);}}
+}
 int testAnswer(bool picker,const fs::path& folder,const Json& request){
- if(auto log=environment(L"MMDHL_FA_TEST_LOG");!log.empty()){auto line=request.dump()+"\n";if(HANDLE f=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);f!=INVALID_HANDLE_VALUE){DWORD n=0;WriteFile(f,line.data(),DWORD(line.size()),&n,nullptr);CloseHandle(f);}}
+ testLog(request);
  auto answer=environment(L"MMDHL_FA_TEST_ANSWER");
  if(answer==L"crash")return 3;
  if(answer==L"wait"){Sleep(120000);return 0;}
+ // The real picker in MMDHL_FA_TEST_FOLDER, answered by posted OK clicks: one at once, like a
+ // stray Enter meant for the game, and one after its button woke up. The log notes whether
+ // the window was still open after the first.
+ if(picker&&answer==L"ui-pick"){
+  auto shown=[]{HWND found=nullptr;EnumWindows([](HWND h,LPARAM out)->BOOL{DWORD pid=0;GetWindowThreadProcessId(h,&pid);wchar_t name[16]{};GetClassNameW(h,name,16);
+   if(pid!=GetCurrentProcessId()||!IsWindowVisible(h)||std::wstring(name)!=L"#32770")return TRUE;*reinterpret_cast<HWND*>(out)=h;return FALSE;},reinterpret_cast<LPARAM>(&found));return found;};
+  bool refusedAtOnce=false;
+  std::thread clicker([&]{
+   HWND window=nullptr;for(int i=0;i<500&&!window;i++){window=shown();if(!window)Sleep(10);}
+   if(!window)return;
+   PostMessageW(window,WM_COMMAND,IDOK,0);Sleep(500);refusedAtOnce=IsWindow(window)!=FALSE;
+   Sleep(1200);PostMessageW(window,WM_COMMAND,IDOK,0);
+   for(int i=0;i<300&&IsWindow(window);i++)Sleep(10);if(IsWindow(window))PostMessageW(window,WM_COMMAND,IDCANCEL,0);
+  });
+  auto shownRequest=request;shownRequest["testFolder"]=utf8(environment(L"MMDHL_FA_TEST_FOLDER"));
+  auto result=pick(shownRequest,textFor("en"));clicker.join();
+  testLog({{"uiPick",{{"refusedAtOnce",refusedAtOnce}}}});
+  writeJson(folder/L"result.json",result);return 0;
+ }
  Json result={{"answer",utf8(answer)}};
  if(picker&&answer.starts_with(L"pick:")){Json paths=Json::array();auto list=answer.substr(5);for(size_t start=0;start<=list.size();){auto end=list.find(L'|',start);if(end==list.npos)end=list.size();paths.push_back(utf8(list.substr(start,end-start)));start=end+1;}result={{"answer","selected"},{"paths",paths}};}
  writeJson(folder/L"result.json",result);return 0;
