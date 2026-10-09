@@ -966,6 +966,52 @@ MARKED_INVALID=true
 SAY('PASS: Try again after a load failure opens a window that loads the model, whenever VGUI deletes the old one')
 ''')
 
+# ---- a window queued behind a failed load (an FBX probe that finished while the fit window
+# was open) waits for the window Try again opens, and opens when that one closes; when Try
+# again can open no window, it opens at once. VGUI runs the old frame's OnRemove a frame later:
+# it must not hand BM.frame to the queued window over the new one. ----
+lua.execute(r'''
+local BM,L,library=mmdhl.boneMapper,mmdhl.L,mmdhl.library
+local id=string.rep('6',64) local src='C:/m/wait.fbx'
+local function inside(p,frame) while p and p~=frame do p=p._parent end return p==frame end
+local function button(frame,text) for _,p in ipairs(ALL) do if not p.removed and p._text==text and rawget(p,'DoClick') and inside(p,frame) then return p end end end
+local function runTimers() local list=TIMERS TIMERS={} for _,fn in ipairs(list) do fn() end end
+local requestAsset,inspect=mmdhl.native.RequestAsset,mmdhl.native.InspectBoneMap
+-- loads: Try again loads the model; fails: the new window fails at once; none: no window opens (fit unavailable).
+for _,case in ipairs({'loads','fails','none'}) do for _,markedInvalid in ipairs({true,false}) do
+ local where=case..', IsValid of a removed panel: '..tostring(not markedInvalid)
+ MARKED_INVALID=markedInvalid DELETIONS={} TIMERS={} NAMED={} BM.queued=nil BM.sessions[src]=nil library.job=nil
+ mmdhl.native.RequestAsset=requestAsset mmdhl.native.InspectBoneMap=inspect
+ local loads=0
+ mmdhl.native.AssetInfo=function() loads=loads+1 if loads==1 then return nil,'The model is still being written' end return util.TableToJSON({name='Hero'}) end
+ assert(BM.OpenFit(id,'edit','Hero')) local first=BM.frame runTimers()
+ assert(BM.frame==first and first.Window.state.loading and loads==1,'the load failed')
+ -- The probe finishes: its window queues behind the open one.
+ assert(BM.OnJobStatus({state='complete',kind='bone_map',source=src,filename='wait.fbx',probe=PROBE(false)})) runTimers()
+ assert(BM.frame==first and isfunction(BM.queued),'the finished probe waits for the open window')
+ local open,ran=BM.queued,0 BM.queued=function() ran=ran+1 open() end
+ if case=='fails' then mmdhl.native.RequestAsset=function() return false,'The model is gone' end end
+ if case=='none' then mmdhl.native.InspectBoneMap=nil end
+ button(first,L'bonemap.try_again').DoClick()
+ VGUI_FRAME() runTimers() VGUI_FRAME() runTimers()
+ if case=='none' then
+  assert(ran==1 and BM.queued==nil and IsValid(BM.frame) and BM.frame~=first and BM.state.mode=='convert' and BM.state.source==src,'no new window: the queued one opens at once ('..where..')')
+ else
+  local second=BM.frame
+  assert(ran==0 and isfunction(BM.queued),'the queued window ran in place of the one Try again opened ('..where..')')
+  assert(IsValid(second) and second~=first and BM.state.mode=='fit' and BM.state.asset==id,'Try again\'s window keeps its place ('..where..')')
+  if case=='loads' then assert(not BM.state.loading and loads==2,'the new window loaded the model') else assert(button(second,L'bonemap.try_again'),'the new window shows its failure') end
+  -- That window closes: the queued one opens now.
+  second.Window.finish('cancelled') VGUI_FRAME() runTimers()
+  assert(ran==1 and BM.queued==nil and IsValid(BM.frame) and BM.frame~=second and BM.state.mode=='convert' and BM.state.source==src,'the queued window opens when Try again\'s window closes ('..where..')')
+ end
+ BM.frame.Window.finish('cancelled') VGUI_FRAME() runTimers()
+ assert(BM.frame==nil and BM.queued==nil and ran==1)
+end end
+mmdhl.native.RequestAsset=requestAsset mmdhl.native.InspectBoneMap=inspect MARKED_INVALID=true BM.sessions[src]=nil
+SAY('PASS: a window queued behind a failed load waits for the window Try again opens, and opens when it closes or when none opens')
+''')
+
 # ---- a client whose server stopped at autorun's installation check (no working module there)
 # still gets the bone window: autorun sends its files before that check. The library window
 # also works with bone_mapper.lua alone (no rules, no window), as such a client had it. ----
