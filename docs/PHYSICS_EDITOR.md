@@ -189,7 +189,8 @@ neck, middle spine) leave the shapes valid, as they leave the saved corrections
 The collision editor's *Save fit and spawn corrected copy* is a build under the
 same rules as a test copy: `mmdhl_physics_editor`, prop protection and
 `MMDHLCanEditPhysics` (operation `test`), the value checks, the ragdoll limit,
-the cooldown and the budget.
+the cooldown and the budget. Like every editor build it is a ragdoll, also from
+an NPC's corpse.
 
 If a saved profile cannot be built (for example on an older server module), the
 model spawns with automatic physics and the player is told. A saved profile from

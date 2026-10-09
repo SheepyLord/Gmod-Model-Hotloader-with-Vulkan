@@ -201,10 +201,16 @@ if SERVER then
   if text:find('server.error.fit_timeout',1,true) then return L'physics_editor.error.timeout' end
   return L('physics_editor.error.build_failed',{reason=text})
  end
+ -- A build's options start from the ragdoll's own, as a ragdoll: an NPC's corpse (actors.lua)
+ -- keeps the NPC's role, weapon and side, with which mmdhl.Spawn would make an NPC.
+ local function ragdollOptions(ent)
+  local o=table.Copy(ent.MMDOptions or {})
+  o.rigManifest=nil o.backend='source' o.role='ragdoll' o.hostile=nil o.weapon=nil
+  return o
+ end
  -- The options a build uses, from the ragdoll's own and the operation's (§7.5 step 11).
  function P.BuildOptions(p,ent,op,request,level)
-  local o=table.Copy(ent.MMDOptions or {}) local rig=mmdhl.GetRig(ent) or {}
-  o.rigManifest=nil o.backend='source' o.role='ragdoll'
+  local o=ragdollOptions(ent) local rig=mmdhl.GetRig(ent) or {}
   o.position={ent:GetPos():Unpack()} o.angles={ent:GetAngles():Unpack()} o.frozen=Replaces[op] and true or false
   if op=='test' or op=='apply' then
    o.collisionOverrides=request.collisionOverrides or {} o.collisionOverrideScale=tonumber(rig.scale) or request.collisionOverrideScale o.excludedMaterials=request.excludedMaterials or {}
@@ -344,7 +350,7 @@ if SERVER then
   if gamemode.Call('PlayerSpawnRagdoll',p,asset)==false then notice(p,L'server.error.spawn_forbidden') return end
   -- The model's default is server-wide: only those who may save physics defaults change it.
   local canSave=P.Can(p,ent,'save_default')==true
-  local o=table.Copy(ent.MMDOptions or {}) o.rigManifest=nil o.backend='source'
+  local o=ragdollOptions(ent)
   o.collisionOverrides=req.collisionOverrides o.collisionOverrideScale=rig.scale o.excludedMaterials=req.excludedMaterials
   o.position={ent:GetPos():Unpack()} o.position[2]=o.position[2]+100 o.frozen=true
   p.MMDHLPhysicsBusy=true

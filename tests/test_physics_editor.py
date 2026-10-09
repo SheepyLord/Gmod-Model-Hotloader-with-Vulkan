@@ -822,6 +822,10 @@ NOW=NOW+10 request(admin,'save_default',placedBefore,{base=KEY}) assert(last(adm
 local BM=mmdhl.boneMapper
 assert(BM.SamePhysicalPins({[chest]=6},{[chest]='6'}) and BM.SamePhysicalPins(nil,{}) and not BM.SamePhysicalPins({[chest]=6},nil) and not BM.SamePhysicalPins({},{[chest]=6}) and not BM.SamePhysicalPins({[chest]=6},{[chest]=-1}))
 assert(BM.SamePhysicalPins({[finger]=40},nil) and BM.SamePhysicalPins({[chest]=6,[spine2]=3},{[chest]=6,['ValveBiped.Bip01_Neck1']=2}) and not BM.SamePhysicalPins({['ValveBiped.Bip01_R_Foot']=9},{}))
+-- Builds are ragdolls: an NPC's corpse keeps the NPC's role, weapon and side in its options.
+local corpse=ragdoll(KEY,{role='combine',hostile=true,weapon='weapon_ar2',boneMap={[chest]=6}},owner)
+NOW=NOW+10 request(admin,'test',corpse,{base=KEY,request=draft}) local o=SPAWNS[#SPAWNS].options
+assert(last(admin).state=='ready' and o.role=='ragdoll' and o.hostile==nil and o.weapon==nil,'a test copy of an NPC corpse is built as an NPC')
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
 print('PASS: Save for new spawns and Forget keep the bone window\'s pins (a file with only pins is no saved physics); the editor\'s preview fits with the saved pins; shapes made for older body-part pins are neither built, saved nor offered as Previous version (other pins do not count), Reset and Restore saved rebuild with the current ones')
@@ -936,9 +940,17 @@ assert(not made and said(told,'Invalid physics settings') and not p.MMDHLPhysics
 -- Pins of parts without a body (a finger) leave the corrections valid, as when saving bones.
 saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap['ValveBiped.Bip01_L_Finger1']=40 FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
 NOW=NOW+10 made,told=fit(p,good) assert(made and said(told,'server.notice.fit_saved'),'a finger pinned since refused the corrected copy')
+-- The corrected copy of an NPC's corpse (actors.lua copies the NPC's options: role, weapon,
+-- side) is a ragdoll, never an NPC past the gamemode's NPC check.
+mmdhl.HostileActorOptions=function(_,o) o.role='combine' o.hostile=nil o.weapon=o.weapon or 'weapon_ar2' return o end
+for _,role in ipairs({'citizen','combine'}) do
+ ent.MMDOptions={role=role,hostile=role=='citizen' or nil,weapon='weapon_smg1',boneMap={[chest]=6}}
+ NOW=NOW+10 made=fit(p,good) local o=NATIVE[#NATIVE].o
+ assert(made and o.role=='ragdoll' and o.hostile==nil and o.weapon==nil and FITS[#FITS].role=='ragdoll','the corrected copy of a '..role..' corpse spawns an NPC')
+end
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
-print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor\'s corrected copy follows the physics editor\'s permission, checks and limits, keeps saved physics and pins, refuses older pins and needs save rights to save')
+print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor\'s corrected copy follows the physics editor\'s permission, checks and limits, keeps saved physics and pins, refuses older body-part pins, needs save rights to save and is a ragdoll also from an NPC corpse')
 
 # L14: Workshop packages carry the extended file; dedicated servers install it; exports drop who saved it.
 w = lua51.LuaRuntime(unpack_returned_tuples=True)
