@@ -858,18 +858,65 @@ feed({'spawn',ASSET,0,util.TableToJSON({request=1,role='ragdoll'})}) RECEIVERS.m
 assert(captured and captured.mass==nil,'the spawn menu forced 70 kg over a saved mass')
 feed({'spawn',ASSET,0,util.TableToJSON({request=2,role='ragdoll',mass=900})}) p.MMDHLSpawnPending=nil RECEIVERS.mmdhl_action(0,p) assert(captured.mass==500)
 mmdhl.Spawn=real
--- The collision editor's Save keeps the saved mass and physics, and is for those who may save defaults.
+-- The collision editor's corrected copy ('fit') follows the physics editor's rules: the
+-- mmdhl_physics_editor setting, the edit hook, value checks, the ragdoll limit, one build at
+-- a time, the cooldown and the budget. Its Save keeps the saved mass, physics and pins, and
+-- is for those who may save defaults.
+local hand,chest='ValveBiped.Bip01_L_Hand','ValveBiped.Bip01_Spine4'
 local ent=ragdoll(KEY,{mass=62,collisionOverrides={}},p) ent.asset=ASSET RIGS[KEY].scale=3.23656
+local function fit(by,data) local count=#NATIVE SENT={} feed({'fit','',ent.index,type(data)=='string' and data or util.TableToJSON(data)}) RECEIVERS.mmdhl_action(0,by) tick(5) return #NATIVE>count,notices() end
+local function said(list,key) for _,n in ipairs(list) do if n:find(key,1,true) then return true end end return false end
+local good={bodies={[hand]={center={1,0,0},extent={1,1,1}}},excludedMaterials={}}
 SINGLE=false
-feed({'fit','',ent.index,util.TableToJSON({bodies={['ValveBiped.Bip01_L_Hand']={center={1,0,0},extent={1,1,1}}},excludedMaterials={}})}) RECEIVERS.mmdhl_action(0,p) tick(5)
-local file=util.JSONToTable(FILES[P.SavedPath(ASSET)]) assert(file.bodies['ValveBiped.Bip01_Head1'] and not file.bodies['ValveBiped.Bip01_L_Hand'],'a player who may not save defaults changed them')
-local refused=false for _,n in ipairs(notices()) do refused=refused or n:find('physics_editor.notice.fit_not_saved',1,true)~=nil end assert(refused)
-SINGLE=true
-feed({'fit','',ent.index,util.TableToJSON({bodies={['ValveBiped.Bip01_L_Hand']={center={1,0,0},extent={1,1,1}}},excludedMaterials={3}})}) RECEIVERS.mmdhl_action(0,p) tick(5)
+-- Dedicated servers default to admins only; 0 turns it off for everyone.
+local made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.admin_only'),'a player who may not change physics spawned a corrected copy')
+CONVARS.mmdhl_physics_editor.value='0' made,told=fit(player(true,true,false,'Boss'),good) assert(not made and said(told,'physics_editor.error.disabled'),'the corrected copy ignores mmdhl_physics_editor 0')
+CONVARS.mmdhl_physics_editor.value='2'
+hook.Add('MMDHLCanEditPhysics','test',function(_,_,op) if op=='test' then return false end end)
+made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.not_allowed'),'the edit hook does not decide about the corrected copy') hook.Remove('MMDHLCanEditPhysics','test')
+-- The values are checked as the editor's are.
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1e9}}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an out-of-range shape was built')
+made,told=fit(p,{bodies={Nonsense={center={0,0,0},extent={1,1,1}}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an unknown body was built')
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1},mass=5}}}) assert(not made and said(told,'physics_editor.error.invalid'),'an unknown shape field was built')
+made,told=fit(p,{bodies={},excludedMaterials={9}}) assert(not made and said(told,'physics_editor.error.invalid'),'a material slot the model does not have was accepted')
+made,told=fit(p,'{"bodies":{},"pad":"'..string.rep('x',60001)..'"}') assert(not made and said(told,'physics_editor.error.invalid'),'an oversized request was read')
+-- The extra ragdoll counts toward the gamemode's limit.
+GAMEMODE.PlayerSpawnRagdoll=function() return false end made,told=fit(p,good) GAMEMODE.PlayerSpawnRagdoll=nil
+assert(not made and said(told,'server.error.spawn_forbidden'),'the corrected copy ignores the ragdoll limit')
+p.MMDHLPhysicsBusy=true made,told=fit(p,good) p.MMDHLPhysicsBusy=nil assert(not made and said(told,'physics_editor.error.busy'),'a second build ran at once')
+-- A player who may not save defaults gets the copy, and the default stays.
+made,told=fit(p,good)
+local file=util.JSONToTable(FILES[P.SavedPath(ASSET)]) assert(made and file.bodies['ValveBiped.Bip01_Head1'] and not file.bodies[hand],'a player who may not save defaults changed them')
+assert(said(told,'physics_editor.notice.fit_not_saved') and not p.MMDHLPhysicsBusy)
+made,told=fit(p,good) assert(not made and said(told,'physics_editor.error.rate_limited'),'the corrected copy has no cooldown')
+local before=#NATIVE for k=1,25 do NOW=NOW+3.01 fit(p,good) end
+assert(#NATIVE-before==19,'the budget allowed '..(#NATIVE-before+1)..' corrected copies in 10 minutes')
+-- An older server module builds shapes without their style.
+NOW=NOW+601 LEVEL=0 made=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1},style='capsule'}}}) LEVEL=1
+assert(made and FITS[#FITS].collisionOverrides[hand].style==nil and FITS[#FITS].collisionOverrides[hand].center[1]==1,'an older server module was sent a shape style')
+-- Saving keeps the saved mass, physics, editor state and the bone window's pins.
+local saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap={[chest]=5} saved.boneMapVersion=1 saved.boneMapSavedAt=9 FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+ent.MMDOptions.boneMap={[chest]=5}
+SINGLE=true NOW=NOW+10
+made,told=fit(p,{bodies={[hand]={center={1,0,0},extent={1,1,1}}},excludedMaterials={3}})
 file=util.JSONToTable(FILES[P.SavedPath(ASSET)])
-assert(file.bodies['ValveBiped.Bip01_L_Hand'] and not file.bodies['ValveBiped.Bip01_Head1'] and file.excludedMaterials[1]==3 and file.mass==62 and file.physics.bodies['ValveBiped.Bip01_L_Hand'].damping==2 and file.editor,'the collision editor dropped the saved mass, physics or editor state')
+assert(made and said(told,'server.notice.fit_saved') and FITS[#FITS].boneMap[chest]==5)
+assert(file.bodies[hand] and not file.bodies['ValveBiped.Bip01_Head1'] and file.excludedMaterials[1]==3 and file.mass==62 and file.physics.bodies[hand].damping==2 and file.editor,'the collision editor dropped the saved mass, physics or editor state')
+assert(file.boneMap[chest]==5 and file.boneMapVersion==1 and file.boneMapSavedAt==9,'the collision editor dropped the bone window\'s pins')
+-- The bones were assigned again after this ragdoll was placed: its corrections would not match.
+saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap={[chest]=6} FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+NOW=NOW+10 local fits=#FITS made,told=fit(p,good)
+assert(not made and #FITS==fits and said(told,'server.error.fit_bones_changed') and util.JSONToTable(FILES[P.SavedPath(ASSET)]).boneMap[chest]==6,'corrections for a carrier fitted with older pins were built')
+-- An older file's corrections are replaced; its pins stay.
+FILES[P.SavedPath(ASSET)]=util.TableToJSON({version=2,generator=9,bodies={old=1},boneMap={[chest]=6}}) ent.MMDOptions.boneMap={[chest]=6}
+NOW=NOW+10 made=fit(p,good) file=util.JSONToTable(FILES[P.SavedPath(ASSET)])
+assert(made and file.version==3 and file.generator==18 and file.bodies[hand] and file.bodies.old==nil and file.boneMap[chest]==6,'the collision editor deleted pins kept in an older file')
+-- A failed build frees the player for the next one.
+FIT_FAIL=function() return true end NOW=NOW+10 made,told=fit(p,good) FIT_FAIL=nil
+assert(not made and said(told,'Invalid physics settings') and not p.MMDHLPhysicsBusy)
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
-print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor keeps saved physics and needs save rights')
+print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor\'s corrected copy follows the physics editor\'s permission, checks and limits, keeps saved physics and pins, refuses older pins and needs save rights to save')
 
 # L14: Workshop packages carry the extended file; dedicated servers install it; exports drop who saved it.
 w = lua51.LuaRuntime(unpack_returned_tuples=True)

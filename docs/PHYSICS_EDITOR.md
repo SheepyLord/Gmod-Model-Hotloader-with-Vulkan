@@ -183,6 +183,11 @@ with: after the pins changed, **Test copy**, **Apply**, **Save for new spawns**
 and a **Previous version** made with the old pins are refused (*spawn it again*);
 **Reset** and **Restore saved** rebuild it with the current pins.
 
+The collision editor's *Save fit and spawn corrected copy* is a build under the
+same rules as a test copy: `mmdhl_physics_editor`, prop protection and
+`MMDHLCanEditPhysics` (operation `test`), the value checks, the ragdoll limit,
+the cooldown and the budget.
+
 If a saved profile cannot be built (for example on an older server module), the
 model spawns with automatic physics and the player is told. A saved profile from
 a newer addon is ignored with a notice, never half applied.
@@ -227,7 +232,7 @@ Hooks (server):
 
 * `MMDHLCanEditPhysics(ply, ent, op)`: return `false` to deny an operation
   (`test`, `apply`, `previous`, `reset`, `restore_saved`, `save_default`,
-  `clear_default`).
+  `clear_default`). The collision editor's corrected copy asks with `test`.
 * `MMDHLCanSavePhysicsDefault(ply, asset)`: return `true` or `false` to override
   who may save and forget a model's default.
 * `MMDHLPhysicsApplied(ply, oldEnt, newEnt)`: called after a rebuilt ragdoll

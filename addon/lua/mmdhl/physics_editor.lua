@@ -319,6 +319,44 @@ if SERVER then
   if not ok then finish() ErrorNoHalt('[Model Hotloader physics] '..tostring(err)..'\n') answer('error',L('physics_editor.error.build_failed',{reason=tostring(err):match('^[^\n]*')})) end
  end
  P.Handle=handle
+ -- The collision editor's "Save fit and spawn corrected copy" (mmdhl_action 'fit'): a new
+ -- ragdoll beside this one with the sent shapes, saved for new spawns when the player may
+ -- save defaults. It is a build like a test copy: the same permission, limits and checks.
+ -- notice(p, token) answers the player.
+ function P.CollisionFit(p,ent,value,notice)
+  local allowed,why=P.Can(p,ent,'test') if not allowed then notice(p,L(why)) return end
+  if ent.MMDHLPhysicsBusy or p.MMDHLPhysicsBusy then notice(p,L'physics_editor.error.busy') return end
+  local asset=mmdhl.GetAsset(ent)
+  if not P.PinsCurrent(ent.MMDOptions and ent.MMDOptions.boneMap,asset) then notice(p,L'server.error.fit_bones_changed') return end
+  local wait=P.RateLimited(p) if wait then notice(p,L('physics_editor.error.rate_limited',{seconds=wait})) return end
+  local data=isstring(value) and #value<=MaxPayload and util.JSONToTable(value) or nil
+  if not istable(data) then notice(p,L('physics_editor.error.invalid',{field='collisionOverrides',reason='not_object'})) return end
+  local rig=mmdhl.GetRig(ent) or {} local level=mmdhl.PhysicsLevel()
+  local req={collisionOverrides=data.bodies or data,excludedMaterials=data.excludedMaterials or {}}
+  if level<1 then req=P.ShapesOnly(req) end
+  local valid,errors=P.Validate(req,{unit=P.Unit(rig),level=level,materialCount=rig.materialCount})
+  if not valid then local e=errors[1] notice(p,L('physics_editor.error.invalid',{field=e.field,reason=e.reason})) return end
+  if gamemode.Call('PlayerSpawnRagdoll',p,asset)==false then notice(p,L'server.error.spawn_forbidden') return end
+  -- The model's default is server-wide: only those who may save physics defaults change it.
+  local canSave=P.Can(p,ent,'save_default')==true
+  local o=table.Copy(ent.MMDOptions or {}) o.rigManifest=nil o.backend='source'
+  o.collisionOverrides=req.collisionOverrides o.collisionOverrideScale=rig.scale o.excludedMaterials=req.excludedMaterials
+  o.position={ent:GetPos():Unpack()} o.position[2]=o.position[2]+100 o.frozen=true
+  p.MMDHLPhysicsBusy=true
+  local finished=false
+  local function finish() if finished then return false end finished=true if IsValid(p) then p.MMDHLPhysicsBusy=nil end recordBuild(p) return true end
+  local ok,err=xpcall(function()
+   mmdhl.Spawn(p,asset,o,function(created,failure)
+    if not finish() then return end
+    if not IsValid(created) then notice(p,failure) return end
+    if not canSave then notice(p,L'physics_editor.notice.fit_not_saved') return end
+    -- Only the shapes change: a saved mass, physics profile and the bone window's pins stay.
+    local fit=savedForWrite(asset) fit.bodies=o.collisionOverrides fit.scale=o.collisionOverrideScale fit.excludedMaterials=o.excludedMaterials
+    notice(p,writeSaved(asset,fit) and L'server.notice.fit_saved' or L'physics_editor.error.save_failed')
+   end)
+  end,debug.traceback)
+  if not ok then finish() ErrorNoHalt('[Model Hotloader physics] '..tostring(err)..'\n') notice(p,L('physics_editor.error.build_failed',{reason=tostring(err):match('^[^\n]*')})) end
+ end
  net.Receive('mmdhl_physics',function(_,p)
   local protocol=net.ReadUInt(8) local request=net.ReadUInt(32) local op=net.ReadString() local ent=net.ReadEntity() local n=net.ReadUInt(16)
   local data=n>0 and net.ReadData(n) or ''

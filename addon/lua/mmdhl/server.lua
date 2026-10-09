@@ -170,25 +170,10 @@ net.Receive('mmdhl_action',function(_,p)
   elseif action=='morph' then local data=util.JSONToTable(value) or {} mmdhl.SetMorphWeight(ent,tonumber(data.index) or 0,tonumber(data.weight) or 0)
   elseif action=='bone' then local data=util.JSONToTable(value) or {} mmdhl.SetManualBonePose(ent,tonumber(data.index) or 0,data)
   elseif action=='fit' and ent:GetClass()=='prop_ragdoll' then
-   local data=util.JSONToTable(value) or {} local options=table.Copy(ent.MMDOptions) options.backend='source'
-   options.collisionOverrides=data.bodies or data options.collisionOverrideScale=mmdhl.GetRig(ent).scale options.excludedMaterials=data.excludedMaterials or {}
-   options.position={ent:GetPos():Unpack()} options.position[2]=options.position[2]+100 options.frozen=true
-   local asset=mmdhl.GetAsset(ent)
-   -- Corrections made on a carrier fitted with other bones would not match the new ones.
-   if not mmdhl.SamePins(ent.MMDOptions and ent.MMDOptions.boneMap,mmdhl.SavedBoneMap(asset)) then notice(p,L'server.error.fit_bones_changed') return end
-   mmdhl.Spawn(p,asset,options,function(created,err)
-    if not IsValid(created) then notice(p,err) return end
-    -- The model's default is server-wide: only those who may save physics defaults change it.
-    local P=mmdhl.physics
-    if P and P.CanSaveDefault and not P.CanSaveDefault(p,asset) then notice(p,L'physics_editor.notice.fit_not_saved') return end
-    -- Only the shapes change; a saved mass and physics profile stay.
-    local path='mmd_hotloader/fit_overrides/'..asset..'.json'
-    local fit=util.JSONToTable(file.Read(path,'DATA') or '')
-    if not istable(fit) or fit.version~=3 or not (fit.generator==14 or fit.generator==15 or fit.generator==18) then fit={} end
-    fit.version=3 fit.generator=18 fit.bodies=options.collisionOverrides fit.scale=options.collisionOverrideScale fit.excludedMaterials=options.excludedMaterials
-    file.CreateDir('mmd_hotloader/fit_overrides') file.Write(path,util.TableToJSON(fit,true))
-    notice(p,L'server.notice.fit_saved')
-   end)
+   -- The collision editor's corrected copy: the physics editor's rules (who may, how often,
+   -- which values, the pins, the saved file) apply to it too.
+   local P=mmdhl.physics
+   if P and P.CollisionFit then P.CollisionFit(p,ent,value,notice) end
   elseif action=='replace' and not ent:IsPlayer() then
    local options=table.Copy(ent.MMDOptions) options.backend='source' options.frozen=true
    mmdhl.Spawn(p,id,options,function(replacement,err) if IsValid(replacement) then ent:Remove() else notice(p,err) end end)

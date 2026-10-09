@@ -686,19 +686,18 @@ local handled mmdhl.boneMapper.HandleSave=function(p,asset,value) handled={asset
 queue={'bonemap',id,'{"version":1}'} RECEIVERS.mmdhl_action(0,{}) assert(handled[1]==id and handled[2]=='{"version":1}')
 mmdhl.CanEdit=function() return true end mmdhl.IsMMD=function() return true end mmdhl.GetInstance=function() return 1 end
 mmdhl.GetRig=function() return {scale=3} end mmdhl.GetAsset=function() return id end
-local respawned mmdhl.Spawn=function(p,asset,options,cb) respawned=options cb({}) end
-DISK[path]=util.TableToJSON({version=3,generator=18,bodies={old=1},boneMap={[VB..'L_Thigh']=12},boneMapVersion=1,boneMapSavedAt=5})
-queue={'fit','',util.TableToJSON({bodies={new=1},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,{})
-local saved=util.JSONToTable(DISK[path])
-assert(respawned.boneMap[VB..'L_Thigh']==12 and saved.bodies.new==1 and saved.bodies.old==nil and saved.scale==3 and saved.boneMap[VB..'L_Thigh']==12 and saved.boneMapSavedAt==5)
--- The bones were assigned again after this ragdoll was placed: its corrections would not match.
-DISK[path]=util.TableToJSON({version=3,generator=18,boneMap={[VB..'L_Thigh']=13}}) respawned=nil NOTICES={}
-queue={'fit','',util.TableToJSON({bodies={new=2},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,{})
-assert(respawned==nil and NOTICES[1]==mmdhl.L'server.error.fit_bones_changed' and util.JSONToTable(DISK[path]).bodies==nil)
+-- Collision corrections ('fit') go through the physics editor's rules, which keep the pins and
+-- refuse a carrier fitted with older ones (tests/test_physics_editor.py).
+local routed mmdhl.physics={CollisionFit=function(p,e,value,notify) routed={p=p,ent=e,value=value,notify=notify} end}
+local player={} queue={'fit','',util.TableToJSON({bodies={new=1},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,player)
+assert(routed and routed.p==player and routed.ent==ent and util.JSONToTable(routed.value).bodies.new==1 and routed.notify==notice,'the collision editor\'s fit bypasses the physics editor\'s rules')
+mmdhl.physics=nil queue={'fit','','{}'} RECEIVERS.mmdhl_action(0,player)
+-- Pins compare as numbers; none and empty are the same.
+assert(mmdhl.SamePins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']=12}) and mmdhl.SamePins(nil,{}) and not mmdhl.SamePins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']=13}) and not mmdhl.SamePins(nil,{[VB..'L_Thigh']=12}))
 -- Pin queries go to their handler.
 local queried mmdhl.boneMapper.HandleQuery=function(p,asset) queried=asset end
 queue={'bonemap_pins',id,''} RECEIVERS.mmdhl_action(0,{}) assert(queried==id)
-SAY('PASS: the action receiver routes bone saves and queries; collision corrections keep the saved pins and refuse a carrier fitted with older ones')
+SAY('PASS: the action receiver routes bone saves, queries and collision corrections (to the physics editor\'s rules); pins compare by value')
 
 ''')
 
