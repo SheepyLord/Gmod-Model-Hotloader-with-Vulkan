@@ -200,16 +200,29 @@ for the first seconds to minutes after a model appeared, and some stayed blocky 
     then draws from index lists of that instance's own, rebuilt (with its buffers) only when the cut changes, so it
     stays one draw call per chunk and two instances of one model may wear different styles. Drawing the shared
     lists in index ranges was rejected: at rest the stockings split into 379 ranges, each a separate Remix
-    geometry. Such a part is skipped only while nothing of it is left. Whether it blends is still decided once, by
-    its coverage at rest UVs as before, because the engine material is shared by every instance; a part hidden at
-    rest (Cantarella's emotes, Luo Tianyi's lenses: skipped before) keeps alpha testing. A held UV morph also no
-    longer rewrites every vertex's UVs on each publish, on any renderer.
+    geometry. Such a part is skipped only while nothing of it is left. A held UV morph also no longer rewrites every
+    vertex's UVs on each publish, on any renderer.
+  - **Blending:** whether such a part blends is decided once per model, never by an instance's UVs, because the
+    engine material is shared by every instance. `loadAsset` also measures the part's coverage with each texture
+    morph alone at a quarter, half, three quarters and full weight; the part blends only when its rest coverage and
+    every one of those are below one half, and never when none of them shows anything. A part a morph makes mostly
+    opaque therefore keeps alpha testing (shadows, micromaps) even if its rest style is sparse. Of the 23 models
+    checked, this changes only the emote stickers (`emo3`) of Cantarella, Ciaccona and Margherita (hidden at rest,
+    two sevenths opaque when shown): they blend when shown instead of alpha testing, as a sparse layer without a UV
+    morph does. Luo Tianyi's sheer skirt (`内层 拟水体裙【变色组】`, 0.17 at rest, at most 0.16 in its other colours)
+    still blends, as in 2.2.
+  - **Animated UV morphs** (VMD keys, a slider drag): every new cut rebuilds that part's index lists and live buffers
+    on the render thread (for Ruan Mei's stockings a few milliseconds, besides the full vertex upload any UV change
+    already causes). While the weights keep changing, the cut is therefore recomputed at most every fourth frame,
+    and once more within four frames after they settle; a single change after a quiet spell applies at once.
   - **Diagnostics:** `mmdhl.Decode(mmdhl.native.RenderStats()).remixCutout` lists, per instance with such a part,
-    the triangles drawn now (`parts[k].kept`) of all the part has, the UV state they belong to, and the number and
-    total time of recomputes.
+    the triangles drawn now (`parts[k].kept`) of all the part has, the UV state they belong to, the number and
+    total time of recomputes, and `indexBuilds`, the index lists built from such cuts. The in-game check is in
+    [RTX_REMIX_VALIDATION.md](RTX_REMIX_VALIDATION.md#materials-switched-by-a-uv-morph-230).
   - **Checked offline** (Ruan Mei, cache at 4096: triangles of `黑絲襪` drawn at morph 157 = 0, 0.25, 0.5, 0.75 and 1):
     8,167, 18,377, 11,348, 9,104 and 6,142, against 8,167, 8,165, 1,136, 0 and 0 before. One recompute takes
-    0.3-0.6 ms for her 151,174 triangles. Every other alpha-tested part is cut exactly as before.
+    0.3-0.6 ms for her 151,174 triangles; the extra coverages at load about 6 ms. Every other alpha-tested part is cut
+    exactly as before.
     `tests/fixtures/native-cutout-uvmorph.pmx` covers the static and per-instance cuts and the publishing.
 
 ## Reproduce

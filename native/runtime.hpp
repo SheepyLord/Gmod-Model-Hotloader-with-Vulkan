@@ -50,9 +50,11 @@ struct Material {
     btVector3 diffuse{1,1,1},ambient{.2f,.2f,.2f},specular{0,0,0},edgeColor{0,0,0};
     float alpha=1,power=1,edgeAlpha=1,edgeSize=1;
     // Share of the part's surface whose base texels pass the 0.5 alpha test,
-    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha). At rest
-    // UVs: for a dynamicCutout part it decides only RTX Remix blending, once.
-    float alphaCoverage=1;
+    // sampled at its triangles' UVs (loadAsset; 1 without texture alpha), at rest.
+    // uvMorphCoverage: for a dynamicCutout part, the highest it reaches with one
+    // texture morph at a quarter, half, three quarters or full weight (0: none
+    // shows anything). With the rest value it decides RTX Remix blending, once.
+    float alphaCoverage=1,uvMorphCoverage=0;
     std::array<std::array<float,4>,3> textureBlend{{{1,1,1,1},{1,1,1,1},{1,1,1,1}}};
     int sphereMode=0,toonIndex=-1;
     bool twoSided=false,edge=false,shadow=true,alphaTexture=false,translucentTexture=false;
@@ -298,8 +300,9 @@ struct Instance {
     // once and shared with queued draws.
     unsigned renderView=0;std::shared_ptr<const std::vector<uint8_t>> firstPersonMask;
     // RTX Remix: the cut at the UVs of remixCutoutVersion (a uvVersion), made on
-    // the main thread and shared with queued draws (renderer.cpp).
-    uint64_t remixCutoutVersion=0;std::shared_ptr<const RemixCutout> remixCutout;
+    // the main thread at render frame remixCutoutFrame and shared with queued
+    // draws (renderer.cpp).
+    uint64_t remixCutoutVersion=0,remixCutoutFrame=0;std::shared_ptr<const RemixCutout> remixCutout;
     void setMaterialState(std::vector<bool> visible,std::vector<bool> forceOpaque);
     std::vector<float> morphWeights,lastImpulseWeights;
     const std::vector<float>& expandedMorphs() const;

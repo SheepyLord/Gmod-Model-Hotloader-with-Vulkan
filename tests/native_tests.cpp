@@ -218,6 +218,11 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      size_t fabric=atlasModel->materials[1].count/3,fabricKept=kept(*atlasModel,1);
      check(atlasModel->cutoutTriangles.size()==atlasModel->indices.size()/3&&kept(*atlasModel,0)==1&&fabricKept>0&&fabricKept<fabric&&atlasModel->materials[1].alphaCoverage>0,"alpha-test cutout keeps the triangles that sample an opaque texel and drops the rest");
      check(kept(*noneModel,0)+kept(*noneModel,1)==0&&opaqueModel->cutoutTriangles.empty(),"alpha-test cutout drops every triangle of an all-cut texture and measures nothing without texture alpha");
+     // Without texture morphs nothing is cut per instance: no part is dynamic and no pass mask is kept.
+     bool still=true;for(auto* m:{&quarterModel,&noneModel,&atlasModel,&opaqueModel}){still&=(*m)->uvCutoutTriangles.empty()&&(*m)->cutoutMasks.empty();for(auto& part:(*m)->materials)still&=!part.dynamicCutout&&part.uvMorphCoverage==0;}
+     check(still,"models without texture morphs keep no pass masks and no per-instance Remix cut");
+     auto hidden=[](const std::shared_ptr<Model>& m){return remixPartHidden(m->materials[0],nullptr,0);};auto blends=[](const std::shared_ptr<Model>& m){return remixPartBlends(m->materials[0]);};
+     check(hidden(noneModel)&&!hidden(quarterModel)&&blends(quarterModel)&&!hidden(atlasModel)&&!blends(atlasModel)&&!hidden(opaqueModel)&&!blends(opaqueModel),"RTX Remix skips a part with no coverage left and blends one below half, as before");
      fs::remove_all(cache);
     }catch(const std::exception& e){std::cout<<e.what()<<"\n";check(false,"alpha-test coverage of imported textures");}
     // A texture (UV) morph switches what an alpha-tested atlas shows (Ruan Mei's stockings).
@@ -229,14 +234,33 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      bool listed=count==32&&model->uvCutoutTriangles.size()==count;for(unsigned k=0;listed&&k<count;k++)listed=model->uvCutoutTriangles[k]==first+k&&model->cutoutTriangles.at(first+k)==1;
      check(listed&&fabric.dynamicCutout&&!core.dynamicCutout&&model->cutoutMasks.size()==model->materials.size()&&model->cutoutMasks[1]&&!model->cutoutMasks[0],"triangles a UV morph moves stay in the static cut and keep their texture's pass mask");
      check(fabric.alphaCoverage==0&&std::abs(core.alphaCoverage-1.f/7)<1e-6f&&model->cutoutTriangles.at(0)==1,"rest coverage is measured as before, over every triangle at rest UVs (the Fabric's is 0)");
+     // Blending is decided once per model: the Fabric is opaque at full weight, so it keeps the test.
+     check(fabric.uvMorphCoverage==1&&core.uvMorphCoverage==0&&!remixPartBlends(fabric)&&remixPartBlends(core),"the styles a texture morph shows decide whether its part blends under RTX Remix (the Fabric never does)");
+     {auto blends=[](float rest,float morphed){Material m;m.alphaTexture=true;m.dynamicCutout=true;m.alphaCoverage=rest;m.uvMorphCoverage=morphed;return remixPartBlends(m);};
+      check(blends(.17f,.3f)&&blends(0,.3f)&&!blends(.17f,.9f)&&!blends(.6f,.2f)&&!blends(.95f,0)&&!blends(0,0),"a part a UV morph moves blends only when every style it shows is sparse, and never when none shows anything");}
      int uv=-1;for(size_t i=0;i<model->morphs.size();i++)if(nanoemModelMorphGetType(model->morphs[i])==NANOEM_MODEL_MORPH_TYPE_TEXTURE)uv=int(i);
      if(uv<0)throw std::runtime_error("the UV morph fixture has no texture morph");
-     {World host;auto& p=host.get(host.create(model,{{"backend","source"},{"secondaryCollision",0}}));p.secondary.reset();bool cuts=true;
+     {World host;auto& p=host.get(host.create(model,{{"backend","source"},{"secondaryCollision",0}}));p.secondary.reset();bool cuts=true,drawn=true;
       for(auto [w,expected]:std::initializer_list<std::pair<float,unsigned>>{{0.f,0u},{.25f,0u},{.5f,8u},{.75f,24u},{1.f,32u},{0.f,0u}}){
        p.morphWeights[size_t(uv)]=w;p.updatePose();p.ensureSnapshot();auto cut=cutRemixTriangles(*model,p.snapshot->vertices);
        std::cout<<"UV morph "<<w<<": the Remix cut keeps "<<cut.kept.at(1)<<" of "<<count<<" Fabric triangles\n";
-       cuts&=cut.keep.size()==model->cutoutTriangles.size()&&cut.kept.at(1)==expected&&cut.keptTriangles==expected&&cut.droppedTriangles==count-expected&&cut.kept.at(0)==1&&cut.keep.at(0)==1;}
-      check(cuts,"the Remix cut follows an instance's UV morph: nothing at rest, the last column at 0.5, everything at 1");}
+       cuts&=cut.keep.size()==model->cutoutTriangles.size()&&cut.kept.at(1)==expected&&cut.keptTriangles==expected&&cut.droppedTriangles==count-expected&&cut.kept.at(0)==1&&cut.keep.at(0)==1;
+       drawn&=remixPartHidden(fabric,&cut,1)==(expected==0)&&!remixPartHidden(core,&cut,0);}
+      check(cuts,"the Remix cut follows an instance's UV morph: nothing at rest, the last column at 0.5, everything at 1");
+      check(drawn,"RTX Remix skips the Fabric (no coverage at rest) only while its current UVs leave nothing of it");
+      // A snapshot that does not match the model keeps the static cut and hides nothing.
+      std::span<const DrawVertex> vertices(p.snapshot->vertices);bool fallback=true;
+      for(auto span:{vertices.first(vertices.size()-1),std::span<const DrawVertex>{}}){auto stale=cutRemixTriangles(*model,span);
+       fallback&=stale.keep==model->cutoutTriangles&&stale.kept.at(1)==count&&stale.kept.at(0)==1&&stale.keptTriangles+stale.droppedTriangles==0&&!remixPartHidden(fabric,&stale,1);}
+      RemixCutout empty;check(fallback&&!remixPartHidden(fabric,&empty,1)&&!remixPartHidden(fabric,nullptr,1),"a UV cut of a mismatched snapshot draws the static cut instead of hiding the part");}
+     // Recomputing the cut: at once after a quiet spell, at most every remixCutFrames frames
+     // while the UVs change on every frame (each new cut rebuilds index lists and buffers),
+     // and once more within remixCutFrames frames after they settle.
+     {bool made=false,settled=false,prompt=false;uint64_t version=0,madeFrame=0,uvVersion=0;unsigned moving=0;
+      for(uint64_t frame=1;frame<=40;frame++){if(frame<=20)uvVersion=frame;if(frame==30)uvVersion=99;
+       if(remixCutDue(made,version,uvVersion,frame,madeFrame)){made=true;version=uvVersion;madeFrame=frame;moving+=frame<=20;}
+       if(frame==20+remixCutFrames)settled=version==20;if(frame==30)prompt=version==99;}
+      check(moving<=20/remixCutFrames+1&&settled&&prompt&&!remixCutDue(true,99,99,1000,30),"the Remix cut is recomputed at most every few frames while UVs keep changing, settles, and follows a lone change at once");}
      // Publishing: the UV state changes only with the UV morphs' weights. Held, they cost no
      // statics refill and an unchanged pose publishes nothing; both snapshot buffers and the
      // hardware-skinning rest data still receive every change.

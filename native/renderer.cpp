@@ -100,8 +100,9 @@ static std::map<VertexFormat_t,VertexFormat_t> observedFormats;
 static Json observedLayouts=Json::object();
 struct Measure {std::atomic<double>& result;bool enabled=true;std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();~Measure(){if(enabled)result.fetch_add(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count(),std::memory_order_relaxed);}};
 static std::atomic<unsigned> frameSkinBatches{0},frameBoneLoads{0};
-// RTX Remix UV cuts: recomputed on the main thread only when an instance's UVs change.
-static std::atomic<uint64_t> remixCutRecomputes{0},remixCutRevision{0};static std::atomic<double> remixCutMs{0};
+// RTX Remix UV cuts: recomputed on the main thread only when an instance's UVs change;
+// index lists built for them on the render thread.
+static std::atomic<uint64_t> remixCutRecomputes{0},remixCutRevision{0},remixCutBuilds{0};static std::atomic<double> remixCutMs{0};
 static uint64_t renderFrame=1;
 uint64_t renderFrameNumber(){return renderFrame;}
 // Draw counters of one render frame, taken from the live atomics by the thread
@@ -231,12 +232,13 @@ static Json skinningStats(){
 }
 // Per instance with a UV-morphed alpha-tested part: its current cut under RTX
 // Remix, and per such part the triangles drawn now (kept) of all it has.
+// indexBuilds: index lists made from such cuts (each new cut rebuilds them).
 static Json remixCutoutStats(){
     Json instances=Json::array();size_t parts=0;
     for(auto& [id,p]:world().instances){if(!p->remixCutout)continue;const auto& cut=*p->remixCutout;const auto& model=*p->model;Json list=Json::array();
         for(size_t k=0;k<model.materials.size()&&k<cut.kept.size();k++)if(model.materials[k].dynamicCutout){parts++;list.push_back({{"part",k},{"kept",cut.kept[k]},{"triangles",model.materials[k].count/3}});}
         instances.push_back({{"instance",id},{"uvVersion",p->remixCutoutVersion},{"revision",cut.revision},{"kept",cut.keptTriangles},{"dropped",cut.droppedTriangles},{"parts",list}});}
-    return {{"dynamicParts",parts},{"recomputes",remixCutRecomputes.load()},{"recomputeMs",remixCutMs.load()},{"instances",instances}};
+    return {{"dynamicParts",parts},{"recomputes",remixCutRecomputes.load()},{"recomputeMs",remixCutMs.load()},{"indexBuilds",remixCutBuilds.load()},{"instances",instances}};
 }
 static Json queueStats();
 std::string rendererStats(){
@@ -574,13 +576,14 @@ static bool prepareDraw(Instance& instance,DrawJob& job,bool edges,RenderTint ti
     }
     job.center=instance.presentationBones.empty()?(instance.snapshot->minimum+instance.snapshot->maximum)*.5f:instance.presentationBones[0].getOrigin();
     // RTX Remix: triangles a UV morph moves are cut at this instance's current UVs,
-    // again only when they change. An unchanged cut keeps its revision, so the
-    // render thread keeps the index lists it built from it.
+    // again only when they change, and while they keep changing at most every few
+    // frames (remixCutDue). An unchanged cut keeps its revision, so the render
+    // thread keeps the index lists it built from it.
     if(remixFixedFunction&&!instance.model->uvCutoutTriangles.empty()){
-        if(!instance.remixCutout||instance.remixCutoutVersion!=instance.snapshot->uvVersion){
+        if(remixCutDue(instance.remixCutout!=nullptr,instance.remixCutoutVersion,instance.snapshot->uvVersion,renderFrame,instance.remixCutoutFrame)){
             Measure time{remixCutMs};auto cut=cutRemixTriangles(*instance.model,instance.snapshot->vertices);
             if(!instance.remixCutout||cut.keep!=instance.remixCutout->keep){cut.revision=++remixCutRevision;instance.remixCutout=std::make_shared<const RemixCutout>(std::move(cut));}
-            instance.remixCutoutVersion=instance.snapshot->uvVersion;remixCutRecomputes++;
+            instance.remixCutoutVersion=instance.snapshot->uvVersion;instance.remixCutoutFrame=renderFrame;remixCutRecomputes++;
         }
         job.remixCut=instance.remixCutout;
     }
@@ -600,22 +603,20 @@ static bool prepareDraw(Instance& instance,DrawJob& job,bool edges,RenderTint ti
 // test for the binary alpha of such layers. Mostly opaque parts keep the test.
 // Parts a UV morph moves (Material::dynamicCutout) are cut per instance at their
 // current UVs instead and skipped only while nothing of them is left. Whether one
-// blends stays decided by its rest coverage, as before: the engine material is
-// shared by every instance, so no instance's UVs may change it. One hidden at
-// rest (nothing to judge) keeps the test.
+// blends is decided once per model over every style it shows, never by an
+// instance's UVs: the engine material is shared by every instance (cutout.hpp).
 static bool generatedMaterial(const Instance& instance,unsigned part,const std::string& name){
     return (part<instance.colorNames.size()&&instance.colorNames[part]==name)||(part<instance.depthNames.size()&&instance.depthNames[part]==name);
 }
 static void addDrawItem(Instance& instance,DrawJob& job,std::span<const unsigned> requested,const std::string& name,bool perPartColor){
     auto& model=*job.model;DrawItem item;item.name=name;item.perPartColor=perPartColor;item.parts.reserve(requested.size());
     for(auto candidate:requested){if(candidate>=model.materials.size())throw std::runtime_error("Invalid material index");if(candidate<instance.materialVisible.size()&&!instance.materialVisible[candidate])continue;auto& m=job.snapshot->materials[candidate];if((job.edges&&!m.edge)||m.alpha<=.0001f)continue;
-        const auto& base=model.materials[candidate];const bool hidden=base.dynamicCutout?job.remixCut&&candidate<job.remixCut->kept.size()&&job.remixCut->kept[candidate]==0:base.alphaCoverage<=0;
-        if(remixFixedFunction&&base.alphaTexture&&hidden&&generatedMaterial(instance,candidate,name))continue;
+        if(remixFixedFunction&&remixPartHidden(model.materials[candidate],job.remixCut.get(),candidate)&&generatedMaterial(instance,candidate,name))continue;
         item.parts.push_back(candidate);}
     if(item.parts.empty())return;
     item.material=findMaterial(name);
     if(remixFixedFunction&&!item.material->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT)){
-        bool cutAway=false;for(auto part:item.parts){const auto& m=model.materials[part];cutAway|=m.alphaTexture&&m.alphaCoverage<.5f&&(!m.dynamicCutout||m.alphaCoverage>0)&&generatedMaterial(instance,part,name);}
+        bool cutAway=false;for(auto part:item.parts)cutAway|=remixPartBlends(model.materials[part])&&generatedMaterial(instance,part,name);
         if(cutAway){item.material->SetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT,true);item.material->RecomputeStateSnapshots();}
     }
     // Triangles the test removes entirely are not drawn under Remix: a near-empty
@@ -905,7 +906,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
     auto topologyKey=std::make_tuple(&model,cachePart,dynamicCut?job.instance:0);auto ti=topology.find(topologyKey);
     if(ti!=topology.end()&&(ti->second.model.expired()||ti->second.cut!=(dynamicCut?dynamicCut->revision:0))){topology.erase(ti);ti=topology.end();}
     if(ti==topology.end()){
-        Topology item;item.model=job.model;if(dynamicCut){item.cut=dynamicCut->revision;item.cutOwner=job.remixCut;}
+        Topology item;item.model=job.model;if(dynamicCut){item.cut=dynamicCut->revision;item.cutOwner=job.remixCut;remixCutBuilds++;}
         std::vector<uint8_t> remainder;
         if(cpuRemainder){remainder=model.gpuSkin()->cpuTriangle;if(job.renderView&&!firstPerson.empty())for(size_t t=0;t<remainder.size();t++)remainder[t]&=firstPerson[t];}
         if(batched)static_cast<BatchedTopology&>(item)=batchTopology(model,cpuRemainder?std::span<const uint8_t>(remainder):job.renderView?firstPerson:std::span<const uint8_t>{});

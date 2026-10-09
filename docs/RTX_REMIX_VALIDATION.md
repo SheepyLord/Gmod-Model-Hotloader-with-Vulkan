@@ -79,3 +79,35 @@ Install the package normally into the **RTX game directory**, not the launcher
 directory. Native DLL changes require restarting the game. The support is
 automatic for this validated build; no material conversion or PMX reimport is
 required. Updated Remix/Source binaries require renewed ABI validation.
+
+## Materials switched by a UV morph (2.3.0)
+
+Some models switch what an alpha-tested part shows with a texture (UV) morph
+(issue #7; background in [DXVK_PACKAGE.md](DXVK_PACKAGE.md)). Under Remix such a
+part is cut per instance at its current UVs, and `RenderStats().remixCutout`
+reports what is drawn, so the check needs no screenshots. With Ruan Mei
+(`阮·梅.pmx`) spawned as the only character in the RTX copy, run on the server
+(morphs counted from 0, as in PMX Editor):
+
+```
+python scripts/gamectl.py server "local e=ents.FindByClass('mmdhl_ragdoll')[1] mmdhl.SetMorphWeight(e,154,1) mmdhl.SetMorphWeight(e,157,.5)"
+```
+
+and about a second later on the client:
+
+```
+python scripts/gamectl.py client "local s=mmdhl.Decode(mmdhl.native.RenderStats()) assert(s.fixedFunctionRemix) local c=s.remixCutout for _,i in ipairs(c.instances) do for _,p in ipairs(i.parts) do print(i.instance,p.part,p.kept,p.triangles) end end print(c.recomputes,c.indexBuilds)"
+```
+
+Expected per weight of morph 157 (0, 0.25, 0.5, 0.75, 1): part 10 (`黑絲襪`,
+18,501 triangles) keeps 8,167, 18,377, 11,348, 9,104 and 6,142; part 11
+(`襠部絲襪`) keeps 1,904 up to 0.5 and 0 from 0.75. With morph 158 at 1 as well
+(white row), part 10 keeps 0, 0, 11,348, 9,104 and 6,142 and part 11 0, 0,
+1,904, 0 and 0. Repeating the client call a few seconds later must print the
+same `recomputes` and `indexBuilds` while the weights are held. Then sweep 157
+from 0 to 1 over two seconds (a server timer setting it every tick): the counts
+must end at the weight-1 row, and `recomputes` grows by at most about a quarter
+of the frames rendered meanwhile. Look at the legs 8 s and 40 s after each change
+(opacity micromaps), compare with the raster game at the same weights, and repeat
+with the instance frozen, with `mmdhl_vertex_cache 0` and in first person. The
+Furina, Linlong and Vodyanitsa check of DXVK_PACKAGE.md must stay unchanged.
