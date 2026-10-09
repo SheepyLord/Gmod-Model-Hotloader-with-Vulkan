@@ -388,6 +388,7 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       check(atRest(p.effectiveScratch[pelvis],{0,0,0}),("a Source-driven bone below the control roots keeps a true local pose"+mode).c_str());
       auto bodies=p.secondary->diagnostics()["bodyList"];auto w=bodies.at(3)["worldPosition"];
       check(bodies.at(3)["follower"].get<bool>()&&(btVector3(w[0],w[1],w[2])-toWorld({0,8,0})).length()<.02f,("a follower body on センター follows the body"+mode).c_str());
+      check(p.diagnostics()["floatingRoots"]==Json{{"roots",2},{"bones",8},{"vertices",5},{"bodies",1}},("diagnostics count the bones Source does not reach and what they carry"+mode).c_str());
       // Bend the left hip: the leg and toe IK goals ride on the Source-driven ankle and toe, and
       // the heel IK goal hung below the toe IK goal follows the foot (the heel stays at rest on it).
       auto ankleBefore=p.global[ankle].getOrigin();int thigh=-1;for(size_t i=0;i<rig.bones.size();i++)if(rig.bones[i].name=="ValveBiped.Bip01_L_Thigh")thigh=int(i);

@@ -342,7 +342,15 @@ void Instance::reset(){if(secondary){
     sourceTeleport=false;pendingSourceDelta=0;presentationDirty=true;poseDirty=true;return;
 }owner->endGrab();applyPose();lastImpulseWeights=expandedMorphs();for(auto& b:bodies){b->rigid->clearForces();b->rigid->activate(true);}}
 Json Instance::diagnostics(bool detailed) const {
-    if(secondary){auto j=secondary->diagnostics(detailed);j["quality"]=secondary->qualityInfo();j.update({{"id",id},{"asset",model->id},{"sourceObjects",18},{"sourceTimestamp",sourceTimestamp},{"rig",sourceRig->key},{"presentationDriven",presentationDriven},{"presentationSmoothingMs",presentationDelay*1000},{"presentationUpdateIntervalMs",presentationUpdateInterval*1000},{"sourceError",sourceError},{"presentationFrame",presentationFrame},{"sourceUnitsPerPmx",sourceRig->scale},{"deformMs",deformMs}});return j;}
+    if(secondary){auto j=secondary->diagnostics(detailed);j["quality"]=secondary->qualityInfo();j.update({{"id",id},{"asset",model->id},{"sourceObjects",18},{"sourceTimestamp",sourceTimestamp},{"rig",sourceRig->key},{"presentationDriven",presentationDriven},{"presentationSmoothingMs",presentationDelay*1000},{"presentationUpdateIntervalMs",presentationUpdateInterval*1000},{"sourceError",sourceError},{"presentationFrame",presentationFrame},{"sourceUnitsPerPmx",sourceRig->scale},{"deformMs",deformMs}});
+        // Bones with no Source-driven bone at or above them (MMD control roots such as グルーブ and
+        // what hangs from them) ride with the pelvis since 2.3.0; before, they stayed at the world origin.
+        if(detailed){auto& m=*model;std::vector<uint8_t> floating(m.bones.size(),0);size_t roots=0,bones=0,vertices=0,attached=0;
+            for(auto i:m.order){int parent=m.bones[i].parent;floating[i]=sourceControl[i]<0&&(parent<0||floating[parent]);bones+=floating[i];roots+=floating[i]&&parent<0;}
+            for(auto& v:m.vertices)for(int k=0;k<4;k++)if(v.weights[k]>0&&v.bones[k]>=0&&floating[v.bones[k]]){vertices++;break;}
+            for(auto b:m.bodies){int bone=boneIndex(nanoemModelRigidBodyGetBoneObject(b));attached+=bone>=0&&floating[bone];}
+            j["floatingRoots"]={{"roots",roots},{"bones",bones},{"vertices",vertices},{"bodies",attached}};}
+        return j;}
     Json j={{"id",id},{"asset",model->id},{"bodies",bodies.size()},{"joints",joints.size()},{"anatomicalJoints",anatomicalJoints.size()},{"softBodies",softBodies.size()},{"frozen",frozen},{"scale",scale},{"warnings",warnings},{"bodyList",Json::array()},{"jointLimits",Json::array()}};
     for(auto& b:bodies){auto p=b->rigid->getWorldTransform().getOrigin()/Inch;j["bodyList"].push_back({{"bone",b->bone},{"mode",b->mode},{"core",b->core},{"generated",b->generated},{"position",array(p)},{"mass",b->mass}});}
     for(auto& a:anatomicalJoints){auto& c=*a.constraint;c.calculateTransforms();j["jointLimits"].push_back({{"bone",a.bone},{"parent",a.parent},{"name",model->bones[a.bone].name},{"lower",array(a.lower*SIMD_DEGS_PER_RAD)},{"upper",array(a.upper*SIMD_DEGS_PER_RAD)},{"angle",array(btVector3(c.getAngle(0),c.getAngle(1),c.getAngle(2))*SIMD_DEGS_PER_RAD)},{"pivotError",(c.getCalculatedTransformA().getOrigin()-c.getCalculatedTransformB().getOrigin()).length()/Inch}});}
