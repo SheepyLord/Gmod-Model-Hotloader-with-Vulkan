@@ -53,7 +53,7 @@ function world(options)
   e.concommand={Add=function() end}
   e.mmdhl={L=server and mmdhl.I18n.Token or mmdhl.L,Localize=mmdhl.Localize,I18n=mmdhl.I18n,actorRegistrations={},
    Decode=function(s,err) if s==nil then return nil,err end return decode(s) end,
-   IsCurrentRig=function() return false end,
+   IsLoadableRig=function() return false end,
    RegisterActor=function() e.registered[#e.registered+1]=true end,
    SendActorRegistration=function() e.sentRegistrations=e.sentRegistrations+1 end,
    UnregisterAsset=function(id) e.unregistered[#e.unregistered+1]=id end,

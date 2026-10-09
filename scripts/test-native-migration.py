@@ -1,4 +1,7 @@
-"""Exercise a real old cached carrier through Sandbox duplication and migration."""
+"""Exercise a real 2.2 cached carrier (rig generator 30) through Sandbox duplication on 2.3.0
+(generator 31): the paste keeps that carrier (same rig key, nothing fitted again) with its
+scale, 18 bodies, pose, freezing and fingers. A cache without one: spawn each acceptance
+model once with 2.2.0 first."""
 import json,time,sys
 from pathlib import Path
 from gamectl import execute,ROOT,read
@@ -16,11 +19,13 @@ def transform(position,rotation=None,angles=None):
  t=np.eye(4);t[:3,3]=position
  t[:3,:3]=Rotation.from_quat(rotation).as_matrix() if rotation else Rotation.from_euler('ZYX',[angles[1],angles[0],angles[2]],degrees=True).as_matrix()
  return t
+# The oldest generator 2.3.0 loads (native/rig.hpp RigGeneratorMinLoadable).
+OLD_GENERATOR=30
 report={}
 for name,model in models.items():
  candidates=[read(p) for p in (cache/'rigs').glob('*/rig.json')]
- old=next((r for r in candidates if r and r.get('asset')==model['asset'] and r.get('generator')==9),None)
- if not old:raise RuntimeError('Missing generator-9 fixture for '+name)
+ old=next((r for r in candidates if r and r.get('asset')==model['asset'] and r.get('generator')==OLD_GENERATOR and r.get('role','ragdoll')=='ragdoll'),None)
+ if not old:raise RuntimeError(f'Missing generator-{OLD_GENERATOR} ragdoll carrier for {name}: spawn it once with 2.2.0')
  key=old['key']
  result=lua(f"""for _,e in ipairs(mmdhl.Entities()) do e:Remove() end
 local r=util.JSONToTable(file.Read('mmd_hotloader/rigs/{key}/rig.json','DATA')) assert(game.MountGMA('data/mmd_hotloader/rigs/{key}/carrier.gma'))
@@ -30,11 +35,12 @@ local finger=e:LookupBone('ValveBiped.Bip01_L_Finger1') e:ManipulateBoneAngles(f
 -- Old version-1 duplicates had no embedded rig: recover immutable metadata by model path.
 duplicator.StoreEntityModifier(e,'MMDHLNative',{{version=1,asset='{model['asset']}',options={{height=72,frozen=true}},scale=1}})
 local copied=duplicator.Copy(e) local pasted=duplicator.Paste(player.GetHumans()[1],copied.Entities,copied.Constraints) local clone=pasted[e:EntIndex()]
-assert(IsValid(clone) and mmdhl.IsMMD(clone),'Migration did not attach')
+assert(IsValid(clone) and mmdhl.IsMMD(clone),'The 2.2 carrier did not attach')
 local rig=mmdhl.GetRig(clone) local after={{}} for i=0,17 do local p=clone:GetPhysicsObjectNum(i) after[i+1]={{pos={{p:GetPos():Unpack()}},ang={{p:GetAngles():Unpack()}},frozen=not p:IsMotionEnabled()}} end
 local result={{before=before,after=after,rig=rig,bodies=clone:GetPhysicsObjectCount(),finger=clone:GetManipulateBoneAngles(clone:LookupBone('ValveBiped.Bip01_L_Finger1')).p}}
 e:Remove() clone:Remove() return result""")
  new=result['rig'];errors=[]
+ assert new['key']==old['key'] and new['generator']==OLD_GENERATOR,('the paste did not keep the 2.2 carrier',name,new['key'],new['generator'])
  for i,(b,a) in enumerate(zip(result['before'],result['after'])):
   ob=old['bones'][old['bodies'][i]['bone']];nb=new['bones'][new['bodies'][i]['bone']]
   before=transform(b['pos'],angles=b['ang'])@np.linalg.inv(transform(ob['position'],rotation=ob['rotation']))
@@ -43,7 +49,7 @@ e:Remove() clone:Remove() return result""")
  assert max(errors)<.01,(name,errors)
  assert result['bodies']==18 and all(a['frozen'] for a in result['after']) and abs(result['finger']-25)<.001,result
  assert abs(new['scale']-old['scale'])<1e-5,(new['scale'],old['scale'])
- report[name]={'oldGenerator':9,'newGenerator':new['generator'],'scale':new['scale'],'maxBindDeltaError':max(errors),'bodies':18,'frozen':True,'finger':result['finger']}
+ report[name]={'oldGenerator':OLD_GENERATOR,'pastedGenerator':new['generator'],'rig':new['key'],'scale':new['scale'],'maxBindDeltaError':max(errors),'bodies':18,'frozen':True,'finger':result['finger']}
  (ROOT/'validation/legacy-native-duplicates.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
- print(name,'PASS: old scale, 18 bodies, pose, freeze and fingers survived migration',flush=True)
+ print(name,'PASS: the 2.2 carrier, its scale, 18 bodies, pose, freeze and fingers survived the paste',flush=True)
  time.sleep(.2)

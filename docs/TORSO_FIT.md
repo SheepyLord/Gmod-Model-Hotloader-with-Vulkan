@@ -18,8 +18,10 @@ shape, as the SCMI importer's spine fix did.
   such as `右腕捩3` or `後髪3` was read as "3" and taken for `上半身3`. They now get
   a real middle spine (`上半身1` when the model has one) or a synthesized one.
   Models without finger bones no longer get fingers on twist or ribbon bones.
-* Every model is fitted once more (rig generator 31). Placed characters keep their
-  carrier until they are spawned again.
+* Every model is fitted once more (rig generator 31) when it is spawned again.
+  Characters placed with 2.2, and their saves, dupes, published NPCs and player
+  models, keep their 2.2 carrier (generator 30) and its chest; spawn them again
+  for the new one.
 * Collision corrections saved for the `Spine4` part of a model whose chest bone
   changed are relative to the old chest bone (on Ganyu 2.7 units below the new
   one); check them in the collision editor after updating.
@@ -167,9 +169,19 @@ object ("Invalid bone map options") or a `boneMap` that is not an object.
 
 ## Compatibility
 
-* Generator 31: fits cached by 2.2 (`fits/g30-…`) are not used, and carriers
-  fitted by an older binary are refitted (`mmdhl.IsCurrentRig`); a server and a
-  client must run the same native release to share carriers.
+* Generator 31: fits cached by 2.2 (`fits/g30-…`) are not used, so every new
+  spawn, fit and physics edit gets a generator-31 carrier with a new rig key. The
+  carrier and `rig.json` format did not change (rig version 3), so 2.2's carriers
+  still load: `rigFromManifest` accepts generators `RigGeneratorMinLoadable` (30)
+  to `RigGenerator` (31), `GetCapabilities().rigGeneratorMin` is 30, and the
+  addon's `mmdhl.IsLoadableRig` lets saves, dupes, the `SetModel` binding,
+  published NPC and player-model registrations and clients use such a carrier as
+  it was (an older module without `rigGeneratorMin` loads only its own
+  generator). `mmdhl.IsCurrentRig` is true only for the generator fitted now. A
+  2.2 ragdoll pasted as an NPC gets a new NPC fit, as before. Generator 29 and
+  older stay refused (`persistence.error.carrier_outdated`). A 2.2 client cannot
+  render a 2.3.0 server's new carriers: server and clients should run the same
+  native release.
 * Fits cached by 2.3.0 development builds before the torso fix lack
   `manifest.torso` and are fitted again.
 * Older native modules ignore `boneMap` (they fit by names) and have no

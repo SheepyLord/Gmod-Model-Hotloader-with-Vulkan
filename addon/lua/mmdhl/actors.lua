@@ -2,6 +2,17 @@
 local native=mmdhl.native
 local L=mmdhl.L
 local capabilities=mmdhl.Decode(native.GetCapabilities()) or {}
+-- A carrier this module loads: its rig version and a generator from rigGeneratorMin to
+-- rigGenerator (2.3.0: 30, the fits of 2.2, to 31). Saves, dupes, published NPCs and
+-- player models keep such a carrier as it was; new spawns and fits get rigGenerator.
+-- A module without rigGeneratorMin (2.2.0 and older) loads its own generator only.
+function mmdhl.IsLoadableRig(rig)
+ local newest=capabilities.rigGenerator
+ if not istable(rig) or rig.version~=capabilities.rigVersion or not isnumber(rig.generator) or not isnumber(newest) then return false end
+ local oldest=isnumber(capabilities.rigGeneratorMin) and capabilities.rigGeneratorMin or newest
+ return rig.generator>=oldest and rig.generator<=newest
+end
+-- A carrier of the fit this module makes now.
 function mmdhl.IsCurrentRig(rig)
  return rig and rig.version==capabilities.rigVersion and rig.generator==capabilities.rigGenerator
 end
@@ -57,7 +68,7 @@ function mmdhl.ActorClass(role)
  return role=='combine' and 'npc_combine_s' or 'npc_citizen'
 end
 function mmdhl.RegisterActor(rig,arms)
- if not mmdhl.IsCurrentRig(rig) or not rig.model then return end
+ if not mmdhl.IsLoadableRig(rig) or not rig.model then return end
  local role=rig.role local key='mmd_'..rig.key:sub(1,16)
  local name=CLIENT and mmdhl.names and (mmdhl.names.Display(rig.name,rig.asset)) or rig.name
  mmdhl.actorRegistrations[rig.model]={rig=rig,arms=arms}

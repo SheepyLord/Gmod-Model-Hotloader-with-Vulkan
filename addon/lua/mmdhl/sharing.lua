@@ -225,7 +225,7 @@ if SERVER then
   for id,entry in pairs(approved.rigs) do if entry.role~='ragdoll' and entry.role~='arms' and approved.assets[entry.asset] then
    local r=util.JSONToTable(file.Read('mmd_hotloader/rigs/'..id..'/rig.json','DATA') or '')
    local a=entry.arms and util.JSONToTable(file.Read('mmd_hotloader/rigs/'..entry.arms..'/rig.json','DATA') or '')
-   if mmdhl.IsCurrentRig(r) and (not entry.arms or mmdhl.IsCurrentRig(a)) and file.Exists('mmd_hotloader/rigs/'..id..'/carrier.gma','DATA') then
+   if mmdhl.IsLoadableRig(r) and (not entry.arms or mmdhl.IsLoadableRig(a)) and file.Exists('mmd_hotloader/rigs/'..id..'/carrier.gma','DATA') then
     mmdhl.MountPackage('data/mmd_hotloader/rigs/'..id..'/carrier.gma') if a then mmdhl.MountPackage('data/mmd_hotloader/rigs/'..a.key..'/carrier.gma') end
     mmdhl.RegisterActor(r,a)
    end
