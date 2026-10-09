@@ -195,10 +195,11 @@ if SERVER then
   for id in pairs(approved.assets) do if not file.Exists('mmd_hotloader/assets/'..id..'/manifest.json','DATA') then missing[#missing+1]=id end end
   mmdhl.ForgetPublishedAssets(missing)
  end
- -- Sends what is approved; registers and saves nothing.
+ -- Sends what is approved; registers and saves nothing. An NPC or player model replaced
+ -- by a newer generator's (mmdhl.NewerActor) stays on the server, out of clients' menus.
  local function catalog(p)
   for id,entry in pairs(approved.assets) do net.Start('mmdhl_catalog') net.WriteString(id) net.WriteString(entry.name or id) if p then net.Send(p) else net.Broadcast() end end
-  for _,entry in pairs(mmdhl.actorRegistrations) do mmdhl.SendActorRegistration(entry.rig,entry.arms,p) end
+  for _,entry in pairs(mmdhl.actorRegistrations) do if not mmdhl.NewerActor(entry.rig) then mmdhl.SendActorRegistration(entry.rig,entry.arms,p) end end
   if mmdhl.props and mmdhl.props.Catalog then mmdhl.props.Catalog(p) end
  end
  function mmdhl.ApproveAsset(p,id,name)

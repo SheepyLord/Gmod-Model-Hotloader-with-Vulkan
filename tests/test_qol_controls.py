@@ -14,7 +14,7 @@ IsValid=function(v)return v~=nil end isstring=function(v)return type(v)=='string
 """)
 attach(lua)
 actors=(root/'addon/lua/mmdhl/actors.lua').read_text(encoding='utf8')
-lua.execute(actors[actors.index('function mmdhl.UnregisterAsset'):actors.index('function mmdhl.RegisterActor')])
+lua.execute(actors[actors.index('function mmdhl.UnregisterActor'):actors.index('function mmdhl.RegisterActor')])
 lua.execute("""
 local p={GetInfo=function()return choice end}
 choice='none' assert(mmdhl.NPCWeapon(p,'citizen')=='none')

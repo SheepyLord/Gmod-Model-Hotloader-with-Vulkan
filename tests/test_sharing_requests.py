@@ -56,6 +56,7 @@ function world(options)
    IsLoadableRig=function() return false end,
    RegisterActor=function() e.registered[#e.registered+1]=true end,
    SendActorRegistration=function() e.sentRegistrations=e.sentRegistrations+1 end,
+   NewerActor=function() end,
    UnregisterAsset=function(id) e.unregistered[#e.unregistered+1]=id end,
    LoadAsset=function(id,cb) if w.holdLoads then w.loads[#w.loads+1]=cb else cb({name='Loaded '..id:sub(1,1)}) end end,
    library={Refresh=function() e.refreshed=e.refreshed+1 end},
