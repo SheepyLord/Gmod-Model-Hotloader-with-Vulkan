@@ -45,7 +45,7 @@ def evaluate(files=None,server=False,dedicated=False,windows=True,arch='x64',p=N
     s=lua.globals().mmdhl.EvaluateInstallation(convert(p or policy),reader,convert(dict(server=server,dedicated=dedicated,windows=windows,arch=arch,accepted=accepted)))
     return s,reads
 
-s,_=evaluate();assert s.features.core and s.features.imports and s.features.detailedCollision
+s,_=evaluate();assert s.features.core and s.features.imports and s.features.detailedCollision and s.update is None
 for key in ('client','runtime','worker','coacd'):
     path=('BASE_PATH/bin/win64/' if key=='runtime' else 'MOD/lua/bin/')+release['files'][key]['name']
     feature='core' if key in ('client','runtime') else 'imports' if key=='worker' else 'detailedCollision'
@@ -85,16 +85,49 @@ for f in old['files'].values():f['sha256']='1'*64
 p=deepcopy(policy);p['releases']['1.0.0']=old
 files=installed()
 for f in files.values():f['sha256']='1'*64
-s,_=evaluate(files,p=p);assert not s.features.core and s.issues[1].code=='outdated'
-p['approved'].append('1.0.0');s,_=evaluate(files,p=p);assert s.features.core and s.installed=='1.0.0'
+# An older release no longer approved still runs: one warning that disables nothing,
+# and the update reminder with the recommended release's links.
+s,_=evaluate(files,p=p)
+assert s.features.core and s.features.imports and s.features.rendering and not s.unverified and not s.blocked and s.installed=='1.0.0'
+assert len(s.issues)==1 and s.issues[1].code=='outdated_release' and s.issues[1].warning and not s.issues[1].unverified and s.issues[1].feature=='core'
+u=s.update
+assert u.installed=='1.0.0' and u.recommended==policy['recommended'] and u.url==release['url'] and u.altUrl==release.get('altUrl') and u.approved is None and u.required is None and u.advisory is None
+# Approved, it runs without any issue (publish-native-release.py requires that) and still gets the reminder.
+p['approved'].append('1.0.0');s,_=evaluate(files,p=p);assert s.features.core and s.installed=='1.0.0' and len(s.issues)==0 and s.update.approved is True and s.update.installed=='1.0.0'
 files=installed();files['BASE_PATH/bin/win64/'+release['files']['runtime']['name']]['sha256']='1'*64
 s,_=evaluate(files,p=p);assert not s.features.core and any(v.code=='mixed_installation' for v in s.issues.values())
-s,_=evaluate(p={'schema':1});assert s.issues[1].code=='policy_invalid'
+s,_=evaluate(p={'schema':1});assert s.issues[1].code=='policy_invalid' and s.update is None
 future=deepcopy(old);future['release']='9.0.0';future['build']='future'
 p=deepcopy(policy);p['releases']['9.0.0']=future
 files=installed()
 for f in files.values():f['sha256']='1'*64
-s,_=evaluate(files,p=p);assert not s.features.core and s.issues[1].code=='unapproved_release'
+s,_=evaluate(files,p=p);assert not s.features.core and s.issues[1].code=='unapproved_release' and s.unverified and s.update is None
+# A release with a known problem (policy.revoked: label -> phrase) still runs, with that advisory.
+p=deepcopy(policy);p['releases']['1.0.0']=old;p['revoked']={'1.0.0':'install.advisory.test'}
+s,_=evaluate(files,p=p);assert s.features.core and s.update.advisory=='install.advisory.test' and s.issues[1].code=='outdated_release'
+p['approved'].append('1.0.0');s,_=evaluate(files,p=p);assert s.features.core and len(s.issues)==0 and s.update.advisory=='install.advisory.test'
+p['revoked']={'1.0.0':7};s,_=evaluate(files,p=p);assert s.features.core and s.update.advisory is None
+# Order: the build time ending the build ID wins over the label (a re-tagged or
+# pre-release label), and labels alone order a pre-release before its release.
+def synthetic(p,label,build,sha):
+    record=deepcopy(release);record['release']=label;record['build']=build
+    for f in record['files'].values():f['sha256']=sha
+    p['releases'][label]=record
+def disk(sha):
+    files=installed()
+    for f in files.values():f['sha256']=sha
+    return files
+p=deepcopy(policy);p['releases'][policy['recommended']]['build']='aaaaaaaaaaaa-20261001T120000Z'
+synthetic(p,'9.9.9','bbbbbbbbbbbb-20260101T000000Z','5'*64);synthetic(p,'0.0.1','cccccccccccc-20261231T000000Z','6'*64)
+s,_=evaluate(disk('5'*64),p=p);assert s.features.core and s.update.installed=='9.9.9' and s.issues[1].code=='outdated_release'
+s,_=evaluate(disk('6'*64),p=p);assert not s.features.core and s.issues[1].code=='unapproved_release' and s.update is None
+p=deepcopy(policy);p['releases']['2.3.0']=deepcopy(release);p['releases']['2.3.0'].update(release='2.3.0',build='local');p['recommended']='2.3.0'
+synthetic(p,'2.3.0-rc.1','local','7'*64);synthetic(p,'2.3.0+hotfix','local','8'*64)
+s,_=evaluate(disk('7'*64),p=p);assert s.features.core and s.update.installed=='2.3.0-rc.1' and s.update.recommended=='2.3.0'
+s,_=evaluate(disk('8'*64),p=p);assert s.issues[1].code=='unapproved_release' and s.update is None
+for label,older in (('2.1.0-native.12',True),('2.2.0',True),('2.3.1',False),('10.0.0',False),('legacy-preview',True)):
+    synthetic(p,label,'local','9'*64);s,_=evaluate(disk('9'*64),p=p);del p['releases'][label]
+    assert (s.update is not None)==older,label
 
 # Accepting the warning: hash and release mismatches run anyway, for exactly the
 # accepted bytes; missing files and releases without verification never do.
@@ -123,7 +156,9 @@ for f in files.values():f['sha256']='1'*64
 s,_=evaluate(files,p=p);s,_=evaluate(files,p=p,accepted=s.fingerprint)
 assert s.features.core and s.installed=='9.0.0' and s.issues[1].code=='unapproved_release' and s.issues[1].accepted
 legacy=deepcopy(future);legacy['installApi']=0;p=deepcopy(policy);p['releases']['legacy']=legacy
-s,_=evaluate(files,p=p);assert s.issues[1].code=='outdated' and s.blocked
+# A release without installation verification stays off, worded as a required update with the same links.
+s,_=evaluate(files,p=p);assert s.issues[1].code=='outdated' and s.blocked and not s.features.core
+assert s.update.required and s.update.installed=='legacy' and s.update.url==release['url'] and s.update.recommended==policy['recommended']
 s,_=evaluate(files,p=p,accepted=s.fingerprint);assert not s.features.core
 
 # The renderer (bin/win64/d3d9.dll) is reported on the client and never gates a feature:

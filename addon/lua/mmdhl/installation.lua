@@ -28,12 +28,31 @@ end
 function M.ServerIssue(feature,message)
  return L('install.server_issue',{issue=L('install.issue',{feature=featureName(feature),message=message})})
 end
-local function olderRelease(a,b)
+local function digitsBefore(a,b)
  local left,right={},{}
  for n in tostring(a):gmatch('%d+') do left[#left+1]=tonumber(n) end
  for n in tostring(b):gmatch('%d+') do right[#right+1]=tonumber(n) end
- for i=1,math.max(#left,#right) do local x,y=left[i] or 0,right[i] or 0 if x~=y then return x<y end end
- return false
+ for i=1,math.max(#left,#right) do local x,y=left[i] or 0,right[i] or 0 if x~=y then return x<y,true end end
+ return false,false
+end
+-- Release labels: the numbers first; a pre-release (2.1.0-native.12) comes before its
+-- release (2.1.0); +metadata does not count. Other labels compare their digit runs.
+local function olderRelease(a,b)
+ local x,y=tostring(a):gsub('%+.*$',''),tostring(b):gsub('%+.*$','')
+ local cx,cy=x:match('^%d+%.%d+%.%d+'),y:match('^%d+%.%d+%.%d+')
+ if not cx or not cy then return (digitsBefore(x,y)) end
+ local before,differ=digitsBefore(cx,cy) if differ then return before end
+ local px,py=x:sub(#cx+1),y:sub(#cy+1)
+ if (px=='')~=(py=='') then return px~='' end
+ return (digitsBefore(px,py))
+end
+-- Releases ({release,build}) in build order: the UTC time ending the build ID
+-- (<commit>-YYYYMMDDTHHMMSSZ) when both have one, else their labels.
+local function buildTime(build) return type(build)=='string' and build:match('%-(%d%d%d%d%d%d%d%dT%d%d%d%d%d%dZ)$') or nil end
+local function olderBuild(a,b)
+ local x,y=buildTime(a.build),buildTime(b.build)
+ if x and y and x~=y then return x<y end
+ return olderRelease(a.release,b.release)
 end
 local function approved(policy,id)
  for _,v in ipairs(policy.approved or {}) do if v==id then return true end end
@@ -85,8 +104,22 @@ function M.EvaluateInstallation(policy,reader,env)
  -- Loading anyway extends the accepted fingerprint with the loaded files (CheckInstallation).
  local accepted=type(env.accepted)=='string' and env.accepted or ''
  s.unverifiedAccepted=(accepted==s.fingerprint or accepted:sub(1,#s.fingerprint+8)==s.fingerprint..';loaded:') or nil
- -- Releases without installation verification (installApi 0) cannot be checked after loading.
- if known and (known.installApi~=1 or not approved(policy,s.installed)) then issue(s,(known.installApi~=1 or olderRelease(s.installed,policy.recommended)) and 'outdated' or 'unapproved_release','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}),nil,known.installApi==1) end
+ -- An older known release runs and gets the update reminder (s.update, never an issue):
+ -- one no longer approved adds a warning that disables nothing. Releases without
+ -- installation verification (installApi 0) cannot be checked after loading: they need
+ -- the update. A newer release this addon does not know stays unverified.
+ if known then
+  local older=s.installed~=policy.recommended and olderBuild({release=s.installed,build=known.build},{release=policy.recommended,build=recommended.build})
+  local ok=approved(policy,s.installed)
+  if known.installApi~=1 then issue(s,'outdated','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}))
+  elseif not ok and not older then issue(s,'unapproved_release','module',L('install.error.release_not_approved',{installed=s.installed,recommended=policy.recommended}),nil,true)
+  elseif not ok then s.issues[#s.issues+1]={code='outdated_release',component='module',feature='core',warning=true,message=L('install.warning.outdated_release',{installed=s.installed,recommended=policy.recommended})} end
+  if older or known.installApi~=1 then
+   -- policy.revoked: {label = i18n key} for releases with a known problem; still run, with that advisory.
+   local advisory=type(policy.revoked)=='table' and policy.revoked[s.installed]
+   s.update={installed=s.installed,recommended=policy.recommended,url=recommended.url,altUrl=recommended.altUrl,approved=ok or nil,advisory=type(advisory)=='string' and advisory or nil,required=known.installApi~=1 or nil}
+  end
+ end
  for _,check in ipairs(checks) do
   local key,path,search,feature=unpack(check)
   local expected=selected.files[key=='workerRuntime' and 'runtime' or key]
@@ -164,8 +197,26 @@ function M.FeatureAvailable(feature)
 end
 local function publicStatus()
  return {schema=1,realm='server',recommended=status.recommended,installed=status.installed,features=status.features,issues=status.issues,
-  fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,unverifiedAccepted=status.unverifiedAccepted}
+  fingerprint=status.fingerprint,unverified=status.unverified,blocked=status.blocked,unverifiedAccepted=status.unverifiedAccepted,update=status.update}
 end
+-- Whether this realm's native module is release label or newer, in the update reminder's
+-- order: the release its files match, else (accepted unverified files) the loaded module's own.
+function M.NativeReleaseAtLeast(label)
+ local releases=policy.releases or {}
+ local loaded=status and status.loaded and status.loaded.module
+ local record=status and status.installed and releases[status.installed]
+ local current,build=record and status.installed or loaded and loaded.release,record and record.build or loaded and loaded.build
+ if type(label)~='string' or type(current)~='string' then return false end
+ if current:gsub('%+.*$','')==label:gsub('%+.*$','') then return true end
+ return not olderBuild({release=current,build=build},{release=label,build=releases[label] and releases[label].build})
+end
+-- A loaded module this Lua cannot use: the update reminder offers the download, worded as
+-- required. installed is the module's own label (the files on disk may say otherwise).
+local function requireUpdate(installed)
+ local recommended=(policy.releases or {})[policy.recommended] or {}
+ status.update={installed=installed,recommended=policy.recommended,url=recommended.url,altUrl=recommended.altUrl,required=true}
+end
+local updateLogged
 local function notifyChanged()
  -- The problem that stops the addon: accepted files and warnings never do.
  local blocking
@@ -175,6 +226,10 @@ local function notifyChanged()
  if encoded~=lastFingerprint then
   lastFingerprint=encoded
   for _,v in ipairs(status.issues) do local key=v.code..'/'..v.component..'/'..v.message if not loggedIssues[key] then loggedIssues[key]=true MsgN('[Model Hotloader / '..status.realm..'] '..M.Localize(v.message)..(v.accepted and ' '..M.Localize(L'install.accepted_tag') or '')) end end
+  -- An approved older release has no issue to print: one line tells the administrator.
+  if SERVER and status.update and status.update.approved and not updateLogged then
+   updateLogged=true MsgN('[Model Hotloader / server] '..M.Localize(L('install.update.server',{installed=tostring(status.update.installed),recommended=tostring(status.update.recommended)})))
+  end
   hook.Run('MMDHL.InstallationChanged',status)
   if SERVER then net.Start('mmdhl_install_status') net.WriteString(encoded) net.Broadcast() end
  end
@@ -275,7 +330,7 @@ end
 local function checkLoaded(info)
  local ok,message,overridable=identitiesMatch(info)
  if ok then return true end
- if not overridable then issue(status,'restart_required','module',message) return false end
+ if not overridable then issue(status,'restart_required','module',message) requireUpdate(info and info.module and info.module.release) return false end
  status.fingerprint=status.fingerprint..loadedFingerprint(info)
  status.unverifiedAccepted=acceptedFingerprints()[status.realm]==status.fingerprint or nil
  issue(status,'loaded_mismatch','module',message,nil,true)
@@ -353,6 +408,33 @@ local function startProbe()
   notifyChanged()
  end)
 end
+-- A compatibility policy newer than this binary (a library or guard it does not know)
+-- must not stop the addon. The binary validates the whole policy before taking it, once
+-- per process, so it is offered whole, then without one library at a time, then without
+-- libraries: the libraries left out run as unverified game builds behind the binary's own
+-- interface, slot and class checks (releases before 2.1.0-native.6 turn the affected
+-- engine features off instead). The order is fixed, so every later map finds the same
+-- policy. Also returns the libraries left out.
+local function configureCompatibility(compat)
+ local configured,err=decode(rawNative.ConfigureCompatibility(util.TableToJSON(compat)))
+ if configured or not istable(compat) or not istable(compat.libraries) then return configured,err end
+ local names,seen={},{}
+ for _,v in ipairs(compat.libraries) do local name=istable(v) and tostring(v.name) if name and not seen[name] then seen[name]=true names[#names+1]=name end end
+ local all=table.concat(names,', ') names[#names+1]=false
+ for _,without in ipairs(names) do
+  local kept,rest={},{}
+  if without then for _,v in ipairs(compat.libraries) do if not istable(v) or tostring(v.name)~=without then kept[#kept+1]=v end end end
+  for k,v in pairs(compat) do if k~='libraries' then rest[k]=v end end
+  -- Written by hand: an empty Lua table is no JSON array.
+  local text=util.TableToJSON(rest):sub(1,-2)..',"libraries":'..(#kept>0 and util.TableToJSON(kept) or '[]')..'}'
+  if decode(rawNative.ConfigureCompatibility(text)) then return true,nil,without or all end
+ end
+ return nil,err
+end
+local compatibilityFallback
+local function fallbackWarning()
+ if compatibilityFallback then status.issues[#status.issues+1]={code='compatibility_fallback',component='compatibility',message=compatibilityFallback,feature='core',warning=true} end
+end
 function M.CheckInstallation(recheck)
  if recheck and status and status.probePending then return status end
  local previous=status
@@ -370,19 +452,23 @@ function M.CheckInstallation(recheck)
    end
    for _,v in ipairs(previous.issues) do if v.code=='worker_failed' or v.code=='dependency_failed' or v.code=='game_incompatible' then status.issues[#status.issues+1]=v end end
   end
-  if status.features.core and rawNative then M.RefreshGameCompatibility() end
+  if status.features.core and rawNative then fallbackWarning() M.RefreshGameCompatibility() end
   notifyChanged() return status
  end
  if not status.features.core then notifyChanged() return false end
  local ok,err=pcall(require,'mmdhl')
  if not ok or not istable(mmdhl_native) then issue(status,'loader_failed','module',L('install.error.loader_failed',{reason=tostring(err)})) notifyChanged() return false end
  rawNative=mmdhl_native
- if not rawNative.GetInstallationInfo or not rawNative.ConfigureCompatibility or not rawNative.CheckCompatibility then issue(status,'outdated','module',L('install.error.no_verification',{recommended=tostring(policy.recommended)})) notifyChanged() return false end
+ if not rawNative.GetInstallationInfo or not rawNative.ConfigureCompatibility or not rawNative.CheckCompatibility then
+  local ok,capabilities=pcall(function() return decode(rawNative.GetCapabilities()) end)
+  issue(status,'outdated','module',L('install.error.no_verification',{recommended=tostring(policy.recommended)})) requireUpdate(ok and istable(capabilities) and isstring(capabilities.version) and capabilities.version or nil) notifyChanged() return false
+ end
  loadedIdentity=decode(rawNative.GetInstallationInfo())
  if not checkLoaded(loadedIdentity) then notifyChanged() return false end
  local compat=include('mmdhl/compatibility_policy.lua')
- local configured,configError=decode(rawNative.ConfigureCompatibility(util.TableToJSON(compat)))
+ local configured,configError,without=configureCompatibility(compat)
  if not configured then issue(status,'policy_invalid','compatibility',tostring(configError)) notifyChanged() return false end
+ compatibilityFallback=without and L('install.warning.compatibility_fallback',{libraries=without,recommended=tostring(policy.recommended)}) fallbackWarning()
  status.loaded=loadedIdentity
  M.native=guardedNative(rawNative)
  M.RefreshGameCompatibility()
