@@ -5,6 +5,7 @@
 #include "secondary.hpp"
 #include "gpu_topology.hpp"
 #include "jobs.hpp"
+#include "rig.hpp"
 #include <iostream>
 using namespace mmd;
 namespace {
@@ -39,6 +40,27 @@ int wmain(int argc,wchar_t** argv){try{
   size_t cpuVertices=0;for(auto c:plan->cpuVertex)cpuVertices+=c;
   std::cout<<"  "<<label<<": vertices "<<n<<", CPU vertices "<<cpuVertices<<" (4-weight "<<plan->fourWeight<<", moved by dropping "<<plan->droppedWeight<<"), CPU triangles "<<topology.cpuTriangles<<" of "<<triangles
    <<", CPU-deformed subset "<<plan->cpuVertices.size()<<", batches "<<topology.batches<<" for "<<m.materials.size()<<" materials, buffer vertices "<<topology.vertices<<"\n";
+
+  // A rigid Source pose 2000 units from the world origin moves every vertex rigidly, whatever
+  // bone carries its weight. MMD control roots above the pelvis (グルーブ) stayed at the world
+  // origin and pulled the vertices weighted to them there (issue #6). FK only: no physics.
+  {const btTransform placed(btQuaternion(btVector3(0,0,1),.7f),btVector3(1200,-1600,0));double errors[2]={0,0};bool bounded[2]={false,false},published[2]={false,false};
+   // Hardware-skinning bounds are bone boxes widened by every vertex morph's reach, active or not.
+   float reach=0;for(float r:plan->boneReach)reach=std::max(reach,r);
+   for(int hardware=0;hardware<2;hardware++){World host;host.gpuSkinning=hardware;auto& p=host.get(host.create(model,{{"backend","source"},{"presentationDriven",true},{"secondaryCollision",0}}));p.secondary.reset();
+    const auto& rig=*p.sourceRig;std::vector<btTransform> palette;for(auto& bone:rig.bones)palette.push_back(placed*bone.rest);
+    p.submitPresentationPose(palette,1,1);p.evaluate(false);p.poseDirty=true;p.publish(1);const auto& s=*p.snapshot;published[hardware]=s.gpu==bool(hardware);
+    double radius=0;size_t worst=0,off=0;
+    for(size_t i=0;i<n;i++){auto expected=placed*(rigMeshBind(rig)*(toSource(m.vertices[i].position)*rig.scale));radius=std::max(radius,double((expected-placed.getOrigin()).length()));
+     auto drawn=s.gpu&&!plan->cpuVertex[i]?gpuPosition(s,*plan,&p.gpuRest->positions[i*3],i):btVector3(s.vertices[i].x,s.vertices[i].y,s.vertices[i].z);
+     double e=(drawn-expected).length();off+=e>1;if(e>errors[hardware]){errors[hardware]=e;worst=i;}}
+    double slack=2*radius+(s.gpu?4*reach*rig.scale:0.f)+1,extent=std::max((s.minimum-placed.getOrigin()).length(),(s.maximum-placed.getOrigin()).length());bounded[hardware]=extent<=slack;
+    std::cout<<"  "<<label<<": rigid pose 2000 units away, "<<(hardware?"hardware":"CPU")<<" skinning: largest vertex error "<<errors[hardware]<<" Source units at vertex "<<worst<<" (";
+    const auto& v=m.vertices[worst];const char* separator="";for(int k=0;k<4;k++)if(v.weights[k]!=0&&v.bones[k]>=0){std::cout<<separator<<m.bones[size_t(v.bones[k])].name<<" "<<v.weights[k];separator=", ";}
+    std::cout<<"), "<<off<<" vertices off by more than 1 unit, bounds reach "<<extent<<" units from the body (limit "<<slack<<")\n";}
+   check(published[0]&&published[1],label+": the far pose publishes through CPU and hardware skinning");
+   check(errors[0]<.02&&errors[1]<.02,label+": every vertex follows a rigid Source pose far from the world origin, CPU and hardware skinning");
+   check(bounded[0]&&bounded[1],label+": snapshot bounds stay around the far body");}
 
   // Publish: the same pose through the CPU reference and the hardware path.
   World cpuHost,gpuHost;gpuHost.gpuSkinning=true;

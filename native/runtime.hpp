@@ -177,7 +177,9 @@ struct PoseHooks {
     std::function<void(size_t bone,btTransform& global,btTransform& effective,const btVector3& rest,const btTransform* parentGlobal)> physics;
     std::function<bool(size_t bone)> driven;
 };
-void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effective);
+// sourceRoot: the model bone of the Source root (rig bone 0, the pelvis) under Source control;
+// the bones Source does not reach (control roots above the pelvis) ride with it.
+void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effective,int sourceRoot=-1);
 // Exactly the verified Source model vertex (stride 64): position, normal,
 // colour, one UV set and a four-float tangent in user data. The trailing
 // bytes are padding for the engine and carry the edge/extra UV values the

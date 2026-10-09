@@ -406,7 +406,7 @@ const std::vector<float>& Instance::expandedMorphs() const {
     for(size_t i=0;i<weights.size();i++)if(instance.morphWeights[i])expand(int(i),instance.morphWeights[i],0);
     cachedMorphInputs=morphWeights;cachedMorphWeights=std::move(weights);return cachedMorphWeights;
 }
-void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut){
+void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const std::vector<float>& weights,const std::vector<int>* sourceControl,const std::vector<btTransform>* sourcePose,const PoseHooks* hooks,std::vector<btTransform>& local,std::vector<btTransform>& global,std::vector<btTransform>& skin,std::vector<btTransform>& effectiveOut,int sourceRoot){
     local=manual;global.resize(local.size());skin.resize(local.size());
     for(size_t i=0;i<weights.size();i++)if(weights[i]!=0){nanoem_rsize_t n=0;auto entries=nanoemModelMorphGetAllBoneMorphObjects(m.morphs[i],&n);for(size_t k=0;k<n;k++){
         int id=boneIndex(nanoemModelMorphBoneGetBoneObject(entries[k]));if(id<0)continue;
@@ -415,18 +415,39 @@ void evaluatePose(const Model& m,const std::vector<btTransform>& manual,const st
     }}
     effectiveOut.assign(local.size(),btTransform::getIdentity());auto& effective=effectiveOut;
     auto controlled=[&](size_t i){return sourceControl&&(*sourceControl)[i]>=0;};
+    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
+    // Under Source control nothing poses the bones outside the Source skeleton's subtree: MMD
+    // control roots above the pelvis (全ての親, センター, グルーブ, 腰), other roots and the IK
+    // goals below them. Left at rest in the instance frame (the world origin of a client
+    // carrier), they pulled their vertices and follower bodies there (issue #6). Roots ride
+    // with the Source root (rig bone 0, the pelvis) as if attached at rest; the goal of an IK
+    // chain Source already poses (leg, toe) rides on its effector, so goals hung below it
+    // (heel IK) follow the foot. Frames are skinning transforms (rest model space to pose).
+    btTransform carrier;const btTransform* root=nullptr;std::vector<int> anchor;
+    if(sourceControl&&sourcePose&&sourceRoot>=0&&size_t(sourceRoot)<sourcePose->size()){
+        carrier=(*sourcePose)[sourceRoot]*btTransform(btQuaternion::getIdentity(),-m.bones[sourceRoot].position);root=&carrier;
+        auto ride=[&](const nanoem_model_constraint_t* constraint){int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(constraint)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(constraint));
+            if(goal<0||end<0||size_t(goal)>=local.size()||size_t(end)>=local.size()||controlled(size_t(goal))||!controlled(size_t(end)))return;
+            // A goal above its own effector would drag the control roots along with the foot.
+            bool above=false;for(int p=end,depth=0;p>=0&&depth<=int(local.size());p=m.bones[p].parent,depth++)above|=p==goal;
+            if(!above){if(anchor.empty())anchor.assign(local.size(),-1);anchor[goal]=end;}};
+        // nanoem lists PMD IK on the model and keeps PMX IK on its bones.
+        for(size_t k=0;k<count;k++)ride(constraints[k]);
+        for(auto& b:m.bones)if(auto constraint=b.source?nanoemModelBoneGetConstraintObject(b.source):nullptr)ride(constraint);
+    }
     auto rebuild=[&](){for(auto i:m.order){auto& b=m.bones[i];auto t=local[i];
         if(b.inherit>=0&&b.inherit!=int(i)){auto inherited=b.localInherit?local[b.inherit]:effective[b.inherit];if(b.inheritRotation)t.setRotation(t.getRotation()*btQuaternion::getIdentity().slerp(inherited.getRotation(),b.coefficient));if(b.inheritTranslation)t.getOrigin()+=inherited.getOrigin()*b.coefficient;}
         if(b.fixedAxis.length2()>1e-8f){auto axis=b.fixedAxis.normalized();auto q=t.getRotation();auto projected=axis*axis.dot(btVector3(q.x(),q.y(),q.z()));btQuaternion twist(projected.x(),projected.y(),projected.z(),q.w());t.setRotation(twist.length2()>1e-8f?twist.normalized():btQuaternion::getIdentity());}
         effective[i]=t;
-        auto rest=b.position-(b.parent>=0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
-        global[i]=b.parent>=0?global[b.parent]*t:t;
+        int on=anchor.empty()?-1:anchor[i];btTransform pinned;const btTransform* frame=b.parent>=0?&global[b.parent]:root;
+        if(on>=0){pinned=(*sourcePose)[on]*btTransform(btQuaternion::getIdentity(),-m.bones[on].position);frame=&pinned;}
+        auto rest=b.position-(b.parent>=0&&on<0?m.bones[b.parent].position:btVector3(0,0,0));t.getOrigin()+=rest;
+        global[i]=frame?*frame*t:t;
         if(controlled(i))global[i]=(*sourcePose)[i];
         else if(hooks&&hooks->physics)hooks->physics(i,global[i],effective[i],rest,b.parent>=0?&global[b.parent]:nullptr);
-        if(sourceControl){effective[i]=b.parent>=0?global[b.parent].inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
+        if(sourceControl){effective[i]=frame?frame->inverse()*global[i]:global[i];effective[i].getOrigin()-=rest;}
         skin[i]=global[i]*btTransform(btQuaternion::getIdentity(),-b.position);
     }};rebuild();
-    nanoem_rsize_t count=0;auto constraints=nanoemModelGetAllConstraintObjects(m.source,&count);
     auto physicsDriven=[&](int i){return hooks&&hooks->driven&&hooks->driven(size_t(i));};
     for(size_t k=0;k<count;k++){
         auto constraint=constraints[k];int goal=boneIndex(nanoemModelConstraintGetTargetBoneObject(constraint)),end=boneIndex(nanoemModelConstraintGetEffectorBoneObject(constraint));if(goal<0||end<0)continue;
@@ -460,7 +481,7 @@ void Instance::evaluate(bool physics){
         hooks.driven=[&](size_t i){return drivers[i]>=0||(secondary&&secondary->drives(i));};
     }
     // Evaluate in place: feedback reads the live `local` array for mode-2 bodies.
-    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch);
+    evaluatePose(*model,manual,expandedMorphs(),sourceRig?&sourceControl:nullptr,sourceRig?&sourcePose:nullptr,physics?&hooks:nullptr,local,global,skin,effectiveScratch,sourceRig?sourceRig->bones[0].mmd:-1);
     evaluateMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
 void Instance::ensureSnapshot(){if(!snapshot||poseDirty)publish(owner->time);}

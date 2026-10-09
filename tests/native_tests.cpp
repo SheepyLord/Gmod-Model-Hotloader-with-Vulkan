@@ -358,5 +358,52 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      bool ok=cache&&follower&&simulated&&contacts(Collide::Default)&&!contacts(Collide::Objects)&&contacts(Collide::Default)&&!contacts(0)&&contacts(Collide::Character)&&!contacts(Collide::World);
      check(ok&&s.diagnostics()["bodies"]==model->bodies.size(),(std::string("the character checkbox turns the body's contacts with hair and clothing off and on (")+backend+")").c_str());
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"character collision flag regression");}
+    // Issue #6: Source drives the pelvis and limbs; nothing drives the MMD control roots above
+    // the pelvis (全ての親 > センター > グルーブ), an unrelated root (操作中心) or the leg IK goals
+    // under 全ての親. They ride with the Source pelvis, and the goals of IK Source already poses
+    // with its effector, so a body far from the world origin keeps every vertex, follower body
+    // and IK goal with it: on both skinning paths, frame-synchronous and asynchronous.
+    try{
+     auto m=parse(readFile("tests/fixtures/native-control-root.pmx"));
+     auto bone=[&](const char* name){for(size_t i=0;i<m->bones.size();i++)if(m->bones[i].name==name)return i;throw std::runtime_error(std::string("no bone ")+name);};
+     const size_t groove=bone("グルーブ"),pelvis=bone("lower body"),ankle=bone("left ankle"),toe=bone("left toe"),legGoal=bone("左足ＩＫ"),toeGoal=bone("左つま先ＩＫ"),heelGoal=bone("left heel IK"),heel=bone("left heel");
+     const size_t control=m->vertices.size()-5; // BDEF2, BDEF4 and BDEF1 on グルーブ, BDEF1 on 操作中心, BDEF2 on 全ての親 and センター
+     check(m->gpuSkin()->cpuVertex[control+1]&&!m->gpuSkin()->cpuVertex[control+2],"a small fourth control-root weight keeps CPU skinning, a whole one hardware skinning");
+     // A bone's pose relative to another: the rest offset between them, unrotated (MMD units).
+     auto atRest=[&](const btTransform& relative,const btVector3& offset){const auto& r=relative.getBasis();return (relative.getOrigin()-offset).length()<2e-3f&&(r.getColumn(0)-btVector3(1,0,0)).length()<1e-4f&&(r.getColumn(1)-btVector3(0,1,0)).length()<1e-4f;};
+     const btTransform placed(btQuaternion(btVector3(0,0,1),.7f),btVector3(4000,-3000,500));
+     for(auto [gpu,backend]:{std::pair{false,"reference"},std::pair{true,"cpu_mt_v2"}}){
+      World host;host.gpuSkinning=gpu;host.poseSmoothing=false;auto& p=host.get(host.create(m,{{"backend","source"},{"presentationDriven",true},{"secondaryCollision",0},{"secondaryBackend",backend}}));
+      const auto& rig=*p.sourceRig;std::vector<btTransform> palette;for(auto& b:rig.bones)palette.push_back(placed*b.rest);
+      auto present=[&](double t,uint64_t frame){p.submitPresentationPose(palette,t,frame);p.secondary->waitAsyncIdle();p.stepSource();p.ensureSnapshot();};
+      auto toWorld=[&](const btVector3& mmd){return placed*(rigMeshBind(rig)*(toSource(mmd)*rig.scale));};
+      std::string mode=std::string(gpu?" (hardware skinning, ":" (CPU skinning, ")+backend+")";
+      present(1,1);
+      bool palettes=!gpu;if(gpu){const auto& s=*p.snapshot;palettes=s.gpu;for(int k=0;k<12&&palettes;k++)palettes=std::fabs(s.palette[groove*12+k]-s.palette[pelvis*12+k])<(k%4==3?.01f:1e-5f);}
+      check(palettes,("the groove's hardware-skinning matrix is the pelvis's under a rigid pose"+mode).c_str());
+      p.requireCpuVertices();double error=0,radius=0;
+      for(size_t i=0;i<m->vertices.size();i++){auto& d=p.snapshot->vertices[i];auto expected=toWorld(m->vertices[i].position);error=std::max(error,double((btVector3(d.x,d.y,d.z)-expected).length()));radius=std::max(radius,double((expected-placed.getOrigin()).length()));}
+      check(error<.02,("vertices weighted to MMD control roots follow the Source pelvis far from the world origin"+mode).c_str());
+      check((p.snapshot->minimum-placed.getOrigin()).length()<=2*radius+1&&(p.snapshot->maximum-placed.getOrigin()).length()<=2*radius+1,("snapshot bounds stay around the far body"+mode).c_str());
+      check(atRest(p.effectiveScratch[pelvis],{0,0,0}),("a Source-driven bone below the control roots keeps a true local pose"+mode).c_str());
+      auto bodies=p.secondary->diagnostics()["bodyList"];auto w=bodies.at(3)["worldPosition"];
+      check(bodies.at(3)["follower"].get<bool>()&&(btVector3(w[0],w[1],w[2])-toWorld({0,8,0})).length()<.02f,("a follower body on センター follows the body"+mode).c_str());
+      // Bend the left hip: the leg and toe IK goals ride on the Source-driven ankle and toe, and
+      // the heel IK goal hung below the toe IK goal follows the foot (the heel stays at rest on it).
+      auto ankleBefore=p.global[ankle].getOrigin();int thigh=-1;for(size_t i=0;i<rig.bones.size();i++)if(rig.bones[i].name=="ValveBiped.Bip01_L_Thigh")thigh=int(i);
+      auto hip=rig.bones[thigh].rest.getOrigin();btTransform bend=btTransform(btQuaternion::getIdentity(),hip)*btTransform(btQuaternion(btVector3(0,1,0),.9f),btVector3(0,0,0))*btTransform(btQuaternion::getIdentity(),-hip);
+      std::vector<bool> below(rig.bones.size(),false);for(size_t i=0;i<rig.bones.size();i++)below[i]=int(i)==thigh||(rig.bones[i].parent>=0&&below[size_t(rig.bones[i].parent)]);
+      for(size_t i=0;i<rig.bones.size();i++)palette[i]=placed*(below[i]?bend:btTransform::getIdentity())*rig.bones[i].rest;
+      present(1+1./60,2);const auto& g=p.global;auto offset=[&](size_t a,size_t b){return m->bones[b].position-m->bones[a].position;};
+      check((g[ankle].getOrigin()-ankleBefore).length()>2&&atRest(g[ankle].inverse()*g[legGoal],offset(ankle,legGoal))&&atRest(g[toe].inverse()*g[toeGoal],offset(toe,toeGoal)),("leg and toe IK goals ride on the Source-driven ankle and toe"+mode).c_str());
+      check(atRest(g[toe].inverse()*g[heelGoal],offset(toe,heelGoal))&&atRest(g[ankle].inverse()*g[heel],offset(ankle,heel)),("an IK goal hung below the toe IK goal follows the bent foot"+mode).c_str());
+     }
+     // Server instances are placed at their spawn point and follow the physical Source pose.
+     {World host;auto& p=host.get(host.create(m,{{"backend","source"},{"position",{300,-200,40}},{"secondaryCollision",0}}));const auto& rig=*p.sourceRig;
+      std::vector<btTransform> physical(18),manipulation(rig.bones.size(),btTransform::getIdentity());for(auto& b:rig.bones)if(b.physics>=0)physical[size_t(b.physics)]=placed*b.rest;
+      p.submitSourcePose(physical,manipulation,1);p.evaluate(false);p.poseDirty=true;p.ensureSnapshot();double error=0;
+      for(size_t i=0;i<m->vertices.size();i++){auto& d=p.snapshot->vertices[i];error=std::max(error,double((btVector3(d.x,d.y,d.z)-placed*(rigMeshBind(rig)*(toSource(m->vertices[i].position)*rig.scale))).length()));}
+      check(error<.02,"vertices weighted to MMD control roots follow the physical Source pose of a server instance placed at its spawn point");}
+    }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"control roots above the pelvis (issue #6)");}
     std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
 }
