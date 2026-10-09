@@ -76,13 +76,13 @@ if SERVER then
      for _,i in ipairs(check and check.issues or {}) do if i.severity=='error' then invalid(tostring(i.text or i.code or '')) return end end
     end
    end
-   local path='mmd_hotloader/fit_overrides/'..id..'.json'
-   local saved=util.JSONToTable(file.Read(path,'DATA') or '') or {}
-   if not istable(saved) then saved={} end
-   -- Collision corrections were made for the old bones: the server compares them itself.
-   local drop=payload.dropCollision==true or not BM.SamePhysicalPins(saved.boneMap,pins)
-   saved.version=saved.version or 3 saved.generator=saved.generator or 18
-   if next(pins) then saved.boneMap=pins saved.boneMapVersion=1 saved.boneMapSavedAt=os.time()
+  local path='mmd_hotloader/fit_overrides/'..id..'.json'
+  local saved=util.JSONToTable(file.Read(path,'DATA') or '')
+  if not istable(saved) or saved.version~=3 or (saved.generator~=14 and saved.generator~=15 and saved.generator~=18) then saved={} end
+  -- Collision corrections were made for the old bones: the server compares them itself.
+  local drop=payload.dropCollision==true or not BM.SamePhysicalPins(saved.boneMap,pins)
+  saved.version=3 saved.generator=18
+  if next(pins) then saved.boneMap=pins saved.boneMapVersion=1 saved.boneMapSavedAt=os.time()
    else saved.boneMap=nil saved.boneMapVersion=nil saved.boneMapSavedAt=nil end
    if drop then saved.bodies=nil saved.scale=nil saved.collisionOverrideScale=nil end
    file.CreateDir('mmd_hotloader/fit_overrides') file.Write(path,util.TableToJSON(saved,true))
