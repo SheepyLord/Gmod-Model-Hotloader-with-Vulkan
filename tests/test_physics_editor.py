@@ -401,8 +401,10 @@ print('PASS: ReadPhyFile skips the binary solids of a .phy and returns its text 
 EDITOR = read('addon/lua/mmdhl/physics_editor.lua')
 SERVER_LUA = read('addon/lua/mmdhl/server.lua')
 CHECK = LuaRuntime()  # definition() compiles with the newer load(string)
-# server.lua's bone pin helpers, which the editor uses (server.lua loads before it).
-PINS = definition(CHECK, SERVER_LUA, 'function mmdhl.SavedBoneMap') + definition(CHECK, SERVER_LUA, 'function mmdhl.SamePins')
+# server.lua's saved pins and the bone window's rules (which pins the shapes depend on),
+# which the editor uses.
+RULES = read('addon/lua/mmdhl/bone_mapper_rules.lua')
+PINS = definition(CHECK, SERVER_LUA, 'function mmdhl.SavedBoneMap') + chr(10) + RULES
 
 
 def json_bridge(rt):
@@ -785,28 +787,44 @@ local old,new={[chest]=5},{[chest]=6}
 FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,boneMapVersion=1})
 local placed=ragdoll(KEY,{boneMap=old,collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
 local draft={collisionOverrides={[chest]={center={0,0,1},extent={3,3,3}}},mass=70}
-for _,op in ipairs({'test','apply','save_default'}) do NOW=NOW+10 request(admin,op,placed,{base=KEY,request=draft}) assert(says(last(admin),'server.error.fit_bones_changed'),op..' used shapes made for other bones') end
+for _,op in ipairs({'test','apply','save_default'}) do NOW=NOW+10 request(admin,op,placed,{base=KEY,request=draft}) assert(says(last(admin),'physics_editor.error.bones_changed'),op..' used shapes made for other bones') end
 assert(#SPAWNS==0 and util.JSONToTable(FILES[path]).bodies==nil,'shapes for the old bones were built or saved')
 -- Reset uses none of them: it rebuilds with the saved pins, and its earlier version (old bones) cannot come back.
 NOW=NOW+10 request(admin,'reset',placed,{base=KEY}) local r=last(admin)
 assert(r.state=='ready' and SPAWNS[1].options.boneMap[chest]==6 and next(SPAWNS[1].options.collisionOverrides)==nil,'Reset did not rebuild with the saved pins')
 local rebuilt=ENTS[r.ent] assert(rebuilt.MMDHLPhysicsHistory[1].boneMap[chest]==5,'a version does not remember its pins')
-NOW=NOW+10 request(admin,'previous',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig')}) assert(says(last(admin),'server.error.fit_bones_changed') and #SPAWNS==1,'Previous version brought back shapes for the old bones')
+-- That version is not offered; asked anyway, the answer says why (no respawn helps).
+assert(r.data.hasPrevious==false,'Previous version is offered for a version made for the old bones')
+NOW=NOW+10 request(admin,'previous',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig')}) assert(says(last(admin),'physics_editor.error.previous_bones_changed') and #SPAWNS==1,'Previous version brought back shapes for the old bones')
 -- The rebuilt ragdoll has the current pins: it is edited, tested and saved as usual.
 NOW=NOW+10 request(admin,'apply',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig'),request=draft}) r=last(admin)
 assert(r.state=='ready' and SPAWNS[2].options.boneMap[chest]==6 and SPAWNS[2].options.collisionOverrides[chest].extent[1]==3)
-local current=ENTS[r.ent] assert(current.MMDHLPhysicsHistory[1].boneMap[chest]==6)
+local current=ENTS[r.ent] assert(current.MMDHLPhysicsHistory[1].boneMap[chest]==6 and r.data.hasPrevious==true)
 NOW=NOW+10 request(admin,'previous',current,{base=current:GetNW2String('MMDHLRig')}) assert(last(admin).state=='ready','Previous version refused a version made for the current bones')
 -- Restore saved builds the saved shapes with the saved pins, whatever the ragdoll had.
 FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,bodies={[chest]={center={0,0,2},extent={1,1,1}}},mass=50})
 local stale=ragdoll(KEY,{boneMap=old},owner)
 NOW=NOW+10 request(admin,'restore_saved',stale,{base=KEY}) local o=SPAWNS[#SPAWNS].options
 assert(last(admin).state=='ready' and o.mass==50 and o.collisionOverrides[chest].center[3]==2 and o.boneMap[chest]==6,'Restore saved did not rebuild the saved shapes with the saved pins')
--- Pins compare as numbers; none and empty are the same.
-assert(mmdhl.SamePins({[chest]=6},{[chest]='6'}) and mmdhl.SamePins(nil,{}) and not mmdhl.SamePins({[chest]=6},nil) and not mmdhl.SamePins({},{[chest]=6}) and not mmdhl.SamePins({[chest]=6},{[chest]=-1}))
+-- Only the body parts' pins count, as when the bone window saves (it keeps the saved
+-- corrections then): a finger or the middle spine pinned since leaves the shapes valid.
+local finger,spine2='ValveBiped.Bip01_L_Finger1','ValveBiped.Bip01_Spine2'
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap={[chest]=6,[finger]=40,[spine2]=3},boneMapVersion=1})
+local before=ragdoll(KEY,{boneMap={[chest]=6},collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+NOW=NOW+10 request(admin,'test',before,{base=KEY,request=draft}) assert(last(admin).state=='ready','a finger pinned since refused the test copy')
+NOW=NOW+10 request(admin,'apply',before,{base=KEY,request=draft}) r=last(admin)
+assert(r.state=='ready' and SPAWNS[#SPAWNS].options.boneMap[finger]==40 and SPAWNS[#SPAWNS].options.collisionOverrides[chest].extent[1]==3,'a finger pinned since refused Apply')
+local applied=ENTS[r.ent] assert(r.data.hasPrevious==true,'a version made before a finger was pinned is not offered')
+NOW=NOW+10 request(admin,'previous',applied,{base=applied:GetNW2String('MMDHLRig')}) assert(last(admin).state=='ready','a finger pinned since refused Previous version')
+local placedBefore=ragdoll(KEY,{boneMap={[chest]=6},collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+NOW=NOW+10 request(admin,'save_default',placedBefore,{base=KEY}) assert(last(admin).state=='ready' and util.JSONToTable(FILES[path]).bodies[chest],'a finger pinned since refused Save for new spawns')
+-- Pins compare as numbers; none and empty are the same; only the 18 body parts count.
+local BM=mmdhl.boneMapper
+assert(BM.SamePhysicalPins({[chest]=6},{[chest]='6'}) and BM.SamePhysicalPins(nil,{}) and not BM.SamePhysicalPins({[chest]=6},nil) and not BM.SamePhysicalPins({},{[chest]=6}) and not BM.SamePhysicalPins({[chest]=6},{[chest]=-1}))
+assert(BM.SamePhysicalPins({[finger]=40},nil) and BM.SamePhysicalPins({[chest]=6,[spine2]=3},{[chest]=6,['ValveBiped.Bip01_Neck1']=2}) and not BM.SamePhysicalPins({['ValveBiped.Bip01_R_Foot']=9},{}))
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
-print('PASS: Save for new spawns and Forget keep the bone window\'s pins (a file with only pins is no saved physics); the editor\'s preview fits with the saved pins; shapes made for older pins are neither built nor saved, Reset and Restore saved rebuild with the current ones')
+print('PASS: Save for new spawns and Forget keep the bone window\'s pins (a file with only pins is no saved physics); the editor\'s preview fits with the saved pins; shapes made for older body-part pins are neither built, saved nor offered as Previous version (other pins do not count), Reset and Restore saved rebuild with the current ones')
 
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)
 json_bridge(spawn)
@@ -825,6 +843,7 @@ mmdhl.native.RequestCarrierFit=function(id,json) local o=util.JSONToTable(json) 
 NATIVE={} mmdhl.SpawnNative=function(p,id,o,done,flags) NATIVE[#NATIVE+1]={o=o,flags=flags} local e=ragdoll(KEY,o,p) e.asset=id if done then done(e) end return e end
 ''')
 spawn.execute(read('addon/lua/mmdhl/server.lua'))
+spawn.execute(RULES)
 spawn.execute(PROFILE)
 spawn.execute(EDITOR)
 spawn.execute(SERVER_SETUP)
@@ -914,6 +933,9 @@ assert(made and file.version==3 and file.generator==18 and file.bodies[hand] and
 -- A failed build frees the player for the next one.
 FIT_FAIL=function() return true end NOW=NOW+10 made,told=fit(p,good) FIT_FAIL=nil
 assert(not made and said(told,'Invalid physics settings') and not p.MMDHLPhysicsBusy)
+-- Pins of parts without a body (a finger) leave the corrections valid, as when saving bones.
+saved=util.JSONToTable(FILES[P.SavedPath(ASSET)]) saved.boneMap['ValveBiped.Bip01_L_Finger1']=40 FILES[P.SavedPath(ASSET)]=util.TableToJSON(saved)
+NOW=NOW+10 made,told=fit(p,good) assert(made and said(told,'server.notice.fit_saved'),'a finger pinned since refused the corrected copy')
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
 print('PASS: spawns take the saved shapes, physics and mass unless the request sets them; saved physics that fail are retried without them; the spawn menu sends no mass; the collision editor\'s corrected copy follows the physics editor\'s permission, checks and limits, keeps saved physics and pins, refuses older pins and needs save rights to save')

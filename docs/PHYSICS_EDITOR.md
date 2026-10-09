@@ -179,9 +179,12 @@ The same file holds the bone window's pins (`boneMap`, `boneMapVersion`,
 **Forget** change only the physics fields: the pins stay, and a file with only
 pins counts as no saved physics. Every build is fitted with the saved pins, and
 so is the editor's preview. Shapes were made for the bones a ragdoll was fitted
-with: after the pins changed, **Test copy**, **Apply**, **Save for new spawns**
-and a **Previous version** made with the old pins are refused (*spawn it again*);
-**Reset** and **Restore saved** rebuild it with the current pins.
+with: after the pins of its 18 body parts changed, **Test copy**, **Apply** and
+**Save for new spawns** are refused (*use Reset to rebuild it*), and a version
+made with the old pins is not offered as **Previous version**; **Reset** and
+**Restore saved** rebuild it with the current pins. Other pins (fingers, toes,
+neck, middle spine) leave the shapes valid, as they leave the saved corrections
+(`mmdhl.boneMapper.SamePhysicalPins`).
 
 The collision editor's *Save fit and spawn corrected copy* is a build under the
 same rules as a test copy: `mmdhl_physics_editor`, prop protection and

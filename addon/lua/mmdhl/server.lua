@@ -40,15 +40,6 @@ function mmdhl.SavedBoneMap(id,saved)
  if saved==nil then saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') end
  if istable(saved) and istable(saved.boneMap) and next(saved.boneMap)~=nil then return saved.boneMap end
 end
--- Whether two pin sets are the same (nil is none). Collision corrections are made in their
--- bones' frames: the collision and physics editors refuse those of a carrier fitted with
--- other pins than the saved ones, which the next fit would use.
-function mmdhl.SamePins(a,b)
- a,b=istable(a) and a or {},istable(b) and b or {}
- for k,v in pairs(a) do if tonumber(b[k])~=tonumber(v) then return false end end
- for k in pairs(b) do if a[k]==nil then return false end end
- return true
-end
 -- flags.replace: the ragdoll replaces an existing one (physics editor), which keeps its creator, undo and cleanup entries.
 function mmdhl.Spawn(p,id,options,done,progress,flags)
  local available,why=mmdhl.FeatureAvailable('physics') if not available then if done then done(nil,mmdhl.ServerIssue('physics',why)) end return end

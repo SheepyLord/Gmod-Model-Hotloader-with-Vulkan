@@ -130,8 +130,10 @@ if SERVER then
   -- Builds take the saved pins (mmdhl.Spawn); the client's preview must fit with the same ones.
   fit.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(asset,saved or false) or nil
   local editor=saved and istable(saved.editor) and saved.editor or {}
+  -- A previous version made for other bones than the saved pins cannot come back (handle).
+  local previous=istable(ent.MMDHLPhysicsHistory) and ent.MMDHLPhysicsHistory[1]
   return {base=ent:GetNW2String('MMDHLRig',''),level=mmdhl.PhysicsLevel(),canEdit=P.Can(p,ent,'apply')==true,canSave=P.Can(p,ent,'save_default')==true,
-   hasPrevious=istable(ent.MMDHLPhysicsHistory) and #ent.MMDHLPhysicsHistory>0,fitOptions=fit,
+   hasPrevious=istable(previous) and P.PinsCurrent(previous.boneMap,asset),fitOptions=fit,
    applied={collisionOverrides=o.collisionOverrides or {},collisionOverrideScale=tonumber(o.collisionOverrideScale) or rig.scale,excludedMaterials=o.excludedMaterials or {},mass=tonumber(o.mass) or 70,
     physicsOverrides=istable(rig.physicsOverrides) and rig.physicsOverrides or o.physicsOverrides or {},physicsEditor=o.physicsEditor},
    savedDefault={exists=P.HasSavedDefault(saved),hasPhysics=saved~=nil and istable(saved.physics),savedAt=editor.savedAt,savedByName=editor.savedByName},
@@ -230,10 +232,12 @@ if SERVER then
   window[#window+1]=CurTime() p.MMDHLPhysicsBuilds=window
  end
  -- Whether shapes made on a carrier fitted with these pins still fit the model: every build
- -- takes the saved pins (mmdhl.Spawn), and a shape sits in its bone's frame.
+ -- takes the saved pins (mmdhl.Spawn), and a shape sits in its body part's bone frame. Only
+ -- the body parts' pins count, by the rule with which saving bones keeps saved corrections.
  function P.PinsCurrent(pins,asset)
-  if not (mmdhl.SamePins and mmdhl.SavedBoneMap) then return true end
-  return mmdhl.SamePins(pins,mmdhl.SavedBoneMap(asset))
+  local BM=mmdhl.boneMapper
+  if not (BM and BM.SamePhysicalPins and mmdhl.SavedBoneMap) then return true end
+  return BM.SamePhysicalPins(pins,mmdhl.SavedBoneMap(asset))
  end
  function P.RateLimited(p)
   local wait=cooldown:GetFloat()-(CurTime()-(p.MMDHLPhysicsLastBuild or -math.huge))
@@ -264,9 +268,10 @@ if SERVER then
   local asset=mmdhl.GetAsset(ent)
   -- The ragdoll's shapes (its draft, Save for new spawns) and an earlier version's were made
   -- for the bones it was fitted with; after the bone window changed them, they would not fit.
-  -- Reset and Restore saved use none of them.
+  -- Reset and Restore saved use none of them: they rebuild it with the current bones.
+  if Pinned[op] and not P.PinsCurrent(ent.MMDOptions and ent.MMDOptions.boneMap,asset) then answer('error',L'physics_editor.error.bones_changed') return end
   local version=op=='previous' and istable(ent.MMDHLPhysicsHistory) and ent.MMDHLPhysicsHistory[1]
-  if (Pinned[op] and not P.PinsCurrent(ent.MMDOptions and ent.MMDOptions.boneMap,asset)) or (istable(version) and not P.PinsCurrent(version.boneMap,asset)) then answer('error',L'server.error.fit_bones_changed') return end
+  if istable(version) and not P.PinsCurrent(version.boneMap,asset) then answer('error',L'physics_editor.error.previous_bones_changed') return end
   if op=='save_default' then
    local saved=mmdhl.SavePhysicsDefault(p,ent)
    if saved then answer('ready',L('physics_editor.notice.saved',{name=asset:sub(1,12)}),ent,{savedAt=os.time()}) else answer('error',L'physics_editor.error.save_failed') end

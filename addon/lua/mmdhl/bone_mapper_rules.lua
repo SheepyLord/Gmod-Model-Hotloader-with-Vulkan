@@ -754,6 +754,16 @@ function BM.SamePins(a,b)
  for k,v in pairs(b or {}) do if (a or {})[k]~=v then return false end end
  return true
 end
+-- Whether two pin sets (nil is none; values compare as numbers) give the ragdoll's body
+-- parts the same bones. Collision corrections sit in those bones' frames: they stay valid
+-- when only other pins change (fingers, toes, neck, middle spine). Saving bones
+-- (bone_mapper.lua) drops the saved corrections by this rule, and the collision and
+-- physics editors refuse a ragdoll's own corrections by it.
+function BM.SamePhysicalPins(a,b)
+ a,b=type(a)=='table' and a or {},type(b)=='table' and b or {}
+ for _,s in ipairs(BM.Slots) do if s.physical and tonumber(a[s.key])~=tonumber(b[s.key]) then return false end end
+ return true
+end
 -- {"<field>":{"<part>":<bone>}} for the native readers, with whole numbers written as
 -- such: util.TableToJSON may write 12 as 12.0. Unknown parts are left out.
 function BM.IndexJSON(field,map)

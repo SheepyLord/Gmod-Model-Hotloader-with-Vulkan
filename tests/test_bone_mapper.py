@@ -674,7 +674,7 @@ SAY('PASS: spawns read the saved pins next to the collision corrections')
 lua.execute(r'''
 RECEIVERS={} net={Receive=function(name,fn) RECEIVERS[name]=fn end}
 ''')
-lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'function mmdhl.SamePins') + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
+lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
 lua.execute(r'''
 local VB='ValveBiped.Bip01_'
 local id=string.rep('c',64) local path='mmd_hotloader/fit_overrides/'..id..'.json'
@@ -692,8 +692,12 @@ local routed mmdhl.physics={CollisionFit=function(p,e,value,notify) routed={p=p,
 local player={} queue={'fit','',util.TableToJSON({bodies={new=1},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,player)
 assert(routed and routed.p==player and routed.ent==ent and util.JSONToTable(routed.value).bodies.new==1 and routed.notify==notice,'the collision editor\'s fit bypasses the physics editor\'s rules')
 mmdhl.physics=nil queue={'fit','','{}'} RECEIVERS.mmdhl_action(0,player)
--- Pins compare as numbers; none and empty are the same.
-assert(mmdhl.SamePins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']=12}) and mmdhl.SamePins(nil,{}) and not mmdhl.SamePins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']=13}) and not mmdhl.SamePins(nil,{[VB..'L_Thigh']=12}))
+-- The rule for corrections made with other pins (the editors refuse them, saving bones drops
+-- them): body parts' pins compare as numbers, none and empty are the same, other parts' pins
+-- (fingers, toes, neck, middle spine) do not count.
+local BM=mmdhl.boneMapper
+assert(BM.SamePhysicalPins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']='12'}) and BM.SamePhysicalPins(nil,{}) and not BM.SamePhysicalPins({[VB..'L_Thigh']=12},{[VB..'L_Thigh']=13}) and not BM.SamePhysicalPins(nil,{[VB..'L_Thigh']=12}))
+assert(BM.SamePhysicalPins({[VB..'L_Finger1']=40,[VB..'R_Toe0']=9},nil) and BM.SamePhysicalPins({[VB..'Spine2']=5},{[VB..'Neck1']=6}) and not BM.SamePhysicalPins({[VB..'Spine2']=5},{[VB..'Spine4']=6}))
 -- Pin queries go to their handler.
 local queried mmdhl.boneMapper.HandleQuery=function(p,asset) queried=asset end
 queue={'bonemap_pins',id,''} RECEIVERS.mmdhl_action(0,{}) assert(queried==id)
