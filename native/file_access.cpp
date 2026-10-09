@@ -428,7 +428,9 @@ void FileAccess::start(Request& r){
    r.rememberFolder=r.folder?r.target->path:r.target->path.parent_path();
    r.canRemember=!policy->broadFolder(r.rememberFolder)&&!policy->deniedPath(r.rememberFolder);
   }
-  request.update({{"kind","consent"},{"path",utf8((r.target?r.target->path:r.path).wstring())},{"folder",r.folder},{"size",r.target?r.target->size:0},{"problem",r.problem},{"remember",r.canRemember},{"rememberFolder",utf8(r.rememberFolder.wstring())}});
+  request.update({{"kind","consent"},{"path",utf8((r.target?r.target->path:r.path).wstring())},{"folder",r.folder},{"problem",r.problem},{"remember",r.canRemember},{"rememberFolder",utf8(r.rememberFolder.wstring())}});
+  // A size only for a file that was opened: a refused or missing one shows no made-up 0 bytes.
+  if(r.target)request["size"]=r.target->size;
  }
  else if(r.kind==Request::Pick)request.update({{"kind","pick"},{"title",r.title},{"filters",r.filters},{"multiple",r.multiple},{"folder",r.folder}});
  else request["kind"]="enable";

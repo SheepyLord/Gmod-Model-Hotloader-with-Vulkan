@@ -164,7 +164,9 @@ Json consent(const Json& request,const Text& t){
  std::wstring content=fill(t.addon,{{L"requester",requester}});
  if(!script.empty())content+=L"\n"+fill(t.script,{{L"script",script}});
  if(!purpose.empty())content+=L"\n"+fill(t.purpose,{{L"purpose",purpose}});
- content+=L"\n\n"+(folder?fill(t.folder,{{L"path",path}}):fill(t.file,{{L"path",path},{L"size",size(request.value("size",uint64_t(0)),t)}}));
+ // No size for a file that was not opened (a refused or missing one).
+ std::wstring file=t.file;if(!request.contains("size"))for(auto cut:{L" ({size})",L"（{size}）"})if(auto at=file.find(cut);at!=file.npos)file.erase(at,wcslen(cut));
+ content+=L"\n\n"+(folder?fill(t.folder,{{L"path",path}}):fill(file,{{L"path",path},{L"size",size(request.value("size",uint64_t(0)),t)}}));
  std::vector<std::pair<int,std::wstring>> choices;std::wstring footer=t.warning;
  if(!problem.empty()){
   const wchar_t* why=problem=="not_found"?t.notFound:problem=="link"?t.link:problem=="denied_location"?t.denied:problem=="not_a_file"?t.notFile:problem=="not_a_folder"?t.notFolder:problem=="network"||problem=="remote_drive"?t.network:t.unreadable;

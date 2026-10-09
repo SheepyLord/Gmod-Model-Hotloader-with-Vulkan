@@ -281,7 +281,7 @@ local function panel(kind)
   return function(self) return panel('result') end
  end})
 end
-vgui={Create=function(kind) return panel(kind) end}
+vgui={Create=function(kind) local p=panel(kind) if kind=='DFrame' then rawset(p,'btnMinim',panel('DButton')) rawset(p,'btnMaxim',panel('DButton')) end return p end}
 local function find(kind,text) for _,p in ipairs(PANELS) do if p.kind==kind and (text==nil or p.text==text) then return p end end end
 FIND=find
 mmdhl.UI={metrics=function() return function(n) return n end,{Body='b',Small='s',Strong='t',Title='T'} end,colors={muted={},ink={}},

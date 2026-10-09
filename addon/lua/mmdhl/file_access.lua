@@ -222,8 +222,12 @@ end
 function FA.OpenManager()
  if IsValid(FA.manager) then FA.manager:MakePopup() return end
  local UI=mmdhl.UI local s,f=UI.metrics()
- local frame=vgui.Create('DFrame') FA.manager=frame frame:SetTitle(L'file_access.manage.title')
- frame:SetSize(math.min(ScrW()-40,s(760)),math.min(ScrH()-40,s(520))) frame:Center() frame:MakePopup() frame:DockPadding(s(14),s(32),s(14),s(12))
+ -- The addon's light dialog style: its labels and colours are made for a light background.
+ local frame=vgui.Create('DFrame') FA.manager=frame frame:SetTitle('')
+ frame:SetSize(math.min(ScrW()-40,s(760)),math.min(ScrH()-40,s(560))) frame:Center() frame:MakePopup() frame:DockPadding(s(18),s(16),s(18),s(14))
+ frame.btnMinim:SetVisible(false) frame.btnMaxim:SetVisible(false)
+ frame.Paint=function(_,w,h) draw.RoundedBox(6,0,0,w,h,Color(246,248,251)) draw.RoundedBoxEx(6,0,0,w,s(6),UI.colors.accent,true,true,false,false) end
+ local title=UI.label(frame,L'file_access.manage.title',f.Title,s(34)) title:Dock(TOP)
  local function wrapped(text,font,color) local l=UI.label(frame,text,font,s(20)) l:Dock(TOP) l:SetWrap(true) l:SetAutoStretchVertical(true) l:DockMargin(0,0,0,s(8)) if color then l:SetTextColor(color) end return l end
  wrapped(L'file_access.manage.help',f.Body)
  local ok,reason=FA.IsAvailable()
