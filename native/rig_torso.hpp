@@ -26,6 +26,7 @@ struct TorsoChoice {
  int spine2=-1,spine4=-1;                             // the PMX bones of Spine2 and Spine4; -1: synthesized
  std::vector<int> spine2Aliases,spine4Aliases;        // bones moved rigidly by Spine2 / Spine4
  btVector3 spine2Origin{0,0,0},spine4Origin{0,0,0};   // PMX units: the bone's, or the point fitRig synthesizes
+ int holder=-1;                                       // the bone the neck and shoulders hang from (topology; not Spine1), else -1
  std::string method="topology";                       // "topology", "names" (nothing hangs below Spine1) or "degenerate"
  std::vector<TorsoRepair> repairs;                    // English notes for manifest.torso and the bone window
 };
@@ -80,6 +81,7 @@ inline TorsoChoice resolveTorso(const Model& m,const TorsoInput& in){
    else if(holder!=in.spine1&&below(holder,in.spine1)){chest=holder;note("shoulders_on_spine",{holder},"The shoulders hang from "+label(in.spine1)+": the chest is "+label(holder)+", which holds the neck");}}
   if(chest!=in.spine1&&!below(chest,in.spine1)){c.method="names";note("names",{},"The neck and shoulders do not hang below "+label(in.spine1)+": the chest is chosen by its name");}
   else{
+   if(chest!=in.spine1)c.holder=chest;
    // The chain from Spine1 (excluded) up to the chest, or up to the chest the player chose.
    const int top=pinned4&&valid(in.spine4)?in.spine4:chest;std::vector<int> path;
    if(valid(top)&&below(top,in.spine1)){path.push_back(top);for(int p:ancestors(top)){if(p==in.spine1)break;path.push_back(p);}std::reverse(path.begin(),path.end());}

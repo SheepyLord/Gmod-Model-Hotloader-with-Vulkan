@@ -18,7 +18,7 @@ inline btTransform rigMeshBind(const Rig& rig){
  return btTransform(btQuaternion(btVector3(0,0,1),rig.manifest.value("meshYaw",0.f)*SIMD_RADS_PER_DEG),
                     btVector3(0,0,rig.manifest.value("actorOrigin",0.f)));
 }
-// options.boneMap pins carrier bones: {"ValveBiped.Bip01_Spine4": PMX bone index, or -1 for none},
+// options.boneMap pins carrier bones: {"ValveBiped.Bip01_Spine4" (or "Eye_L"/"Eye_R"): PMX bone index, or -1 for none},
 // over a converted character's own map (Model::conversionBoneMap). Bad pins throw
 // ImportError "fit.bone_map", missing landmarks "fit.landmarks" (details: missing, searched).
 Rig fitRig(const Model&,const Json& options);
@@ -27,7 +27,8 @@ Rig fitRig(const Model&,const Json& options);
 bool cachedFitApplies(const Model&,const Json& options);
 // native.GetBoneMapProposal: fitRig's bone choice for these options, without bodies:
 // {version, asset, bones:[{name, mmd, aliases, provenance, required}], missing, searched,
-//  issues:[{code, severity, slot, text}], torso:{method, repairs:[{code, bones, text}]}, error?, errorCode?}.
+//  issues:[{code, severity, slot, text}], torso:{method, repairs:[{code, bones, text}]}, error?, errorCode?};
+// bones: the 56 reference bones, then Eye_L/Eye_R when the carrier appends them.
 Json boneMapProposal(const Model&,const Json& options);
 Rig rigFromManifest(const Json&);
 // Throws unless every index and transform of the rig is usable with this model.

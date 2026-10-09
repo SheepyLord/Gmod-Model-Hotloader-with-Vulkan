@@ -99,7 +99,7 @@ A rigged humanoid imported in **Static Props** offers **Import as character** (t
 - `{"kind":"character","requestVersion":1,"boneMap":{"<ValveBiped key>":"<bone name or empty>"},"eyes":{"L":…,"R":…},"jiggle":{"version":1,"groups":[{kind, enabled, swing, custom, collide, values:{stiffness, dragForce, gravityPower, hitRadius}, chains:[{root, enabled}]}]}}`: converts and imports. The request is stored as the asset's options in `sources.local.json`, so Reload repeats it. `{}` (older Lua) maps automatically.
 - Running statuses carry `stageCode` `probe` or `convert_character`; failures carry `errorCode` and `errorDetails` (`character.bone_map`: `slot`, `bone`, `reason` = missing, required, duplicate, order, leg_on_spine, unknown_slot, locked or size; `character.jiggle`: `root`, `bone`, `slot`, `reason` = missing, body, too_many or range).
 
-Import results (`complete`, every character kind) carry `fit` outside the manifest: `{"ok":true}`, or `{"ok":false,"errorCode":"fit.landmarks","error":"No bone found for: left thigh (searched 左足, leg_L, left leg), left lower leg (searched 左ひざ, 左膝, knee_L, left knee)","missing":["ValveBiped.Bip01_L_Thigh","ValveBiped.Bip01_L_Calf"]}` (other fit failures use `fit.error`). The fitter lists every missing landmark at once with the names it searched, also in the spawn error.
+Import results (`complete`, every character kind) carry `fit` outside the manifest: `{"ok":true}`, or `{"ok":false,"errorCode":"fit.landmarks","error":"No bone found for: left thigh (searched 左足, leg_L, left leg), left lower leg (searched 左ひざ, 左膝, knee_L, left knee)","missing":["ValveBiped.Bip01_L_Thigh","ValveBiped.Bip01_L_Calf"],"searched":{"ValveBiped.Bip01_L_Thigh":["ValveBiped.Bip01_L_Thigh","左足","leg_L","left leg"],…}}` (other fit failures use `fit.error`, with empty `missing` and `searched`). The fitter lists every missing landmark at once with the names it searched, also in the spawn error.
 
 Developer flags of `mmdhl_worker.exe`: `--probe-character <file>`, `--convert-character <file> <outdir> [request.json]`, `--inspect-bone-map <model> [options.json]`.
 
@@ -113,7 +113,7 @@ The cached model's skeleton and automatic map for the window, and the structural
 
 ### `native.GetBoneMapProposal(assetId, optionsJSON)` (both realms)
 
-The fitter's own choice for a loaded asset with the pins of `options.boneMap` (`{"<key>": <bone index or -1>}`), from the same mapping code as the fit: `bones` (`name`, `mmd`, `aliases`, `provenance` `PMX`/`synthesized`/`user`/`conversion`, `required`), `missing`, `issues` (`range`, `duplicate`, `required` errors; `moved`, `band` warnings) and `torso` (`method`, `repairs`). Bad pins are issues, not failures. The full contract, and the fit option itself, are in [TORSO_FIT.md](TORSO_FIT.md#bone-pins).
+The fitter's own choice for a loaded asset with the pins of `options.boneMap` (`{"<key>": <bone index or -1>}`), from the same mapping code as the fit: `bones` (`name`, `mmd`, `aliases`, `provenance` `PMX`/`synthesized`/`user`/`conversion`, `required`), `missing`, `issues` (`range`, `duplicate`, `required` errors; `moved`, `band`, `chest` warnings) and `torso` (`method`, `repairs`). Bad pins are issues, not failures. The full contract, and the fit option itself, are in [TORSO_FIT.md](TORSO_FIT.md#bone-pins).
 
 ### Saving pins
 

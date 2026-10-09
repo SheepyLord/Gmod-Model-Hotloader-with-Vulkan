@@ -78,6 +78,15 @@ Json windowFixture(){
  return {{"about","GetBoneMapProposal and InspectBoneMap on a torso built 上半身 > 上半身3 > 上半身2 > 首根元; written by mmdhl_torso_tests --record-window"},
   {"inspect",inspectBoneMap(*m,{{"include",{"skeleton"}}})},{"proposal",boneMapProposal(*m,Json::object())},{"pins",saved},{"current",boneMapProposal(*m,{{"boneMap",saved}})}};
 }
+// The fixture built like Ganyu (issue #9): 上半身 > 上半身3 > 上半身2 > neck and shoulders.
+std::shared_ptr<Model> ganyu(){
+ auto m=fixture();int upper=boneNamed(*m,"upper body"),head=boneNamed(*m,"head");auto lo=m->bones[upper].position,hi=m->bones[head].position;
+ int third=add(*m,"上半身3",lo.lerp(hi,.35f),upper),second=add(*m,"上半身2",lo.lerp(hi,.65f),third);
+ for(auto n:{"neck","left shoulder","right shoulder"})m->bones[boneNamed(*m,n)].parent=second;
+ return m;
+}
+// "code severity slot" of each issue of a proposal.
+std::set<std::string> issueCodes(const Json& proposal){std::set<std::string> codes;for(auto& i:proposal["issues"])codes.insert(i["code"].get<std::string>()+" "+i["severity"].get<std::string>()+" "+i["slot"].get<std::string>());return codes;}
 // The fitted rig's own invariants: a mapped carrier origin sits on its PMX bone, no PMX
 // bone is driven twice and the torso runs up the body.
 void fitted(const Model& m,const Rig& r,const std::string& tag){
@@ -151,6 +160,13 @@ int main(int argc,char** argv){try{
  {auto s=standard();s.add("上半身3",{0,14,0},s["上半身2"]);s.parent({"首","左肩P","右肩P"},"上半身3");auto in=input(s);in.spine2=s["上半身3"];auto c=resolved(s,in,"middle pinned to the chest");
   check(c.spine4==s["上半身2"]&&c.spine2<0&&c.spine2Aliases==std::vector<int>{s["上半身3"]}&&repaired(c,"rejected"),"a middle spine pinned to the chest's bone is never also the chest");}
 
+ {auto s=standard();auto c=resolved(s,input(s),"holder");
+  check(c.holder==s["上半身2"],"holder: the bone the neck and both shoulders hang from");
+  s=standard();s.add("上半身3",{0,11.6f,0},s["上半身"]);s.parent({"上半身2"},"上半身3");s.move("上半身2",{0,13.4f,0});auto in=input(s);in.spine2=s["上半身2"];in.spine4=-1;c=resolved(s,in,"holder pinned");
+  check(c.holder==s["上半身2"]&&c.spine2Aliases==std::vector<int>{s["上半身2"]}&&c.spine4<0,"holder: reported when a pin puts it on the middle spine (Ganyu: 上半身2 pinned there, the chest to none)");
+  s=standard();s.parent({"首","左肩P","右肩P","左胸"},"上半身");check(resolveTorso(*s.m,input(s)).holder<0,"holder: none when the neck and shoulders hang from Spine1");
+  s=standard();s.parent({"首","左肩P","右肩P"},"センター");check(resolveTorso(*s.m,input(s)).holder<0,"holder: none when the chest is chosen by name");}
+
  // ---- fitRig on the fixture: pins, conversion maps, the proposal and the errors ----
  auto model=fixture();auto rag=fitRig(*model,Json::object());
  const int upper=boneNamed(*model,"upper body"),chest=boneNamed(*model,"upper body2"),neck=boneNamed(*model,"neck"),leftToe=boneNamed(*model,"left toe");
@@ -196,14 +212,15 @@ int main(int argc,char** argv){try{
   check(single.bones[carrier(single,"Spine4")].mmd==chest&&single.bones[carrier(single,"Spine2")].mmd<0,"conversion: a middle spine without a chest is the chest, the part with a physics body");}
  // Invalid pins are refused with the reason, never ignored.
  for(auto [label,options,code]:{std::tuple{"a fraction",pins({{VB+"L_Toe0",1.5}}),"range"},{"a bone past the end",pins({{VB+"L_Toe0",99999}}),"range"},{"a text",pins({{VB+"L_Toe0","x"}}),"range"},
-   {"the synthesized spine",pins({{VB+"Spine",upper}}),"range"},{"an eye",pins({{"Eye_L",neck}}),"range"},{"an unknown part",pins({{"Nonsense",neck}}),"range"},
+   {"the synthesized spine",pins({{VB+"Spine",upper}}),"range"},{"an unknown eye",pins({{"Eye_C",neck}}),"range"},{"an eye on the neck's bone",pins({{"Eye_L",neck}}),"duplicate"},
+   {"one bone for both eyes",pins({{"Eye_L",leftToe},{"Eye_R",leftToe}}),"duplicate"},{"an unknown part",pins({{"Nonsense",neck}}),"range"},
    {"one bone for two parts",pins({{VB+"L_Toe0",leftToe},{VB+"R_Toe0",leftToe}}),"duplicate"},{"a required part without a bone",pins({{VB+"Head1",-1}}),"required"}}){
   auto e=failure([&]{fitRig(*model,options);});auto issues=e.details.value("issues",Json::array());
   check(e.code=="fit.bone_map"&&!issues.empty()&&issues[0]["code"]==code&&std::string(e.what()).starts_with("The bone assignment cannot be used: "),std::string("pins: ")+label+" is refused ("+code+")");}
  check(failure([&]{fitRig(*model,{{"boneMap",Json::array()}});}).code=="fit.bone_map","pins: a bone map that is not an object is refused");
  // GetBoneMapProposal: the same mapping, without bodies.
- {auto p=boneMapProposal(*model,Json::object());bool same=p["bones"].size()==56;
-  for(size_t i=0;i<56&&same;i++)same&=p["bones"][i]["name"]==rag.manifest["bones"][i]["name"]&&p["bones"][i]["mmd"]==rag.manifest["bones"][i]["mmd"]&&p["bones"][i]["aliases"]==rag.manifest["bones"][i]["mmdAliases"]&&p["bones"][i]["provenance"]==rag.manifest["bones"][i]["provenance"];
+ {auto p=boneMapProposal(*model,Json::object());bool same=p["bones"].size()==rag.manifest["bones"].size();
+  for(size_t i=0;i<p["bones"].size()&&same;i++)same&=p["bones"][i]["name"]==rag.manifest["bones"][i]["name"]&&p["bones"][i]["mmd"]==rag.manifest["bones"][i]["mmd"]&&p["bones"][i]["aliases"]==rag.manifest["bones"][i]["mmdAliases"]&&p["bones"][i]["provenance"]==rag.manifest["bones"][i]["provenance"];
   check(same,"proposal: the bones, aliases and provenance of the fit");
   check(p["missing"].empty()&&p["issues"].empty()&&!p.contains("error")&&p["torso"]==rag.manifest["torso"]&&p["bones"][0]["required"]==true&&p["bones"][3]["required"]==false,"proposal: nothing missing, no issues, the fit's torso, required flags");
   auto moved=boneMapProposal(*model,pins({{VB+"R_Toe0",leftToe}}));std::set<std::string> codes;for(auto& i:moved["issues"])codes.insert(i["code"].get<std::string>()+" "+i["severity"].get<std::string>()+" "+i["slot"].get<std::string>());
@@ -221,7 +238,39 @@ int main(int argc,char** argv){try{
    "landmarks: every missing one is named in words with the names searched");
   check(e.details["searched"][VB+"L_Calf"]==Json::array({VB+"L_Calf","左ひざ","左膝","knee_L","left knee"}),"landmarks: the details list the searched names by carrier bone");
   auto p=boneMapProposal(*renamed,Json::object());
-  check(p["missing"]==e.details["missing"]&&p["errorCode"]=="fit.landmarks"&&p["error"]==e.what(),"landmarks: the proposal reports them without failing");}
+  check(p["missing"]==e.details["missing"]&&p["errorCode"]=="fit.landmarks"&&p["error"]==e.what(),"landmarks: the proposal reports them without failing");
+  auto fit=prepareModelFit(*renamed,std::filesystem::temp_directory_path()/"mmdhl_torso_tests");
+  check(fit["ok"]==false&&fit["errorCode"]=="fit.landmarks"&&fit["missing"]==e.details["missing"]&&fit["searched"]==e.details["searched"],"landmarks: the import's fit block carries the missing parts and the names searched");}
+ // A pin that takes a required part's bone is the error, not the part it emptied.
+ {auto taken=boneMapProposal(*model,pins({{VB+"Spine2",upper}}));
+  check(issueCodes(taken).contains("duplicate error "+VB+"Spine2")&&taken["missing"]==Json::array({VB+"Spine1"})&&taken["errorCode"]=="fit.bone_map"&&taken["error"]=="The bone assignment cannot be used: Bone \"upper body\" is assigned to "+VB+"Spine2, but "+VB+"Spine1 needs it.",
+   "pins: a pin on the spine's bone is refused on the pinned part, naming both parts");
+  auto converted=fixture();converted->conversionBoneMap={{VB+"Spine2",upper}};auto e=failure([&]{fitRig(*converted,Json::object());});
+  check(e.code=="fit.landmarks"&&std::string(e.what())=="No bone found for: spine (its bone is assigned to "+VB+"Spine2)","landmarks: a part whose bone another part took says so instead of the names searched");}
+ // The bone holding the neck and shoulders rides the chest, or the pins get a warning (issue #9 by hand).
+ {auto g=ganyu();int third=boneNamed(*g,"上半身3"),second=boneNamed(*g,"上半身2");
+  auto automatic=boneMapProposal(*g,Json::object());
+  check(automatic["bones"][carrier(rag,"Spine4")]["mmd"]==second&&automatic["bones"][carrier(rag,"Spine2")]["mmd"]==third&&issueCodes(automatic).empty()&&automatic["torso"]["repairs"][0]["code"]=="reordered"&&automatic["torso"]["repairs"][0]["bones"]==Json::array({third,second}),
+   "chest: Ganyu's torso by itself: middle spine 上半身3, chest 上半身2, the lower bone first in the note, no warning");
+  for(auto [label,options,slot]:{std::tuple{"the chest bone on the middle spine and no chest",pins({{VB+"Spine2",second},{VB+"Spine4",-1}}),"Spine2"},{"the chest bone on the middle spine",pins({{VB+"Spine2",second}}),"Spine2"},{"no chest",pins({{VB+"Spine4",-1}}),"Spine4"}}){
+   auto p=boneMapProposal(*g,options);check(issueCodes(p).contains("chest warning "+VB+slot)&&!p.contains("error"),std::string("chest: ")+label+" is a warning on "+slot+", and the fit still runs");
+   fitted(*g,fitRig(*g,options),std::string("chest: ")+label);}
+  auto low=boneMapProposal(*g,pins({{VB+"Spine4",third}}));
+  check(!issueCodes(low).contains("chest warning "+VB+"Spine4")&&low["bones"][carrier(rag,"Spine4")]["mmd"]==third,"chest: a chest pinned to the lower bone still carries the bone above it: no warning");}
+ // The eyes: found by name, or pinned with Eye_L / Eye_R (a bone of their own, or -1 for none).
+ {auto eyes=fixture();int head=boneNamed(*eyes,"head");auto at=eyes->bones[head].position;
+  int left=add(*eyes,"left eye",at+btVector3(.3f,.4f,-.5f),head),right=add(*eyes,"right eye",at+btVector3(-.3f,.4f,-.5f),head),helper=add(*eyes,"eye helper",at+btVector3(.3f,.5f,-.6f),head);
+  auto named=fitRig(*eyes,Json::object());auto p=boneMapProposal(*eyes,Json::object());
+  check(named.bones.size()==58&&named.bones[56].name=="Eye_L"&&named.bones[56].mmd==left&&named.bones[57].mmd==right&&p["bones"].size()==58&&p["bones"][56]==Json({{"name","Eye_L"},{"mmd",left},{"aliases",Json::array()},{"provenance","PMX"},{"required",false}}),
+   "eyes: found by name, appended after the 56 bones, also in the proposal");
+  auto none=fitRig(*eyes,pins({{"Eye_L",-1}}));bool gone=true;for(auto& b:none.bones)gone&=b.name!="Eye_L";
+  check(gone&&none.bones.size()==57&&none.bones[56].name=="Eye_R"&&none.key!=named.key,"eyes: an eye pinned to none has no carrier bone");
+  auto moved=fitRig(*eyes,pins({{"Eye_L",helper}}));auto& eye=moved.bones[56];
+  check(eye.name=="Eye_L"&&eye.mmd==helper&&moved.manifest["bones"][56]["provenance"]=="user"&&(eye.rest.getOrigin()-toSource(eyes->bones[helper].position)*moved.scale).length()<1e-4f&&boneMapProposal(*eyes,pins({{"Eye_L",helper}}))["bones"][56]["mmd"]==helper,
+   "eyes: a pinned eye uses its bone and pivot");
+  auto crossed=boneMapProposal(*eyes,pins({{"Eye_L",right}}));
+  check(crossed["bones"].size()==57&&crossed["bones"][56]["mmd"]==right&&issueCodes(crossed).contains("moved warning Eye_R")&&!crossed.contains("error"),"eyes: an eye pinned to the other eye's bone takes it");
+  fitted(*eyes,moved,"pinned eye");}
  // The bone window's recorded answers are still the fitter's (re-record with --record-window).
  check(readJson(WindowFixture)==windowFixture(),std::string("window: ")+WindowFixture+" holds the fitter's current answers");
  {auto f=windowFixture();auto& base=f["proposal"]["bones"];auto& now=f["current"]["bones"];int n=int(f["inspect"]["skeleton"]["bones"].size());

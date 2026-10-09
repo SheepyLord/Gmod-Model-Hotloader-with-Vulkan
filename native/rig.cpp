@@ -131,10 +131,13 @@ struct BoneMapping {
  Json searched=Json::object(),issues=Json::array();
  std::string error;                            // fitRig's sentence for the missing landmarks
  TorsoChoice torso;
+ std::array<int,2> eyes{-1,-1};                // Eye_L, Eye_R (appended after the bodies): PMX bones or -1
+ std::array<bool,2> eyePinned{false,false};    // by an Eye_L/Eye_R pin
 };
 // Which PMX bone drives each reference bone: names, then a converted character's
-// own map, then the player's pins (options.boneMap: ValveBiped name -> bone or -1),
-// then the torso, then D bones. Bad pins become "error" issues; fitRig refuses them.
+// own map, then the player's pins (options.boneMap: ValveBiped name, or Eye_L/Eye_R,
+// -> bone or -1), then the torso, then D bones. Bad pins become "error" issues; fitRig
+// refuses them.
 BoneMapping mapBones(const Model& m,const Json& data,const Json& options){
  BoneMapping out;const int n=int(m.bones.size());BoneFinder find(m);std::map<std::string,int> indices;
  auto issue=[&](const char* code,const char* severity,const std::string& slot,const std::string& text){out.issues.push_back({{"code",code},{"severity",severity},{"slot",slot},{"text",text}});};
@@ -154,6 +157,7 @@ BoneMapping mapBones(const Model& m,const Json& data,const Json& options){
   b.mmd=suffix=="Spine2"||suffix=="Spine4"?-1:find(names);indices[b.name]=int(out.bones.size());out.bones.push_back(b);out.names.push_back(names);out.shown.push_back(shown);
  }
  auto at=[&](const char* name){return indices.at(std::string("ValveBiped.Bip01_")+name);};
+ for(int side=0;side<2;side++)out.eyes[side]=find(side==0?std::vector<std::string>{"左目","Eye_L","eye_l","left eye"}:std::vector<std::string>{"右目","Eye_R","eye_r","right eye"});
  std::vector<int> rank(out.bones.size(),0);  // 0 the fitter's choice, 1 a converted character's map, 2 a pin
  for(auto& [key,value]:m.conversionBoneMap)if(auto it=indices.find(key);it!=indices.end()&&mappedSlotKey(key)){out.bones[it->second].mmd=value>=0&&value<n?value:-1;rank[it->second]=1;}
  // A converted middle spine without a chest is the chest (the part with a physics body), as its 上半身2 name says.
@@ -163,19 +167,26 @@ BoneMapping mapBones(const Model& m,const Json& data,const Json& options){
   std::map<int,std::string> owner;
   for(auto& [key,item]:pins->items()){
    // Lua's JSON may write a whole number as 12.0: any integral number is accepted.
-   double v=item.is_number()?item.get<double>():.5;auto it=indices.find(key);
-   if(!mappedSlotKey(key)||it==indices.end()||!std::isfinite(v)||std::floor(v)!=v||v<-1||v>=n){issue("range","error",key,"The assignment of "+key+" does not fit this model.");continue;}
+   double v=item.is_number()?item.get<double>():.5;auto it=indices.find(key);int eye=key=="Eye_L"?0:key=="Eye_R"?1:-1;
+   if((eye<0&&(!mappedSlotKey(key)||it==indices.end()))||!std::isfinite(v)||std::floor(v)!=v||v<-1||v>=n){issue("range","error",key,"The assignment of "+key+" does not fit this model.");continue;}
    int b=int(v);
    if(b>=0){auto [first,fresh]=owner.emplace(b,key);if(!fresh){issue("duplicate","error",key,"Bone "+label(b)+" is assigned to both "+first->second+" and "+key+".");continue;}}
-   else if(slotByKey(key)->required)issue("required","error",key,"No bone is assigned to "+key+".");
+   else if(eye<0&&slotByKey(key)->required)issue("required","error",key,"No bone is assigned to "+key+".");
+   if(eye>=0){out.eyes[eye]=b;out.eyePinned[eye]=true;continue;}
    out.bones[it->second].mmd=b;rank[it->second]=2;
   }
+  // A pinned eye on the other eye's bone takes it, as any pin takes a name's bone.
+  for(int side=0;side<2;side++)if(int e=out.eyes[side];out.eyePinned[side]&&e>=0&&!out.eyePinned[1-side]&&out.eyes[1-side]==e){out.eyes[1-side]=-1;issue("moved","warning",side?"Eye_L":"Eye_R","Bone "+label(e)+" drives "+(side?"Eye_R":"Eye_L")+", so "+(side?"Eye_L":"Eye_R")+" has no bone of its own.");}
  }
  // One PMX bone drives one carrier bone: a pin wins over a converted map, which wins over a name.
+ std::map<size_t,size_t> takenBy;  // a part whose bone a pin or a converted map took -> that part
  {std::map<int,size_t> holder;
   for(int level=2;level>=0;level--)for(size_t i=0;i<out.bones.size();i++){int b=out.bones[i].mmd;if(rank[i]!=level||b<0)continue;
    auto [first,fresh]=holder.emplace(b,i);if(fresh)continue;out.bones[i].mmd=-1;rank[i]=0;
-   issue(level<rank[first->second]?"moved":"duplicate",level<rank[first->second]?"warning":"info",out.bones[i].name,"Bone "+label(b)+" drives "+out.bones[first->second].name+", so "+out.bones[i].name+" has no bone of its own.");}}
+   auto& winner=out.bones[first->second].name;auto& loser=out.bones[i].name;bool outranked=level<rank[first->second];if(outranked)takenBy[i]=first->second;
+   // A pin never takes a required part's bone: the pin is the mistake, so the window marks the pin.
+   if(auto slot=slotByKey(loser);outranked&&rank[first->second]==2&&slot&&slot->required)issue("duplicate","error",winner,"Bone "+label(b)+" is assigned to "+winner+", but "+loser+" needs it.");
+   else issue(outranked?"moved":"duplicate",outranked?"warning":"info",loser,"Bone "+label(b)+" drives "+winner+", so "+loser+" has no bone of its own.");}}
  // The torso from the hierarchy (rig_torso.hpp); an explicit Spine2 or Spine4 is kept but still checked.
  TorsoInput in;in.spine1=out.bones[at("Spine1")].mmd;in.neck=out.bones[at("Neck1")].mmd;in.head=out.bones[at("Head1")].mmd;
  in.clavicle={out.bones[at("L_Clavicle")].mmd,out.bones[at("R_Clavicle")].mmd};in.upperArm={out.bones[at("L_UpperArm")].mmd,out.bones[at("R_UpperArm")].mmd};
@@ -189,12 +200,25 @@ BoneMapping mapBones(const Model& m,const Json& data,const Json& options){
   // A chosen bone outside its band moves with a synthesized one: the window shows why.
   if(pin>=0&&bone!=pin)for(auto& r:out.torso.repairs)if(r.code=="band"&&r.bones==std::vector<int>{pin})issue("band","warning",b.name,r.text);
  }
+ // The bone holding the neck and shoulders must move with the chest, the part with a physics
+ // body. A chosen Spine2 or Spine4 that leaves it on the middle spine (Spine1's body) or on
+ // Spine1 folds ragdolls at the chest again (issue #9); the fit still runs.
+ if(int h=out.torso.holder;h>=0&&(rank[at("Spine2")]||rank[at("Spine4")])){
+  auto rides=[&](const char* name,int b){auto& c=out.bones[at(name)];return c.mmd==b||std::find(c.aliases.begin(),c.aliases.end(),b)!=c.aliases.end();};
+  std::string part;std::set<int> seen;
+  for(int b=h;b>=0&&seen.insert(b).second&&!rides("Spine4",b);b=m.bones[b].parent)if(rides("Spine2",b)||rides("Spine1",b)){part=rides("Spine2",b)?"Spine2":"Spine1";break;}
+  auto slot=std::string("ValveBiped.Bip01_")+(rank[at("Spine2")]&&(part=="Spine2"||!rank[at("Spine4")])?"Spine2":"Spine4");
+  if(!part.empty())issue("chest","warning",slot,"Bone "+label(h)+" holds the neck and shoulders but moves with ValveBiped.Bip01_"+part+" instead of the chest part (ValveBiped.Bip01_Spine4): ragdolls would fold at the chest.");
+ }
+ // A pinned eye is a bone of its own.
+ for(int side=0;side<2;side++)if(int e=out.eyes[side];out.eyePinned[side]&&e>=0)for(auto& b:out.bones)if(b.mmd==e||std::find(b.aliases.begin(),b.aliases.end(),e)!=b.aliases.end())issue("duplicate","error",side?"Eye_R":"Eye_L","Bone "+label(e)+" drives "+b.name+", so it cannot also be an eye.");
  out.provenance.resize(out.bones.size());
  for(size_t i=0;i<out.bones.size();i++)out.provenance[i]=rank[i]==2?"user":rank[i]==1&&(out.bones[i].mmd>=0||!out.bones[i].aliases.empty())?"conversion":out.bones[i].mmd>=0?"PMX":"synthesized";
  // PMX D bones are deform duplicates of the animation skeleton. Keep both
  // original indices controlled by the same Source bone instead of fitting an
  // empty leg and then letting Bullet overwrite its actual weighted D chain.
  float height=m.maximum.y()-m.minimum.y();std::set<int> used;for(auto& b:out.bones){if(b.mmd>=0)used.insert(b.mmd);used.insert(b.aliases.begin(),b.aliases.end());}
+ for(int side=0;side<2;side++)if(out.eyePinned[side]&&out.eyes[side]>=0)used.insert(out.eyes[side]);
  for(auto& b:out.bones)if(b.mmd>=0)for(size_t i=0;i<m.bones.size();i++)if(!used.contains(int(i))){
   auto& candidate=m.bones[i];if((candidate.position-m.bones[b.mmd].position).length()>.002f*height)continue;
   int parent=int(i);std::set<int> seen;while(parent>=0&&seen.insert(parent).second){auto& current=m.bones[parent];if(!current.inheritRotation||std::abs(current.coefficient-1.f)>.001f)break;parent=current.inherit;if(parent==b.mmd){b.aliases.push_back(int(i));used.insert(int(i));break;}}
@@ -203,7 +227,7 @@ BoneMapping mapBones(const Model& m,const Json& data,const Json& options){
  std::string words;
  for(auto [name,word]:Landmarks){int i=at(name);if(out.bones[i].mmd>=0)continue;auto key=std::string("ValveBiped.Bip01_")+name;out.missing.push_back(key);
   std::string list;out.searched[key]=Json::array({key});for(auto& s:out.shown[i]){list+=(list.empty()?"":", ")+s;out.searched[key].push_back(s);}
-  words+=(words.empty()?"":", ")+std::string(word)+(rank[i]?" (none assigned)":" (searched "+list+")");}
+  words+=(words.empty()?"":", ")+std::string(word)+(takenBy.contains(i)?" (its bone is assigned to "+out.bones[takenBy[i]].name+")":rank[i]?" (none assigned)":" (searched "+list+")");}
  if(!out.missing.empty())out.error="No bone found for: "+words;
  return out;
 }
@@ -218,6 +242,8 @@ Json torsoJson(const TorsoChoice& t){Json repairs=Json::array();for(auto& r:t.re
 Json boneMapProposal(const Model& m,const Json& options){
  auto map=mapBones(m,Json::parse(ScmiData),options);Json bones=Json::array();
  for(size_t i=0;i<map.bones.size();i++){auto& b=map.bones[i];auto slot=slotByKey(b.name);bones.push_back({{"name",b.name},{"mmd",b.mmd},{"aliases",b.aliases},{"provenance",map.provenance[i]},{"required",slot&&slot->required}});}
+ // The eye bones the carrier appends, as fitRig appends them (only those with a bone).
+ for(int side=0;side<2;side++)if(map.eyes[side]>=0)bones.push_back({{"name",side?"Eye_R":"Eye_L"},{"mmd",map.eyes[side]},{"aliases",Json::array()},{"provenance",map.eyePinned[side]?"user":"PMX"},{"required",false}});
  Json out={{"version",1},{"asset",m.id},{"bones",bones},{"missing",map.missing},{"searched",map.searched},{"issues",map.issues},{"torso",torsoJson(map.torso)}};
  // What fitRig would refuse these options with.
  try{requireMapping(map);}catch(const ImportError& e){out["error"]=e.what();out["errorCode"]=e.code;}
@@ -249,7 +275,7 @@ Json prepareModelFit(Model& model,const fs::path& cache){
  try{auto rig=fitRig(model,Json::object());auto text=rig.manifest.dump();writeJson(path,{{"fit",rig.manifest},{"sha256",hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))}});model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}
  catch(const std::exception& e){model.warnings.push_back(std::string("Native fit unavailable: ")+e.what());
   auto failure=dynamic_cast<const ImportError*>(&e);
-  return {{"ok",false},{"errorCode",failure?failure->code:"fit.error"},{"error",e.what()},{"missing",failure?failure->details.value("missing",Json::array()):Json::array()}};}
+  return {{"ok",false},{"errorCode",failure?failure->code:"fit.error"},{"error",e.what()},{"missing",failure?failure->details.value("missing",Json::array()):Json::array()},{"searched",failure?failure->details.value("searched",Json::object()):Json::object()}};}
 }
 // The canonical profile a fit writes: c_arms have no physics bodies of their own; every other role carries it.
 static Json fitPhysics(const Json& options){return options.value("role",std::string("ragdoll"))=="arms"?Json::object():requireCanonicalPhysics(options.value("physicsOverrides",Json::object()));}
@@ -364,13 +390,14 @@ Rig fitRig(const Model& m,const Json& options){
   for(int i:shrink){auto center=v3(bodies[i]["center"]);for(auto& v:r.bodies[i].hull)v=center+(v-center)*.94f;auto extent=v3(bodies[i]["extent"])*.94f;bodies[i]["extent"]=xyz(extent);bodies[i]["hull"]=Json::array();for(auto v:r.bodies[i].hull)bodies[i]["hull"].push_back(xyz(v));bodies[i]["overlapAdjusted"]=true;overlapAdjustments++;}
  }
  // Appended indices leave every existing primary/finger index unchanged.
+ auto provenance=map.provenance;
  for(int side=0;side<2;side++){
-  int eye=findBone(m,side==0?std::vector<std::string>{"左目","Eye_L","eye_l","left eye"}:std::vector<std::string>{"右目","Eye_R","eye_r","right eye"});
-  if(eye<0)continue;RigBone bone;bone.name=side==0?"Eye_L":"Eye_R";bone.parent=6;bone.mmd=eye;
+  int eye=map.eyes[side];
+  if(eye<0)continue;RigBone bone;bone.name=side==0?"Eye_L":"Eye_R";bone.parent=6;bone.mmd=eye;provenance.push_back(map.eyePinned[side]?"user":"PMX");
   // SCMI eye axes: local X up, Y back, Z character-left.
   btMatrix3x3 axes(0,1,0,0,0,1,1,0,0);bone.rest=btTransform(axes,toSource(m.bones[eye].position)*r.scale);r.bones.push_back(bone);
  }
- for(size_t i=0;i<r.bones.size();i++){auto& b=r.bones[i];auto j=transform(b.rest);j.update({{"name",b.name},{"parent",b.parent},{"mmd",b.mmd},{"mmdAliases",b.aliases},{"physics",b.physics},{"provenance",i<map.provenance.size()?map.provenance[i]:std::string("PMX")}});bones.push_back(j);}
+ for(size_t i=0;i<r.bones.size();i++){auto& b=r.bones[i];auto j=transform(b.rest);j.update({{"name",b.name},{"parent",b.parent},{"mmd",b.mmd},{"mmdAliases",b.aliases},{"physics",b.physics},{"provenance",provenance[i]}});bones.push_back(j);}
  // IDs are assigned once, from the original order; overflow cannot renumber native controls.
  std::set<std::string> used;std::vector<Json> morphs;for(size_t i=0;i<m.morphNames.size();i++){auto original=m.morphNames[i];std::string name=englishMorph(original,data["flexNames"]);bool recognized=!name.empty();std::string display=recognized?name:original;if(display.empty())display=m.text(nanoemModelMorphGetName(m.morphs[i],NANOEM_LANGUAGE_TYPE_ENGLISH));if(name.empty()){auto e=m.text(nanoemModelMorphGetName(m.morphs[i],NANOEM_LANGUAGE_TYPE_ENGLISH));name=normalized(e);if(name.empty())name="morph_"+std::to_string(i);}
    for(char& c:name)if(!std::isalnum((unsigned char)c)&&c!='_')c='_';
@@ -382,7 +409,7 @@ Rig fitRig(const Model& m,const Json& options){
    }
    used.insert(name);morphs.push_back({{"mmd",i},{"name",name},{"original",original},{"displayName",display.empty()?name:display},{"namingSource",recognized?"scmi":"authored"},{"native",-1}});}
  std::vector<int> priority(morphs.size());std::iota(priority.begin(),priority.end(),0);auto rank=[&](int i){auto s=morphs[i]["name"].get<std::string>();return (s=="blink"||s=="mouth_a"||s=="mouth_i"||s=="mouth_u"||s=="mouth_e"||s=="mouth_o")?0:(s.starts_with("eye")||s.starts_with("brow")||s.starts_with("mouth"))?1:2;};std::stable_sort(priority.begin(),priority.end(),[&](int a,int b){return rank(a)<rank(b);});std::set<int> assigned;int nextController=0;for(int i:priority){if(assigned.contains(i))continue;std::vector<int> group{i};auto n=morphs[i]["name"].get<std::string>();std::string pair;if(n.ends_with("_left"))pair=n.substr(0,n.size()-5)+"_right";else if(n.ends_with("_right"))pair=n.substr(0,n.size()-6)+"_left";if(!pair.empty())for(size_t j=0;j<morphs.size();j++)if(morphs[j]["name"]==pair&&!assigned.contains(int(j)))group.push_back(int(j));if(nextController+group.size()>96)continue;for(int j:group){morphs[j]["native"]=nextController++;assigned.insert(j);}}r.morphs=morphs;
- auto eyePosition=r.bones[6].rest.getOrigin();int leftEye=findBone(m,{"左目","eye_l","left eye"}),rightEye=findBone(m,{"右目","eye_r","right eye"});
+ auto eyePosition=r.bones[6].rest.getOrigin();int leftEye=map.eyePinned[0]?map.eyes[0]:findBone(m,{"左目","eye_l","left eye"}),rightEye=map.eyePinned[1]?map.eyes[1]:findBone(m,{"右目","eye_r","right eye"});
  if(leftEye>=0&&rightEye>=0)eyePosition=toSource((m.bones[leftEye].position+m.bones[rightEye].position)*.5f)*r.scale;
  auto eyes=transform(r.bones[6].rest.inverse()*btTransform(btQuaternion(btVector3(0,0,1),SIMD_PI),eyePosition));
  r.manifest={{"version",RigVersion},{"generator",RigGenerator},{"sourceUnitsPerPmx",r.scale},{"scaleMultiplier",r.scale/ScmiSourceUnitsPerPmx},{"skeletonPositions","PMX landmarks"},{"jointFrameConvention","SCMI SMD to renderer, -90deg Z; tracked X, preserved Z roll"},{"calibrationVersion",2},{"shapeAtlasHash",shapeAtlasHash()},{"maxInitialPenetration",maxPenetration},{"overlapAdjustments",overlapAdjustments},{"asset",m.id},{"name",m.name},{"scale",r.scale},{"fittedHeightMMD",fittedHeight},{"mass",r.mass},{"massBiasTotal",massTotal},{"bones",bones},{"bodies",bodies},{"morphs",r.morphs},{"eyesAttachment",eyes},{"referenceSha256",data["referenceSha256"]},{"excludedMaterials",options.value("excludedMaterials",Json::array())},{"materialCount",m.materials.size()},{"nativeFlexCount",nextController}};

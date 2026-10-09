@@ -94,19 +94,30 @@ language (`bonemap.torso_*`) with the names of its `bones`, in this order:
 The fit option `boneMap` sets carrier bones by hand: `{"ValveBiped.Bip01_Spine4": 12,
 "ValveBiped.Bip01_L_Toe0": -1}`, a PMX bone index or -1 for none (synthesized).
 The keys are the 52 assignable parts of `native/humanoid_slots.hpp` (not
-`ValveBiped.Bip01_Spine` and not the eyes). Whole numbers written as `12.0`, as
-`util.TableToJSON` does, are accepted. The bone window saves these pins in
-`fit_overrides/<asset>.json` and every spawn sends them (`docs/CHARACTER_IMPORT.md`).
+`ValveBiped.Bip01_Spine`), plus `Eye_L` and `Eye_R` for the eye bones the carrier
+appends (-1: no eye bone; the eyes attachment then sits at the head). The bone
+window does not offer the eyes in fit mode and its server check refuses them.
+Whole numbers written as `12.0`, as `util.TableToJSON` does, are accepted. The
+bone window saves these pins in `fit_overrides/<asset>.json` and every spawn
+sends them (`docs/CHARACTER_IMPORT.md`).
 
 * A converted character's own assignment (`Model::conversionBoneMap`, from
   `manifest.conversion.boneMap`) is the base map; pins override it, and both
   override the name matching. A converted middle spine without a chest is the
   chest (the part with a physics body). A pinned bone leaves the part the fitter
-  had given it to (issue `moved`); that part is then synthesized or, if required,
-  missing.
+  had given it to (issue `moved`); that part is then synthesized. A pin never
+  takes a required part's bone: that is an error (`duplicate`, on the pinned
+  part), and the landmark error says `spine (its bone is assigned to
+  ValveBiped.Bip01_Spine2)` instead of the names searched.
 * A pinned `Spine2` or `Spine4` still passes the band check; outside it, the bone
   moves with a synthesized pivot and the issue `band` says so. Its bones are
   `provenance: "user"` (`"conversion"` for the converter's).
+* When a chosen `Spine2` or `Spine4` leaves the bone holding the neck and
+  shoulders moving with `Spine2` or `Spine1` instead of the chest (for example
+  Ganyu's `上半身2` pinned to the middle spine, the chest to none), the warning
+  `chest` says that ragdolls would fold at the chest; the fit still runs.
+* A pinned eye that another carrier bone already drives is refused (`duplicate`);
+  an eye pinned to the other eye's bone takes it (`moved`).
 * Refused, with ImportError `fit.bone_map` and `details.issues`: a key that is not
   an assignable part, a value that is not a whole number from -1 to the bone
   count (`range`), one bone for two parts (`duplicate`), a required part pinned to
@@ -114,7 +125,8 @@ The keys are the 52 assignable parts of `native/humanoid_slots.hpp` (not
 * Missing required parts (hips, spine, head, upper arms, forearms, hands, thighs,
   lower legs, feet) throw ImportError `fit.landmarks`: the message lists every part
   in words with the names searched, `details` has `missing` (ValveBiped names) and
-  `searched` (ValveBiped name -> names).
+  `searched` (ValveBiped name -> names). The import job's `fit` block carries both
+  (`docs/CHARACTER_IMPORT.md`).
 * `boneMap` is part of the fitted-rig cache key (`carrierFitKey`). The model's
   cached fit (`Model::fittedRig`) has no pins, so a non-empty map is fitted once
   with the pins alone (`Model::pinnedFits`, the last four pin sets per loaded
@@ -142,13 +154,16 @@ without fitting bodies:
 ```
 
 `bones` lists the 56 reference bones in carrier order (`mmd` -1 is synthesized;
-`provenance` is `PMX`, `synthesized`, `user` or `conversion`). Issue codes:
-`range`, `duplicate` and `required` (errors), `moved` and `band` (warnings),
-`duplicate` (information, two parts matched one bone by name). `error` and
-`errorCode` are what `fitRig` would throw with these options. Bad pins are issues,
-not failures; a call fails (`nil, message`) only for an asset that is not loaded,
-options that are not a JSON object ("Invalid bone map options") or a `boneMap`
-that is not an object. `GetCapabilities().boneMap` is `{version = 1, fit = true}`.
+`provenance` is `PMX`, `synthesized`, `user` or `conversion`), then `Eye_L` and
+`Eye_R` when the carrier appends them (`PMX` or `user`). Issue codes: `range`,
+`duplicate` and `required` (errors), `moved`, `band` and `chest` (warnings),
+`duplicate` (information, two parts matched one bone by name). The bone window
+shows `band` (by part), `range` and `chest` in the player's language and the
+others' English `text`. `error` and `errorCode` are what `fitRig` would throw
+with these options. Bad pins are issues, not failures; a call fails (`nil,
+message`) only for an asset that is not loaded, options that are not a JSON
+object ("Invalid bone map options") or a `boneMap` that is not an object.
+`GetCapabilities().boneMap` is `{version = 1, fit = true}`.
 
 ## Compatibility
 
@@ -180,11 +195,13 @@ them, with 30 `reordered`, 3 `ignored` and 1 `coincident` notes. 350 models
 changed only their torso; 7 models without finger bones lost fingers that were
 twist, ribbon or center bones; nothing else changed.
 
-Tests: `torso` (the resolver on synthetic skeletons, pins, the proposal and the
-landmark error), `animated_carriers_and_sharing` (torso variants of the fixture),
+Tests: `torso` (the resolver on synthetic skeletons, pins and their cached fits,
+the `chest` warning, eye pins, the proposal, the landmark error and the import's
+`fit` block), `animated_carriers_and_sharing` (torso variants of the fixture),
 `vrm_import_and_springs` (`upperChest`), `character_import` (the conversion map
 as the base), `physics_profiles` (`golden.json`, re-recorded: the manifest's
 `torso` changes every rig key, the `.phy` text did not change) and
-`tests/test_bone_mapper.py` (the window on the fitter's recorded answers,
+`tests/test_bone_mapper.py` (the window on the fitter's recorded answers, its
+notes and warnings in the player's words and the live refresh,
 `tests/fixtures/bonemap/proposal.json`, which `mmdhl_torso_tests --record-window`
 rewrites and the `torso` test keeps current).
