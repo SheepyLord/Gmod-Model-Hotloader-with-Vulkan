@@ -38,8 +38,13 @@ API and its limits).
 * **Utilities → User → Character Models → File access for other addons…**
   lists the remembered folders (your user folder is shown as `~`), revokes them
   one by one or all at once, and has the switch **Let addons ask to read
-  files**. Turning it off takes effect at once; turning it on asks for
-  confirmation in a Windows dialog.
+  files**. Turning it off takes effect at once, also for reads an addon
+  already started (they deliver nothing), and revoking a folder ends the
+  reads of files in it the same way; turning it on asks for confirmation in
+  a Windows dialog. Two copies of the game running at once (another install,
+  `-multirun`) share the remembered folders and the switch: what you change
+  in one applies in the other too, and neither brings back what the other
+  revoked or turned off.
 * Only in **single player** and on a **server you host**. On anyone else's
   server every client script comes from that server, so Model Hotloader refuses
   all requests there and does not even show your remembered folders.
@@ -192,7 +197,9 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
 `device`), `denied_location`, `link`, `outside`, `hidden`, `too_large`,
 `offset_too_large`, `not_a_file`, `not_a_folder`, `released`, `unreadable`,
 `dialog_failed`, `too_many_items`, `invalid_options`, `denied_by_hook`,
-`needs_update`, `unavailable_remote`, `disabled`, `worker_missing`.
+`needs_update`, `unavailable_remote`, `disabled` (also for a read or listing
+the player turned file access off during), `worker_missing`. A read or listing
+of a folder the player revoked meanwhile ends with `released`.
 
 ### Hooks
 
@@ -246,6 +253,15 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
   and a network path there is refused. `InspectModelNotes` reads only beside an existing local
   model file (`.pmx`, `.pmd`, `.vrm`, `.fbx`, `.glb`, `.gltf`, `.dae`, `.obj`,
   `.blend`), and the Workshop package scan ignores network paths.
+* Reads and listings run on threads of their own that hold what they need and
+  a reference to the runtime library; turning file access off, revoking a
+  folder or closing the module (every map change) tells them to stop and
+  cancels the file operation they wait in, and nothing waits for them, so a
+  network share that stopped answering cannot hold the game. The grants
+  store is changed under a named mutex shared by every game process: each
+  change is applied to the newest file (a change that could not be saved is
+  applied again with the next one), and requests, reads and the management
+  window read the file again, so another process's revocations apply at once.
 * Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
   variable and is never packaged; the shipped worker has no such path) and

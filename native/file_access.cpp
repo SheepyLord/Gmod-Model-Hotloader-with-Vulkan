@@ -223,12 +223,21 @@ std::string displayPath(const fs::path& path){
  return utf8(text);
 }
 fs::path fileAccessStore(){auto local=knownFolder(FOLDERID_LocalAppData);if(local.empty())throw std::runtime_error("No local application data folder");return local/L"ModelHotloader"/L"file-access.json";}
-void FileGrantStore::load(const FilePolicy& policy){
+std::optional<std::string> readGrantStore(const fs::path& file){
+ Handle h;h.h=CreateFileW(ioPath(file).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+ if(h.h==INVALID_HANDLE_VALUE){auto error=GetLastError();if(error==ERROR_FILE_NOT_FOUND||error==ERROR_PATH_NOT_FOUND)return std::nullopt;throw std::runtime_error("The file access store cannot be read now");}
+ LARGE_INTEGER size{};if(!GetFileSizeEx(h.h,&size))throw std::runtime_error("The file access store cannot be read now");
+ if(size.QuadPart>(1<<20))return std::string();  // far larger than any store: damaged
+ std::string text(size_t(size.QuadPart),'\0');DWORD received=0;
+ if(!text.empty()&&(!ReadFile(h.h,text.data(),DWORD(text.size()),&received,nullptr)||received!=text.size()))throw std::runtime_error("The file access store cannot be read now");
+ return text;
+}
+bool FileGrantStore::parse(std::string_view text,const FilePolicy& policy){
  enabled=true;grants.clear();
- Json j;try{std::error_code error;if(!fs::is_regular_file(ioPath(file),error)||fs::file_size(ioPath(file),error)>(1u<<20))return;j=readJson(file);}catch(...){return;}
- if(!j.is_object()||!j.contains("schema")||j["schema"]!=1)return;
+ auto j=Json::parse(text.begin(),text.end(),nullptr,false);
+ if(j.is_discarded()||!j.is_object()||!j.contains("schema")||j["schema"]!=1)return false;
  if(j.contains("enabled")&&j["enabled"].is_boolean())enabled=j["enabled"].get<bool>();
- if(!j.contains("grants")||!j["grants"].is_array())return;
+ if(!j.contains("grants")||!j["grants"].is_array())return true;
  for(auto& g:j["grants"]){
   try{
    FileGrant grant;grant.id=g.at("id").get<std::string>();grant.requester=g.at("requester").get<std::string>();
@@ -241,10 +250,12 @@ void FileGrantStore::load(const FilePolicy& policy){
    if(!duplicate&&grants.size()<256)grants.push_back(std::move(grant));
   }catch(...){}
  }
+ return true;
 }
-void FileGrantStore::save() const {
+std::string FileGrantStore::save() const {
  Json list=Json::array();for(auto& g:grants)list.push_back({{"id",g.id},{"requester",g.requester},{"folder",utf8(g.folder.wstring())},{"created",g.created},{"used",g.used}});
- fs::create_directories(ioPath(file.parent_path()));writeJson(file,{{"schema",1},{"enabled",enabled},{"grants",list}});
+ auto text=Json({{"schema",1},{"enabled",enabled},{"grants",list}}).dump(2);
+ fs::create_directories(ioPath(file.parent_path()));writeAtomic(file,std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()));return text;
 }
 const FileGrant* FileGrantStore::covering(const std::string& requester,const fs::path& path) const {
  for(auto& g:grants)if(g.requester==requester&&insideFolder(path,g.folder))return &g;
@@ -257,8 +268,22 @@ struct FileAccess::Request {
  fs::path path,dir,rememberFolder;HANDLE process=nullptr,group=nullptr;
  std::optional<ResolvedFile> target;std::string problem;bool canRemember=false;
 };
+// Why a read or listing was told to stop (0: it runs on).
+enum TaskStop:int {TaskRunning,TaskCanceled,TaskDisabled,TaskRevoked,TaskClosing};
+struct FileTask {
+ bool listing=false;std::string grant;  // the remembered folder its item came from, if any
+ std::atomic<int> stop{TaskRunning};
+ std::atomic<bool> done{false};         // its thread finished: the fields below are complete
+ uint64_t finished=0;                   // GetTickCount64 when it did
+ HANDLE thread=nullptr;                 // to cancel the file operation it waits in
+ FileReadResult read;Json list;std::exception_ptr error;
+ FileTask()=default;FileTask(const FileTask&)=delete;FileTask& operator=(const FileTask&)=delete;
+ ~FileTask(){if(thread)CloseHandle(thread);}
+};
 namespace {
 struct ReadOptions {fs::path relative;uint64_t offset=0,length=FileReadDefault;bool text=false,hidden=false;};
+// A read or listing told to stop gives up at its next step; the step it waits in is canceled.
+void checkStop(const std::atomic<int>& stop){if(stop.load())refuse("canceled","The read was stopped");}
 // Opens root\relative and proves it is still the thing the player allowed: no final
 // link, the final path inside the granted root, not denied, not hidden unless asked.
 ResolvedFile openItem(Handle& file,const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy,DWORD access){
@@ -270,8 +295,8 @@ ResolvedFile openItem(Handle& file,const FileAccess::Item& item,const fs::path& 
  if(policy.deniedPath(r.path))refuse("denied_location","Model Hotloader never lets addons read this location");
  return r;
 }
-FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const FilePolicy& policy){
- Handle file;auto r=openItem(file,item,o.relative,o.hidden,policy,GENERIC_READ);
+FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const FilePolicy& policy,const std::atomic<int>& stop){
+ checkStop(stop);Handle file;auto r=openItem(file,item,o.relative,o.hidden,policy,GENERIC_READ);
  if(r.folder)refuse("not_a_file","This is a folder; list it or read a file inside it");
  FileReadResult out;out.info={{"name",utf8((o.relative.empty()?item.root:o.relative).filename().wstring())},{"size",r.size},{"offset",o.offset}};
  uint64_t end=std::min({r.size,o.offset+o.length,FileOffsetMaximum});
@@ -279,7 +304,8 @@ FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const 
  if(o.offset<end){
   LARGE_INTEGER at;at.QuadPart=LONGLONG(o.offset);if(!SetFilePointerEx(file.h,at,nullptr,FILE_BEGIN))refuse("unreadable","Cannot seek in the file");
   out.data.resize(size_t(end-o.offset));size_t cursor=0;
-  while(cursor<out.data.size()){DWORD received=0;if(!ReadFile(file.h,out.data.data()+cursor,DWORD(std::min<size_t>(out.data.size()-cursor,1u<<24)),&received,nullptr))refuse("unreadable","The file could not be read");if(!received)break;cursor+=received;}
+  // In 1 MiB steps: a slow drive cannot hold a read the player stopped for long.
+  while(cursor<out.data.size()){checkStop(stop);DWORD received=0;if(!ReadFile(file.h,out.data.data()+cursor,DWORD(std::min<size_t>(out.data.size()-cursor,1u<<20)),&received,nullptr))refuse("unreadable","The file could not be read");if(!received)break;cursor+=received;}
   out.data.resize(cursor);
  }
  out.info["read"]=out.data.size();out.info["eof"]=o.offset+out.data.size()>=r.size;
@@ -288,11 +314,12 @@ FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const 
  return out;
 }
 // One level of a folder, read through the opened handle (no second lookup by name).
-Json listItem(const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy){
- Handle folder;auto r=openItem(folder,item,relative,hidden,policy,FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES|SYNCHRONIZE);
+Json listItem(const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy,const std::atomic<int>& stop){
+ checkStop(stop);Handle folder;auto r=openItem(folder,item,relative,hidden,policy,FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES|SYNCHRONIZE);
  if(!r.folder)refuse("not_a_folder","This is a file; read it instead");
  Json entries=Json::array();bool truncated=false;std::vector<unsigned char> buffer(64u<<10);auto kind=FileIdBothDirectoryRestartInfo;DWORD error=ERROR_SUCCESS;
  while(!truncated){
+  checkStop(stop);
   if(!GetFileInformationByHandleEx(folder.h,kind,buffer.data(),DWORD(buffer.size()))){error=GetLastError();break;}
   kind=FileIdBothDirectoryInfo;
   for(size_t at=0;;){
@@ -328,10 +355,43 @@ void launchDialog(FileAccess::Request& r,const fs::path& worker,const wchar_t* m
  if(!AssignProcessToJobObject(r.group,process.hProcess)){TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);CloseHandle(process.hProcess);CloseHandle(r.group);r.group=nullptr;refuse("dialog_failed","Cannot isolate the dialog");}
  ResumeThread(process.hThread);CloseHandle(process.hThread);r.process=process.hProcess;
 }
+// Reads and listings run on threads of their own, never joined: the client module goes away
+// at every map change, and a read waiting on a network share that stopped answering would
+// hold the game until Windows gives up. Each thread keeps this library loaded until it ends.
+std::atomic<size_t> liveTasks{0};
+struct TaskStart {std::shared_ptr<FileTask> task;std::function<void(FileTask&)> body;HMODULE library=nullptr;};
+DWORD WINAPI taskThread(void* data){
+ HMODULE library=nullptr;
+ {std::unique_ptr<TaskStart> start(static_cast<TaskStart*>(data));library=start->library;auto& t=*start->task;
+  try{start->body(t);}catch(...){t.error=std::current_exception();}
+  t.finished=GetTickCount64();t.done=true;}
+ liveTasks--;FreeLibraryAndExitThread(library,0);
 }
+std::shared_ptr<FileTask> launch(bool listing,const std::string& grant,std::function<void(FileTask&)> body){
+ auto task=std::make_shared<FileTask>();task->listing=listing;task->grant=grant;
+ auto start=std::make_unique<TaskStart>(TaskStart{task,std::move(body)});
+ if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&taskThread),&start->library))throw std::runtime_error("Cannot start the read");
+ liveTasks++;HANDLE thread=CreateThread(nullptr,0,taskThread,start.get(),0,nullptr);
+ if(!thread){liveTasks--;FreeLibrary(start->library);throw std::runtime_error("Cannot start the read");}
+ start.release();task->thread=thread;return task;
+}
+// Tells a read or listing to stop and cancels the file operation its thread waits in (an
+// open or a read of a slow or unreachable drive). Its result is never delivered.
+void halt(FileTask& t,TaskStop why){int running=TaskRunning;t.stop.compare_exchange_strong(running,why);if(!t.done.load())CancelSynchronousIo(t.thread);}
+// Game processes that share the store (two installs, -multirun) change it one at a time.
+struct StoreLock {
+ HANDLE mutex=CreateMutexW(nullptr,FALSE,L"Local\\ModelHotloader.FileAccessStore");
+ StoreLock(){if(!mutex)throw std::runtime_error("No store lock");auto w=WaitForSingleObject(mutex,2000);if(w!=WAIT_OBJECT_0&&w!=WAIT_ABANDONED){CloseHandle(mutex);throw std::runtime_error("The store is busy");}}
+ ~StoreLock(){ReleaseMutex(mutex);CloseHandle(mutex);}
+ StoreLock(const StoreLock&)=delete;StoreLock& operator=(const StoreLock&)=delete;
+};
+}
+size_t fileAccessThreads(){return liveTasks.load();}
 FileAccess::FileAccess(FileAccessConfig c):config(std::move(c)),policy(std::make_shared<FilePolicy>(config.policy)){
  if(config.temp.empty()){wchar_t temp[MAX_PATH+1]{};if(GetTempPathW(MAX_PATH+1,temp))config.temp=temp;}
- store.file=config.store;store.load(*policy);
+ // A missing, unreadable or damaged store means nothing remembered.
+ store.file=config.store;try{storeText=readGrantStore(store.file);storeRead=true;}catch(...){}
+ if(storeText)store.parse(*storeText,*policy);
  // Private folders a crashed game left behind.
  std::error_code error;
  for(auto it=fs::directory_iterator(config.temp,error);!error&&it!=fs::directory_iterator();it.increment(error)){
@@ -339,10 +399,54 @@ FileAccess::FileAccess(FileAccessConfig c):config(std::move(c)),policy(std::make
   if(name.starts_with(L"mmdhl-fa-")&&plainDirectory(it->path())&&fs::last_write_time(it->path(),e)<fs::file_time_type::clock::now()-std::chrono::hours(24))removeFolder(it->path());
  }
 }
-FileAccess::~FileAccess(){for(auto& [id,r]:requests)stop(*r);}
+FileAccess::~FileAccess(){
+ for(auto& [id,r]:requests)stop(*r);
+ // Reads and listings are told to stop and left to end on their own threads.
+ for(auto& [id,t]:tasks)halt(*t,TaskClosing);for(auto& t:dropped)halt(*t,TaskClosing);
+}
 // The player's answer counts at once; saving it is best effort, so a locked or read-only
-// store cannot turn a decision into a failure. false: the change lasts until the map changes.
-bool FileAccess::persist(){try{store.save();return true;}catch(...){return false;}}
+// store cannot turn a decision into a failure. false: not saved yet (the change applies
+// here until the map changes, and is written with the next change that can be saved).
+// keep=false: a change worth no retry (when a remembered folder was last used).
+bool FileAccess::persist(const StoreChange& change,bool keep){
+ change(store);if(keep)unsaved.push_back(change);
+ try{
+  StoreLock lock;auto text=readGrantStore(store.file);
+  FileGrantStore merged;merged.file=store.file;
+  // Whatever another game process saved meanwhile stays; a damaged file is replaced by what is known here.
+  if(text&&!merged.parse(*text,*policy))merged=store;
+  else{for(auto& c:unsaved)c(merged);if(!keep)change(merged);}
+  storeText=merged.save();storeRead=true;unsaved.clear();adopt(std::move(merged));return true;
+ }catch(...){return false;}
+}
+// What another game process saved counts here too: a folder revoked there is no longer
+// remembered here, and file access turned off there is off here. A store file that cannot
+// be read now, or is damaged, changes nothing.
+void FileAccess::refresh(){
+ std::optional<std::string> text;try{text=readGrantStore(store.file);}catch(...){return;}
+ if(storeRead&&text==storeText)return;
+ storeRead=true;storeText=text;
+ FileGrantStore fresh;fresh.file=store.file;if(text&&!fresh.parse(*text,*policy))return;
+ for(auto& c:unsaved)c(fresh);
+ adopt(std::move(fresh));
+}
+void FileAccess::adopt(FileGrantStore fresh){
+ if(store.enabled&&!fresh.enabled)turnedOff();
+ std::set<std::string> gone;for(auto& g:store.grants)if(std::none_of(fresh.grants.begin(),fresh.grants.end(),[&](const FileGrant& f){return f.id==g.id;}))gone.insert(g.id);
+ forget(gone,false);store=std::move(fresh);
+}
+// Off: nothing granted stays readable, no read or listing delivers, no dialog waits.
+void FileAccess::turnedOff(){
+ items.clear();for(auto& [id,t]:tasks)halt(*t,TaskDisabled);
+ for(auto& [id,r]:requests)if(r->result.is_null()){stop(*r);r->result=denied("disabled","The player turned file access for other addons off");}
+ queue.clear();active=0;
+}
+// Revoked folders: the items they answered go, and their reads and listings no longer deliver.
+void FileAccess::forget(const std::set<std::string>& gone,bool all){
+ auto revoked=[&](const std::string& grant){return !grant.empty()&&(all||gone.contains(grant));};
+ std::erase_if(items,[&](const auto& entry){return revoked(entry.second->grant);});
+ for(auto& [id,t]:tasks)if(revoked(t->grant))halt(*t,TaskRevoked);
+}
 void FileAccess::stop(Request& r){
  // The folder can go once the worker is gone (it may still hold request.json open).
  if(r.group){TerminateJobObject(r.group,1);if(r.process)WaitForSingleObject(r.process,2000);CloseHandle(r.group);r.group=nullptr;}
@@ -350,6 +454,7 @@ void FileAccess::stop(Request& r){
  removeFolder(r.dir);r.dir.clear();
 }
 Json FileAccess::info(){
+ refresh();
  std::string reason=!localServerRealm()?"no_local_server":!store.enabled?"disabled":!regularFile(config.worker)?"worker_missing":"ok";
  return {{"version",1},{"available",reason=="ok"},{"reason",reason},{"enabled",store.enabled},{"local",localServerRealm()},{"maxRead",FileReadMaximum},{"defaultRead",FileReadDefault},{"maxOffset",FileOffsetMaximum},{"maxList",FileListMaximum},{"dialog",active!=0},{"queued",queue.size()}};
 }
@@ -357,7 +462,7 @@ Json FileAccess::info(){
 static const std::string EnableRequester="\x01enable";
 static void localOnly(){if(!localServerRealm())refuse("unavailable_remote","File access works only in single player and on a server this game hosts");}
 void FileAccess::available(const std::string& requester){
- localOnly();
+ localOnly();refresh();
  if(!store.enabled)refuse("disabled","The player turned file access for other addons off");
  if(!regularFile(config.worker))refuse("worker_missing","The Model Hotloader worker is missing");
  if(auto it=denials.find(requester);it!=denials.end()&&it->second>=FileDenialLimit)refuse("auto_denied","The player denied this addon three times; it can ask again after the map changes");
@@ -437,12 +542,16 @@ void FileAccess::start(Request& r){
  r.dir=privateFolder(config.temp);writeJson(r.dir/L"request.json",request);
  launchDialog(r,config.worker,r.kind==Request::Pick?L"--fa-pick":L"--fa-consent");
 }
-Json FileAccess::grant(Request& r,const ResolvedFile& target,const std::string& grantId){
+Json FileAccess::grant(Request& r,const ResolvedFile& target,std::string grantId){
  if(items.size()>=1024)refuse("too_many_items","Release files the addon no longer needs");
+ // When the remembered folder was last used: best effort, never written back over a newer store.
+ if(auto at=now();!grantId.empty())if(auto g=std::find_if(store.grants.begin(),store.grants.end(),[&](const FileGrant& f){return f.id==grantId;});g!=store.grants.end()&&g->used!=at)
+  persist([grantId,at](FileGrantStore& s){for(auto& f:s.grants)if(f.id==grantId)f.used=at;},false);
+ // Saving read the newest store: another game process may have turned file access off.
+ if(!store.enabled)refuse("disabled","The player turned file access for other addons off");
  auto entry=std::make_shared<Item>();entry->root=target.path;entry->folder=target.folder;entry->size=target.size;entry->requester=r.requester;entry->grant=grantId;
  entry->name=utf8(target.path.filename().empty()?target.path.wstring():target.path.filename().wstring());
  auto handle=randomHex(16);items[handle]=entry;
- if(!grantId.empty())for(auto& g:store.grants)if(g.id==grantId&&g.used!=now()){g.used=now();persist();}
  Json item={{"handle",handle},{"name",entry->name},{"folder",entry->folder},{"remembered",!grantId.empty()},{"displayPath",displayPath(target.path)}};
  if(!entry->folder)item["size"]=entry->size;
  return {{"state","granted"},{"items",Json::array({item})}};
@@ -453,7 +562,7 @@ void FileAccess::finish(Request& r,const Json& answer){
  auto refused=[&](const char* message){denials[r.requester]++;refusals++;r.result=denied("denied",message);};
  if(r.kind==Request::Enable){
   if(said!="yes"){refused("The player kept file access off");return;}
-  store.enabled=true;r.result={{"state","granted"},{"enabled",true},{"changed",true}};if(!persist())r.result["notSaved"]=true;return;
+  bool saved=persist([](FileGrantStore& s){s.enabled=true;});r.result={{"state","granted"},{"enabled",true},{"changed",true}};if(!saved)r.result["notSaved"]=true;return;
  }
  if(r.kind==Request::Pick){
   // Closing a picker is not a refusal of the addon (the player usually opened it from the
@@ -478,10 +587,11 @@ void FileAccess::finish(Request& r,const Json& answer){
  // The target is checked again when it is read; "always" is kept only where the dialog offered it.
  std::string grantId;bool saved=true;
  if(said=="always"&&r.canRemember){
-  FileGrant g;g.id=randomHex(8);g.requester=r.requester;g.folder=r.rememberFolder;g.created=g.used=now();
-  store.grants.erase(std::remove_if(store.grants.begin(),store.grants.end(),[&](const FileGrant& o){return o.requester==g.requester&&insideFolder(o.folder,g.folder);}),store.grants.end());
-  if(store.grants.size()>=256)store.grants.erase(store.grants.begin());
-  store.grants.push_back(g);grantId=g.id;saved=persist();
+  FileGrant g;g.id=randomHex(8);g.requester=r.requester;g.folder=r.rememberFolder;g.created=g.used=now();grantId=g.id;
+  saved=persist([g](FileGrantStore& s){
+   std::erase_if(s.grants,[&](const FileGrant& o){return o.requester==g.requester&&insideFolder(o.folder,g.folder);});
+   if(s.grants.size()>=256)s.grants.erase(s.grants.begin());
+   s.grants.push_back(g);});
  }
  denials.erase(r.requester);
  r.result=grant(r,*r.target,grantId);if(!grantId.empty())r.result["changed"]=true;if(!saved)r.result["notSaved"]=true;
@@ -497,31 +607,32 @@ void FileAccess::cancel(uint64_t id){
   if(active==id){stop(*it->second);active=0;}
   queue.erase(std::remove(queue.begin(),queue.end(),id),queue.end());requests.erase(it);pump();return;
  }
- if(auto it=reads.find(id);it!=reads.end()){droppedReads.push_back(std::move(it->second.future));reads.erase(it);}
- if(auto it=lists.find(id);it!=lists.end()){droppedLists.push_back(std::move(it->second.future));lists.erase(it);}
+ if(auto it=tasks.find(id);it!=tasks.end()){halt(*it->second,TaskCanceled);if(!it->second->done.load())dropped.push_back(it->second);tasks.erase(it);}
 }
-namespace {
-// Runs f on its own thread and notes when it ended, failures included.
-template<class F> auto work(F f){
- auto finished=std::make_shared<std::atomic<uint64_t>>(0);
- return FileWork<decltype(f())>{std::async(std::launch::async,[f,finished]{struct Done{std::atomic<uint64_t>& at;~Done(){at=GetTickCount64();}} done{*finished};return f();}),finished};
-}
-}
-// The slots: reads and listings still running (canceled ones until they end) and results
-// waiting to be collected. A result nobody collects within keepResultsMs is dropped, so a
-// script that stops polling (or forgot its ids on a Lua refresh) cannot hold them for good.
+// The slots: reads and listings still running (stopped ones until their threads end) and
+// results waiting to be collected. A result nobody collects within keepResultsMs is dropped,
+// so a script that stops polling (or forgot its ids on a Lua refresh) cannot hold them for good.
 size_t FileAccess::running(){
- auto ready=[](auto& f){return f.wait_for(std::chrono::seconds(0))==std::future_status::ready;};
- std::erase_if(droppedReads,ready);std::erase_if(droppedLists,ready);
- auto now=GetTickCount64();auto stale=[&](auto& entry){auto at=entry.second.finished->load();return at&&now-at>=config.keepResultsMs&&ready(entry.second.future);};
- std::erase_if(reads,stale);std::erase_if(lists,stale);
- return reads.size()+lists.size()+droppedReads.size()+droppedLists.size();
+ std::erase_if(dropped,[](const std::shared_ptr<FileTask>& t){return t->done.load();});
+ auto now=GetTickCount64();std::erase_if(tasks,[&](const auto& entry){return entry.second->done.load()&&now-entry.second->finished>=config.keepResultsMs;});
+ return tasks.size()+dropped.size();
+}
+// The finished (or stopped) task a poll asks for; nullptr while it runs.
+static std::shared_ptr<FileTask> collect(std::map<uint64_t,std::shared_ptr<FileTask>>& tasks,std::vector<std::shared_ptr<FileTask>>& dropped,uint64_t id,bool listing){
+ auto it=tasks.find(id);if(it==tasks.end()||it->second->listing!=listing)refuse("unknown_request",listing?"Unknown listing":"Unknown read");
+ auto task=it->second;
+ // Stopped by the player: what it read, finished or not, is never handed out.
+ if(auto why=task->stop.load()){tasks.erase(it);if(!task->done.load())dropped.push_back(task);
+  if(why==TaskDisabled)refuse("disabled","The player turned file access for other addons off");
+  refuse("released","The player revoked the folder this file is in; ask for it again");}
+ if(!task->done.load())return nullptr;
+ tasks.erase(it);if(task->error)std::rethrow_exception(task->error);return task;
 }
 std::shared_ptr<const FileAccess::Item> FileAccess::item(const std::string& handle) const {
  auto it=items.find(handle);if(it==items.end())refuse("released","This file was released or the map changed; ask for it again");return it->second;
 }
 uint64_t FileAccess::read(const std::string& handle,const Json& o){
- if(!localServerRealm()||!store.enabled)refuse(!store.enabled?"disabled":"unavailable_remote","File access is not available");
+ refresh();if(!localServerRealm()||!store.enabled)refuse(!store.enabled?"disabled":"unavailable_remote","File access is not available");
  auto entry=item(handle);if(!o.is_object()&&!o.is_null())refuse("invalid_options","Read options must be an object");
  Json options=o.is_object()?o:Json::object();ReadOptions r;
  auto mode=options.value("mode",std::string("binary"));if(mode!="binary"&&mode!="text")refuse("invalid_options","mode is binary or text");
@@ -529,47 +640,43 @@ uint64_t FileAccess::read(const std::string& handle,const Json& o){
  if(options.contains("relative")&&!options["relative"].is_null()){if(!options["relative"].is_string())refuse("invalid_options","relative must be text");r.relative=checkRelativePath(options["relative"].get<std::string>());}
  if(!r.relative.empty()&&!entry->folder)refuse("invalid_options","Only folders have paths inside them");
  if(running()>=8)refuse("busy","Too many reads are running");
- auto id=sequence++;auto rules=policy;reads.emplace(id,work([entry,r,rules]{return readItem(*entry,r,*rules);}));return id;
+ auto rules=policy;auto task=launch(false,entry->grant,[entry,r,rules](FileTask& t){t.read=readItem(*entry,r,*rules,t.stop);});
+ auto id=sequence++;tasks.emplace(id,std::move(task));return id;
 }
 std::optional<FileReadResult> FileAccess::pollRead(uint64_t id){
- auto it=reads.find(id);if(it==reads.end())refuse("unknown_request","Unknown read");
- if(it->second.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
- auto future=std::move(it->second.future);reads.erase(it);return future.get();
+ auto task=collect(tasks,dropped,id,false);if(!task)return std::nullopt;return std::move(task->read);
 }
 uint64_t FileAccess::list(const std::string& handle,const Json& o){
- if(!localServerRealm()||!store.enabled)refuse(!store.enabled?"disabled":"unavailable_remote","File access is not available");
+ refresh();if(!localServerRealm()||!store.enabled)refuse(!store.enabled?"disabled":"unavailable_remote","File access is not available");
  auto entry=item(handle);if(!o.is_object()&&!o.is_null())refuse("invalid_options","List options must be an object");
  Json options=o.is_object()?o:Json::object();fs::path relative;bool hidden=flag(options,"hidden");
  if(options.contains("relative")&&!options["relative"].is_null()){if(!options["relative"].is_string())refuse("invalid_options","relative must be text");relative=checkRelativePath(options["relative"].get<std::string>());}
  if(!entry->folder)refuse("not_a_folder","Only folders can be listed");
  if(running()>=8)refuse("busy","Too many reads are running");
- auto id=sequence++;auto rules=policy;lists.emplace(id,work([entry,relative,hidden,rules]{return listItem(*entry,relative,hidden,*rules);}));return id;
+ auto rules=policy;auto task=launch(true,entry->grant,[entry,relative,hidden,rules](FileTask& t){t.list=listItem(*entry,relative,hidden,*rules,t.stop);});
+ auto id=sequence++;tasks.emplace(id,std::move(task));return id;
 }
 std::optional<Json> FileAccess::pollList(uint64_t id){
- auto it=lists.find(id);if(it==lists.end())refuse("unknown_request","Unknown listing");
- if(it->second.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return std::nullopt;
- auto future=std::move(it->second.future);lists.erase(it);return future.get();
+ auto task=collect(tasks,dropped,id,true);if(!task)return std::nullopt;return std::move(task->list);
 }
 void FileAccess::release(const std::string& handle){items.erase(handle);}
 Json FileAccess::grants(){
- localOnly();
+ localOnly();refresh();
  Json list=Json::array();for(auto& g:store.grants)list.push_back({{"id",g.id},{"requester",g.requester},{"folder",displayPath(g.folder)},{"created",g.created},{"used",g.used}});
  return {{"enabled",store.enabled},{"grants",list}};
 }
 bool FileAccess::revoke(const std::string& id){
- localOnly();
- auto gone=[&](const FileGrant& g){return id=="all"||g.id==id;};
- for(auto it=items.begin();it!=items.end();)if(!it->second->grant.empty()&&std::any_of(store.grants.begin(),store.grants.end(),[&](const FileGrant& g){return gone(g)&&g.id==it->second->grant;}))it=items.erase(it);else ++it;
- store.grants.erase(std::remove_if(store.grants.begin(),store.grants.end(),gone),store.grants.end());return persist();
+ localOnly();refresh();
+ // "all" ends everything a remembered folder answered, also under a folder replaced since.
+ std::set<std::string> gone;if(id!="all")gone.insert(id);forget(gone,id=="all");
+ return persist([id](FileGrantStore& s){std::erase_if(s.grants,[&](const FileGrant& g){return id=="all"||g.id==id;});});
 }
 Json FileAccess::setEnabled(bool enabled,const std::string& code){
  // A remote server's scripts can neither see nor change the player's choices.
- localOnly();
+ localOnly();refresh();
  if(!enabled){
   // Off before anything is saved: a store that cannot be written must not keep it on.
-  store.enabled=false;items.clear();
-  for(auto& [id,r]:requests)if(r->result.is_null()){stop(*r);r->result=denied("disabled","The player turned file access for other addons off");}
-  queue.clear();active=0;Json off={{"enabled",false}};if(!persist())off["notSaved"]=true;return off;
+  turnedOff();Json off={{"enabled",false}};if(!persist([](FileGrantStore& s){s.enabled=false;}))off["notSaved"]=true;return off;
  }
  if(store.enabled)return {{"enabled",true}};
  // Turning it on is the player's decision too, asked natively.
