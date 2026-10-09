@@ -185,7 +185,8 @@ void evaluatePose(const Model&,const std::vector<btTransform>& manual,const std:
 struct DrawVertex { float x=0,y=0,z=0,nx=0,ny=0,nz=0; uint32_t color=0xffffffffu; float u=0,v=0,tx=1,ty=0,tz=0,tw=1,edge=0,extra0=0,extra1=0; };
 static_assert(sizeof(DrawVertex)==64&&offsetof(DrawVertex,nx)==12&&offsetof(DrawVertex,color)==24&&offsetof(DrawVertex,u)==28&&offsetof(DrawVertex,tx)==36);
 struct Snapshot {
-    uint64_t sequence=0,staticsVersion=0;
+    // uvVersion: the instance's UV state these vertices carry (Instance::uvVersion).
+    uint64_t sequence=0,staticsVersion=0,uvVersion=0;
     double time=0;
     bool materialsPristine=false;
     std::vector<DrawVertex> vertices;
@@ -240,6 +241,9 @@ struct Instance {
     // Sparse morph state in the skin layout order plus per-vertex UV overrides.
     std::vector<float> morphX,morphY,morphZ,uvU,uvV,uvE0,uvE1,palette;
     std::vector<unsigned> morphTouched,uvTouched;
+    // Weights of the texture and UVA1 morphs the UV state holds (morph, weight), and
+    // a version that changes only with them: held UV morphs cost nothing per publish.
+    std::vector<std::pair<unsigned,float>> uvWeights;uint64_t uvVersion=0;
     std::shared_ptr<const Model::SkinLayout> morphLayout;
     std::vector<float> previousPalette;std::vector<uint64_t> boneChangedState;uint64_t allChangedState=0,geometryState=0;
     unsigned changedBones=0;bool fullChange=false;uint64_t idleFrames=0;unsigned fullChangeReasons=0;// 1 morph, 2 statics, 4 soft, 8 layout, 16 new buffer

@@ -219,6 +219,33 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      check(kept(*noneModel,0)+kept(*noneModel,1)==0&&opaqueModel->cutoutTriangles.empty(),"alpha-test cutout drops every triangle of an all-cut texture and measures nothing without texture alpha");
      fs::remove_all(cache);
     }catch(const std::exception& e){std::cout<<e.what()<<"\n";check(false,"alpha-test coverage of imported textures");}
+    // A texture (UV) morph switches what an alpha-tested atlas shows (Ruan Mei's stockings).
+    // Publishing: the UV state changes only with the UV morphs' weights. Held, they cost no
+    // statics refill and an unchanged pose publishes nothing; both snapshot buffers and the
+    // hardware-skinning rest data still receive every change.
+    try{auto cache=fs::absolute("test-output/uvmorph-cache");fs::remove_all(cache);
+     auto id=importAsset(fs::absolute("tests/fixtures/native-cutout-uvmorph.pmx"),cache,Json::object()).at("asset").get<std::string>();auto model=loadAsset(cache,id);
+     int uv=-1;for(size_t i=0;i<model->morphs.size();i++)if(nanoemModelMorphGetType(model->morphs[i])==NANOEM_MODEL_MORPH_TYPE_TEXTURE)uv=int(i);
+     if(uv<0)throw std::runtime_error("the UV morph fixture has no texture morph");
+     for(bool gpu:{false,true}){
+      World host;host.gpuSkinning=gpu;auto& p=host.get(host.create(model,{{"backend","source"},{"secondaryCollision",0}}));p.secondary.reset();
+      auto republish=[&]{p.poseDirty=true;p.ensureSnapshot();};
+      p.ensureSnapshot();republish();const float rest=model->vertices[3].uv[0];const auto uvVersion=p.snapshot->uvVersion;auto restVersion=p.snapshot->restVersion;
+      p.morphWeights[size_t(uv)]=.5f;p.updatePose();p.ensureSnapshot();
+      bool applied=p.snapshot->gpu==gpu&&p.snapshot->uvVersion==uvVersion+1&&p.snapshot->vertices[3].u==rest+.25f;
+      if(gpu)applied&=p.snapshot->restVersion>restVersion&&p.gpuRest->changed.at(3)==p.snapshot->restVersion;
+      republish();auto sequence=p.snapshot->sequence;auto statics=p.staticsVersion;restVersion=p.snapshot->restVersion;republish();republish();
+      bool held=p.snapshot->sequence==sequence&&p.staticsVersion==statics&&p.uvVersion==uvVersion+1&&p.snapshot->restVersion==restVersion;
+      std::set<const Snapshot*> buffers;bool current=true;
+      for(int k=1;k<=4;k++){p.placement.setOrigin(btVector3(float(k),0,0));republish();buffers.insert(p.snapshot.get());current&=p.snapshot->vertices[3].u==rest+.25f;}
+      p.morphWeights[size_t(uv)]=0;p.updatePose();p.ensureSnapshot();bool cleared=p.snapshot->uvVersion==uvVersion+2&&p.snapshot->vertices[3].u==rest;
+      for(int k=1;k<=2;k++){p.placement.setOrigin(btVector3(0,float(k),0));republish();cleared&=p.snapshot->vertices[3].u==rest&&p.snapshot->uvVersion==uvVersion+2;}
+      check(applied,gpu?"a UV morph change reaches the snapshot and the hardware-skinning rest data":"a UV morph change reaches the snapshot UVs");
+      check(held,gpu?"a held UV morph neither refills statics nor restamps rest data on the hardware path":"a held UV morph neither refills statics nor republishes an unchanged pose");
+      check(buffers.size()==2&&current&&cleared,gpu?"both reused snapshot buffers carry the current UVs (hardware path)":"both reused snapshot buffers carry the current UVs");
+     }
+     fs::remove_all(cache);
+    }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"UV morph publishing");}
     // Nested group morphs: 13 links of coefficient 1000 end at an impulse morph (4), and a
     // lattice names each child twice for 40 levels before the vertex morph (0).
     try{
