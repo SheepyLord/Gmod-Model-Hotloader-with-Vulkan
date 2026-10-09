@@ -476,10 +476,10 @@ function BM.ShowWindow(state,opts)
   primary:SetEnabled(not state.loading and not blocked and not busy and not admin and not win.saving)
   primary:SetText(win.saving and L'bonemap.saving' or primaryLabel(state))
   primary:SetTooltip(blocked and L'bonemap.disabled_missing' or busy and L'bonemap.disabled_busy' or admin and L'bonemap.disabled_admin' or nil)
-  if IsValid(win.inspector) then win.inspector:Rebuild() end
-  if IsValid(win.table) then win.table:Rebuild() end
-  if IsValid(win.jiggleList) then win.jiggleList:Rebuild() end
-  if IsValid(win.jiggleDetails) then win.jiggleDetails:Rebuild() end
+  if IsValid(win.inspector) then win.inspector:RebuildContent() end
+  if IsValid(win.table) then win.table:RebuildContent() end
+  if IsValid(win.jiggleList) then win.jiggleList:RebuildContent() end
+  if IsValid(win.jiggleDetails) then win.jiggleDetails:RebuildContent() end
  end
  noticeLink.DoClick=function()
   -- One undo step back to the automatic assignment.
@@ -949,7 +949,8 @@ function BM.BuildInspector(win,parent)
    for i,bone in ipairs(state.bones) do if bone.name:lower():find(query,1,true) then win:AssignArmed(i-1) return end end end
   fill()
  end
- function panel:Rebuild()
+ -- Not Rebuild: DScrollPanel calls its own Rebuild on every layout pass.
+ function panel:RebuildContent()
   local state=win.state
   local keepFocus=IsValid(panel.Search) and panel.Search:HasFocus()
   canvas:Clear() panel.Search=nil
@@ -1078,7 +1079,7 @@ function BM.BuildInspector(win,parent)
   canvas:InvalidateLayout(true) panel:InvalidateLayout(true) UI.ownScale(panel)
   if keepFocus and IsValid(panel.Search) then panel.Search:RequestFocus() panel.Search:SetCaretPos(#panel.Search:GetText()) end
  end
- panel:Rebuild()
+ panel:RebuildContent()
  return panel
 end
 
@@ -1088,13 +1089,13 @@ function BM.BuildTable(win,parent)
  local panel=parent:Add('DScrollPanel') panel.Paint=function(_,w,h) draw.RoundedBox(4,0,0,w,h,color_white) end
  local canvas=panel:GetCanvas() canvas:DockPadding(s(6),s(6),s(6),s(6))
  local collapsed={fingers=true}
- function panel:Rebuild()
+ function panel:RebuildContent()
   local state=win.state
   local y=panel:GetVBar():GetScroll()
   canvas:Clear()
   for _,g in ipairs(BM.GroupOrder) do local entry=(win.summary or BM.Summary(state)).groups[g] if entry then
    if entry.worst=='missing' then collapsed[g]=false end
-   local head=UI.button(canvas,(collapsed[g] and '▸ ' or '▾ ')..L('bonemap.group.'..g)..'   '..L('bonemap.group.count',{done=entry.done,total=entry.total}),function() collapsed[g]=not collapsed[g] panel:Rebuild() end,s(26),f.Strong)
+   local head=UI.button(canvas,(collapsed[g] and '▸ ' or '▾ ')..L('bonemap.group.'..g)..'   '..L('bonemap.group.count',{done=entry.done,total=entry.total}),function() collapsed[g]=not collapsed[g] panel:RebuildContent() end,s(26),f.Strong)
    head:Dock(TOP) head:SetContentAlignment(4) head:SetTextInset(s(8),0) head:DockMargin(0,s(4),0,s(2))
    if not collapsed[g] then for _,slot in ipairs(BM.Slots) do if BM.SummaryGroup(slot)==g and not (slot.convertOnly and state.mode~='convert') then
     local key=slot.key local status=BM.StatusOf(state,key) local issues=BM.IssuesOf(state,key)
@@ -1116,7 +1117,7 @@ function BM.BuildTable(win,parent)
   end end
   panel:InvalidateLayout(true) panel:GetVBar():SetScroll(y) UI.ownScale(panel)
  end
- panel:Rebuild()
+ panel:RebuildContent()
  return panel
 end
 -- The bone picker popover of the list view.
@@ -1170,7 +1171,7 @@ function BM.BuildJiggleList(win,parent)
  local add=UI.button(panel,L'bonemap.jiggle.add',function() win.addMode=true win.armed=nil end,s(32),f.Body) add:Dock(BOTTOM) add:DockMargin(0,s(6),0,s(4))
  local list=panel:Add('DScrollPanel') list:Dock(FILL) list.Paint=function(_,w,h) draw.RoundedBox(4,0,0,w,h,color_white) end
  local canvas=list:GetCanvas() canvas:DockPadding(s(6),s(6),s(6),s(6))
- function panel:Rebuild()
+ function panel:RebuildContent()
   local state=win.state canvas:Clear()
   if #state.groups==0 then local none=UI.label(canvas,L'bonemap.jiggle.none',f.Small,s(20)) none:Dock(TOP) none:SetWrap(true) none:SetAutoStretchVertical(true) none:SetTextColor(Colors.muted) end
   for _,g in ipairs(state.groups) do
@@ -1192,14 +1193,14 @@ function BM.BuildJiggleList(win,parent)
   total:SetText(L('bonemap.jiggle.total',{bones=joints,max=BM.MaxJoints})) total:SetTextColor(joints>BM.MaxJoints and Colors.missing or Colors.muted)
   UI.ownScale(panel)
  end
- panel:Rebuild()
+ panel:RebuildContent()
  return panel
 end
 function BM.BuildJiggleDetails(win,parent)
  local UI=mmdhl.UI local s,f=win.s,win.f
  local panel=parent:Add('DScrollPanel') panel.Paint=function(_,w,h) draw.RoundedBox(4,0,0,w,h,color_white) end
  local canvas=panel:GetCanvas() canvas:DockPadding(s(10),s(8),s(10),s(8))
- function panel:Rebuild()
+ function panel:RebuildContent()
   local state=win.state canvas:Clear()
   local g=win.selectedGroup and BM.GroupOf(state,win.selectedGroup)
   if not g then local l=UI.label(canvas,L'bonemap.jiggle.select_group',f.Body,s(20)) l:Dock(TOP) l:SetWrap(true) l:SetAutoStretchVertical(true) l:SetTextColor(Colors.muted) return end
@@ -1241,7 +1242,7 @@ function BM.BuildJiggleDetails(win,parent)
   local reset=UI.button(body,L'bonemap.jiggle.reset',function() g.custom=false g.values=nil BM.Changed(state,'swing') win:Changed() end,s(28),f.Small) reset:Dock(TOP) reset:DockMargin(0,s(4),0,0)
   holder:Resize() UI.ownScale(panel)
  end
- panel:Rebuild()
+ panel:RebuildContent()
  return panel
 end
 

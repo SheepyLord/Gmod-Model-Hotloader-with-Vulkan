@@ -842,3 +842,12 @@ game={SinglePlayer=function() return true end}
 local prompt=BM.ShowRescuePrompt(id,'Hero',{VB..'L_Thigh',VB..'L_Calf'}) PAINT_ALL()
 SAY('PASS: fit window loads the cached model, shows guesses and fitter notes, saves pins and closes on the answer; rescue prompt paints')
 ''')
+
+# DScrollPanel calls its own Rebuild on every layout pass; a panel that defines Rebuild
+# to recreate its children loops forever in the game (stub Derma cannot show this).
+import re as _re
+for _path in sorted((ROOT / 'addon/lua').rglob('*.lua')):
+    _text = _path.read_text(encoding='utf-8')
+    for _name in _re.findall(r"local\s+(\w+)\s*=\s*[\w.]+:Add\('DScrollPanel'\)", _text) + _re.findall(r"local\s+(\w+)\s*=\s*vgui\.Create\('DScrollPanel'", _text):
+        assert not _re.search(r'function\s+' + _name + r'\s*:\s*Rebuild\s*\(', _text), f'{_path.name}: {_name}:Rebuild overrides DScrollPanel.Rebuild'
+print('PASS: no scroll panel replaces DScrollPanel.Rebuild')
