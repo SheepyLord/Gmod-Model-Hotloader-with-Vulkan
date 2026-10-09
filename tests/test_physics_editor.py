@@ -429,7 +429,8 @@ SERVER=true CLIENT=false NOW=100 CurTime=function() return NOW end SysTime=CurTi
 IsValid=function(v) return type(v)=='table' and not v.removed end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
-table.Copy=deep table.Count=function(t) local n=0 for _ in pairs(t or {}) do n=n+1 end return n end
+-- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
+table.Copy=function(t) if t==nil then return nil end if type(t)~='table' then error("bad argument #1 to 'pairs' (table expected, got "..type(t)..")",2) end return deep(t) end table.Count=function(t) local n=0 for _ in pairs(t or {}) do n=n+1 end return n end
 math.Clamp=function(v,lo,hi) return math.min(math.max(v,lo),hi) end
 ERRORS={} ErrorNoHalt=function(s) ERRORS[#ERRORS+1]=tostring(s) end MsgN=function(s) LOGGED=(LOGGED or '')..tostring(s)..'\n' end
 FCVAR_ARCHIVE=1 FCVAR_REPLICATED=2 FCVAR_NOTIFY=4
@@ -689,6 +690,12 @@ NOW=NOW+10 SPAWN_FAIL='Invalid physics settings: damping_range bodies.ValveBiped
 request(editor,'apply',current,{base=current:GetNW2String('MMDHLRig'),request=req}) assert(says(last(editor),'physics_editor.error.invalid'))
 SPAWN_FAIL=nil assert(not current.MMDHLPhysicsBusy and not editor.MMDHLPhysicsBusy)
 ''')
+s.execute(r'''
+local P=mmdhl.physics
+local sub=P.Subset({mass=60,collisionOverrideScale=3.23656,collisionOverrides={a={center={1,2,3}}},physicsOverrides={schema=1}})
+assert(sub.mass==60 and sub.collisionOverrideScale==3.23656 and sub.collisionOverrides.a.center[2]==2 and sub.physicsOverrides.schema==1,'history keeps number options')
+local empty=P.Subset(nil) assert(empty.mass==70 and next(empty.collisionOverrides)==nil)
+''')
 print('PASS: Apply replaces the ragdoll in place: pose and motion, look, constraints, owner, undo and cleanup move over; Previous version and Reset; failures leave the old ragdoll and are translated')
 
 # L13: saved per-model defaults and spawns.
@@ -829,7 +836,8 @@ SERVER=false CLIENT=true NOW=10 RealTime=function() return NOW end CurTime=RealT
 IsValid=function(v) return type(v)=='table' and rawget(v,'removed')~=true and rawget(v,'invalid')~=true end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
-table.Copy=deep table.Count=function(t) local n=0 for _ in pairs(t or {}) do n=n+1 end return n end
+-- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
+table.Copy=function(t) if t==nil then return nil end if type(t)~='table' then error("bad argument #1 to 'pairs' (table expected, got "..type(t)..")",2) end return deep(t) end table.Count=function(t) local n=0 for _ in pairs(t or {}) do n=n+1 end return n end
 math.Clamp=function(v,lo,hi) return math.min(math.max(v,lo),hi) end math.Round=function(v,d) local p=10^(d or 0) return math.floor(v*p+.5)/p end
 Lerp=function(t,a,b) return a+(b-a)*t end
 ERRORS={} ErrorNoHalt=function(s) ERRORS[#ERRORS+1]=tostring(s) end
@@ -865,7 +873,7 @@ TEXT_ALIGN_CENTER=1 TEXT_ALIGN_LEFT=0
 local function noop() end
 draw={RoundedBox=noop,RoundedBoxEx=noop,SimpleText=noop,SimpleTextOutlined=noop,NoTexture=noop}
 surface={SetFont=noop,GetTextSize=function(t) return #tostring(t or '')*7,14 end,CreateFont=noop,SetDrawColor=noop,DrawRect=noop,DrawLine=noop,DrawOutlinedRect=noop}
-render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=noop,End3D2D=noop}
+render={DrawLine=noop,DrawBeam=noop,SetColorMaterial=noop,DrawWireframeBox=noop} cam={Start3D2D=noop,End3D2D=noop,IgnoreZ=function(on) IGNOREZ=on end}
 util={AddNetworkString=noop,TableToJSON=function(t) return py_encode(t) end,JSONToTable=function(s) if type(s)~='string' then return nil end return py_decode(s) end,Compress=function(s) return 'Z'..s end,Decompress=function(s) if type(s)=='string' and s:sub(1,1)=='Z' then return s:sub(2) end end,
  GetSurfaceIndex=function(n) return ({flesh=1,metal=2,wood=3,ice=4})[n] or -1 end,GetSurfaceData=function() return {density=1000} end,IsValidModel=function(m) return m=='models/alyx.mdl' end,GetModelInfo=function() return {KeyValues=TEMPLATE} end,
  AimVector=function() return Vector(1,0,0) end,IntersectRayWithOBB=function(o) return o+Vector(1,0,0) end,TraceLine=function() return {} end}

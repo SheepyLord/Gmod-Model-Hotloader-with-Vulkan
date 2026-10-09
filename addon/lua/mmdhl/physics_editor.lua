@@ -23,7 +23,8 @@ local function decompress(data) if not isstring(data) or data=='' then return ni
 -- What a ragdoll was built with, for Previous version. Absent values become their explicit
 -- defaults: rebuilding must not pick up a saved default the ragdoll never had.
 function P.Subset(options)
- local out={} for _,k in ipairs(EditedKeys) do out[k]=table.Copy(options and options[k]) end
+ -- mass and collisionOverrideScale are numbers; table.Copy accepts only tables.
+ local out={} for _,k in ipairs(EditedKeys) do local v=options and options[k] if istable(v) then v=table.Copy(v) end out[k]=v end
  out.collisionOverrides=out.collisionOverrides or {} out.excludedMaterials=out.excludedMaterials or {} out.physicsOverrides=out.physicsOverrides or {} out.mass=out.mass or 70
  return out
 end
@@ -187,7 +188,7 @@ if SERVER then
    o.physicsEditor=saved.editor and P.SanitizeEditor(saved.editor.ui) or nil
   elseif op=='previous' then
    local h=istable(ent.MMDHLPhysicsHistory) and ent.MMDHLPhysicsHistory[1] if not h then return nil,'physics_editor.error.no_previous' end
-   for _,k in ipairs(EditedKeys) do o[k]=table.Copy(h[k]) end
+   for _,k in ipairs(EditedKeys) do local v=h[k] if istable(v) then v=table.Copy(v) end o[k]=v end
   end
   if level<1 then o.collisionOverrides=P.StripStyles(o.collisionOverrides) end
   return o

@@ -859,8 +859,15 @@ function Editor:FixOverlaps(item)
 end
 
 -- The world: overlay, camera and picking ----------------------------------------------
+-- The shapes sit inside the character's mesh: draw them through it, and always
+-- restore depth testing so an error cannot leave the rest of the frame without it.
 function Editor:DrawWorld()
- local ent=self.ent if not IsValid(ent) or not self.rig or not self.draft then return end
+ if not IsValid(self.ent) or not self.rig or not self.draft then return end
+ cam.IgnoreZ(true) local ok,err=pcall(self.DrawShapes,self) cam.IgnoreZ(false)
+ if not ok then error(err,0) end
+end
+function Editor:DrawShapes()
+ local ent=self.ent
  ent:InvalidateBoneCache() ent:SetupBones() render.SetColorMaterial()
  local m=(tonumber(self.rig.scale) or 3.23656)/3.23656
  local actual=GetConVar('mmdhl_physics_editor_actual'):GetBool() and ent.MMDHLActualCollision
