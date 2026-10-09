@@ -391,7 +391,61 @@ AUTOSKIP=false
 -- The public entry: a probe status opens the convert window; fit mode needs the newer native.
 assert(mmdhl.OpenBoneMapper({probe={probe=PROBE(true),source='C:/m/api.fbx',filename='api.fbx'}}) and shown[#shown].state.source=='C:/m/api.fbx')
 NOTES={} assert(mmdhl.OpenBoneMapper({asset=string.rep('a',64)})==false and NOTES[1]==mmdhl.L'bonemap.update_needed')
-SAY('PASS: probe job, window on a finished probe, kept session, newer probes, converter rejections, file changes, skip option, public entry')
+-- A probe without its file (the conversion reads the file again) does not open, and raises nothing.
+local count=#shown
+assert(mmdhl.OpenBoneMapper({probe=PROBE(true)})==false and mmdhl.OpenBoneMapper({probe={state='complete',source='C:/m/x.fbx'}})==false and #shown==count)
+assert(BM.OpenConvert({probe=PROBE(true)},{})==false and #shown==count)
+-- A window the player is working in (fit mode opened while the probe ran) is never replaced:
+-- the finished probe waits and opens when that window closes.
+BM.frame={} NOTES={}
+assert(BM.OnJobStatus({state='complete',kind='bone_map',source='C:/m/wait.fbx',filename='wait.fbx',probe=PROBE(true)})) RUN_TIMERS()
+assert(#shown==count and BM.queued~=nil and NOTES[#NOTES]==mmdhl.L('bonemap.status.waiting',{file='wait.fbx'}))
+BM.frame=nil BM.RunQueued() assert(BM.queued==nil) RUN_TIMERS()
+assert(#shown==count+1 and shown[#shown].state.source=='C:/m/wait.fbx')
+-- The same for a converter rejection that reopens a session.
+BM.frame={} library.job=6
+assert(BM.OnJobStatus({state='failed',kind='character',source='C:/m/wait.fbx',filename='wait.fbx',error='Bone X is used twice.',errorCode='character.bone_map',errorDetails={slot=VB..'L_Hand',reason='duplicate'}}))
+RUN_TIMERS() assert(#shown==count+1 and BM.queued~=nil)
+BM.frame=nil BM.RunQueued() RUN_TIMERS() assert(#shown==count+2 and shown[#shown].opts.select==VB..'L_Hand')
+SAY('PASS: probe job, window on a finished probe, kept session, newer probes, converter rejections, file changes, skip option, public entry, no window replaced')
+''')
+
+# ---- failures with a better hint: an older native, and a DAE without a skeleton ----
+lua.execute('local library=mmdhl.library ' + definition(lua, LIBRARY, 'local staticTypes=') + definition(lua, LIBRARY, 'function library.StaticImportable'))
+lua.execute(r'''
+local library=mmdhl.library
+assert(library.StaticImportable('C:/m/Box.FBX') and library.StaticImportable('a.blend') and not library.StaticImportable('C:/m/box.dae') and not library.StaticImportable('noext'))
+CAPS=mmdhl.native.GetCapabilities mmdhl.native.GetCapabilities=nil
+''')
+lua.execute(UI)
+lua.execute(r'''
+local BM,library=mmdhl.boneMapper,mmdhl.library
+assert(not BM.Available('convert'))
+local old='This file is not a PMX, PMD or VRM character. Static 3D models (OBJ, FBX, glTF, BLEND) belong in Static Props.'
+-- An FBX picked through "All files" with natives older than 2.3.0: the update reminder and hint.
+library.jobKind='library' NOTES={}
+local status={state='failed',source='C:/m/hero.fbx',filename='hero.fbx',error=old}
+assert(not BM.OnJobStatus(status) and status.hint==mmdhl.L'library.hint.character_update' and NOTES[1]==mmdhl.L'library.hint.character_update')
+local reminded mmdhl.ShowNativeUpdateNeeded=function(feature,version) reminded={feature,version} end
+status={state='failed',source='C:/m/hero.glb',error=old} BM.OnJobStatus(status)
+assert(reminded[1]==mmdhl.L'bonemap.feature_convert' and reminded[2]=='2.3.0' and status.hint)
+mmdhl.ShowNativeUpdateNeeded=nil
+-- Not for a PMX, nor for a static prop import.
+status={state='failed',source='C:/m/hero.pmx',error=old} BM.OnJobStatus(status) assert(status.hint==nil)
+library.jobKind='static' status={state='failed',source='C:/m/hero.fbx',error=old} BM.OnJobStatus(status) assert(status.hint==nil)
+library.jobKind='character_probe'
+mmdhl.native.GetCapabilities=CAPS
+''')
+lua.execute(UI)
+lua.execute(r'''
+local BM,library=mmdhl.boneMapper,mmdhl.library
+assert(BM.Available('convert'))
+-- A DAE without a skeleton cannot become a static prop either: export it first.
+local status={state='failed',kind='character_probe',source='C:/m/box.dae',errorCode='character.no_skeleton'}
+assert(not BM.OnJobStatus(status) and status.hint==mmdhl.L'library.hint.character_no_skeleton_export')
+status={state='failed',kind='character_probe',source='C:/m/box.fbx',errorCode='character.no_skeleton'} BM.OnJobStatus(status) assert(status.hint==nil)
+library.jobKind=nil
+SAY('PASS: older natives get the update reminder for FBX, glTF and DAE characters; a DAE without a skeleton is told to export first')
 ''')
 
 # ---- after an import or a failed spawn: the fitter (with saved pins) decides ----
@@ -407,16 +461,28 @@ assert(FIT[1][2].ok==false and FIT[1][2].missing[1]==VB..'L_Thigh' and #prompts=
 FIT={} BM.AfterImport({asset=id,info={name='Box',found=1,bones=3},fit={ok=false,errorCode='fit.landmarks',missing={VB..'L_Thigh'}}}) assert(#FIT==0)
 -- With the fitter pins the saved pins are applied first.
 local proposals={}
-mmdhl.native.GetBoneMapProposal=function(asset,json) proposals[#proposals+1]=util.JSONToTable(json) return util.TableToJSON({missing=MISSING or {}}) end
+RAW={} mmdhl.native.GetBoneMapProposal=function(asset,json) RAW[#RAW+1]=json proposals[#proposals+1]=util.JSONToTable(json) return util.TableToJSON({missing=MISSING or {}}) end
 mmdhl.native.InspectBoneMap=function() return '{}' end
 mmdhl.native.RequestAsset=function() return true end mmdhl.native.AssetInfo=function() return util.TableToJSON({name='Hero',found=8,bones=40}) end
 local queued={} timer.Create=function(name,_,_,fn) queued[#queued+1]=fn end
 assert(BM.Available('fit'))
-DISK['mmd_hotloader/fit_overrides/'..id..'.json']=util.TableToJSON({version=3,generator=18,boneMap={[VB..'L_Thigh']=12}})
+DISK['mmd_hotloader/fit_overrides/'..id..'.json']='{"version":3,"generator":18,"boneMap":{"ValveBiped.Bip01_L_Thigh":12.0}}'
 MISSING={VB..'L_Calf'} FIT={}
 BM.AfterImport({asset=id,info={name='Hero',found=8,bones=40},fit={ok=false,errorCode='fit.landmarks',missing={VB..'L_Thigh'}}})
 for _,fn in ipairs(queued) do fn() end queued={}
 assert(proposals[1].boneMap[VB..'L_Thigh']==12 and FIT[1][2].missing[1]==VB..'L_Calf' and prompts[1][1]==id and prompts[1][3][1]==VB..'L_Calf')
+assert(RAW[1]=='{"boneMap":{"ValveBiped.Bip01_L_Thigh":12}}','pins reach the native as whole numbers')
+-- On a dedicated server the pins are the server's: the client asks for them.
+game={SinglePlayer=function() return false end} LocalPlayer=function() return {IsListenServerHost=function() return false end} end
+local asked={} mmdhl.Action=function(action,asset) asked[#asked+1]={action,asset} end
+local got BM.ServerPins(id,function(pins,collision) got={pins,collision} end) BM.ServerPins(id,function() end)
+assert(#asked==1 and asked[1][1]=='bonemap_pins' and asked[1][2]==id and got==nil)
+local reads={id,'{"boneMap":{"ValveBiped.Bip01_L_Calf":7.0,"Nonsense":3}}',true}
+net.ReadString=function() return table.remove(reads,1) end net.ReadBool=function() return table.remove(reads,1) end
+NET['mmdhl_bonemap_pins']() assert(got[1][VB..'L_Calf']==7 and got[1].Nonsense==nil and got[2]==true and BM.pinQueries[id]==nil)
+-- No answer: the callback learns it.
+queued={} got=false BM.ServerPins(id,function(pins) got=pins end) for _,fn in ipairs(queued) do fn() end queued={} assert(got==nil and BM.pinQueries[id]==nil)
+game={SinglePlayer=function() return true end}
 -- The saved pins fixed it: the badge goes, no prompt.
 MISSING={} FIT={} prompts={}
 BM.CheckRescue(id) for _,fn in ipairs(queued) do fn() end queued={}
@@ -485,7 +551,11 @@ IsValid=function(v) return v~=nil end
 hook={Run=function() return nil end}
 local proposal={missing={},issues={},bones={{name=VB..'L_Thigh',mmd=12},{name=VB..'Pelvis',mmd=1}}}
 local inspected
-mmdhl.native={GetBoneMapProposal=function(asset,json) PROPOSED=util.JSONToTable(json) return util.TableToJSON(proposal) end,
+-- The fitter's own choice (no pins) and its resolved map with the pins (a torso repair put two parts on bone 1).
+local base={missing={},issues={},bones={{name=VB..'L_Thigh',mmd=-1},{name=VB..'Pelvis',mmd=1},{name=VB..'Spine1',mmd=2}}}
+proposal.bones[#proposal.bones+1]={name=VB..'Spine1',mmd=1}
+PROPOSED={} RAWPROPOSED={}
+mmdhl.native={GetBoneMapProposal=function(asset,json) RAWPROPOSED[#RAWPROPOSED+1]=json PROPOSED[#PROPOSED+1]=util.JSONToTable(json) return util.TableToJSON(json=='{}' and base or proposal) end,
  InspectBoneMap=function(asset,json) inspected=util.JSONToTable(json) return util.TableToJSON({issues={}}) end}
 mmdhl.LoadAsset=function(asset,cb) cb({name='Hero'}) end
 local function save(value) CLOCK=CLOCK+2 REPLIES={} BM.HandleSave(p,id,type(value)=='string' and value or util.TableToJSON(value)) return REPLIES[1] end
@@ -510,28 +580,40 @@ proposal.missing={VB..'L_Calf'} r=save({version=1,boneMap={[VB..'L_Thigh']=12}})
 proposal.missing={} proposal.issues={{code='duplicate',severity='error',text='Bone 12 is used twice'}}
 r=save({version=1,boneMap={[VB..'L_Thigh']=12}}) assert(r[2]==false and says(r,'Bone 12 is used twice'))
 proposal.issues={{code='band',severity='warning',text='aliased'}}
--- Saving merges into the collision corrections and checks the structure of the fitter's map.
+-- Saving merges into the collision corrections and checks the structure of what the window
+-- showed: the fitter's own choice with the pins on top, not the fitter's repaired torso.
 DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},scale=3.2,excludedMaterials={'m'}})
-r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=false})
-assert(r[2]==true and says(r,'server.notice.bonemap_saved') and inspected.values[VB..'L_Thigh']==12 and PROPOSED.boneMap[VB..'L_Thigh']==12)
-local saved=util.JSONToTable(DISK[path]) assert(saved.boneMap[VB..'L_Thigh']==12 and saved.boneMapVersion==1 and saved.bodies.a==1 and saved.scale==3.2 and saved.version==3 and saved.generator==18)
--- Collision corrections made for the old bones can go; excluded materials stay.
-r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=true}) saved=util.JSONToTable(DISK[path])
-assert(r[2]==true and saved.bodies==nil and saved.scale==nil and saved.excludedMaterials[1]=='m')
+PROPOSED={} RAWPROPOSED={} r=save('{"version":1,"boneMap":{"ValveBiped.Bip01_Spine2":5.0},"dropCollision":false}')
+assert(r[2]==true and says(r,'server.notice.bonemap_saved') and PROPOSED[1].boneMap[VB..'Spine2']==5 and RAWPROPOSED[2]=='{}')
+assert(RAWPROPOSED[1]=='{"boneMap":{"ValveBiped.Bip01_Spine2":5}}','pins reach the fitter as whole numbers')
+assert(inspected.values[VB..'Spine2']==5 and inspected.values[VB..'Spine1']==2 and inspected.values[VB..'Pelvis']==1 and inspected.values[VB..'L_Thigh']==-1)
+local saved=util.JSONToTable(DISK[path]) assert(saved.boneMap[VB..'Spine2']==5 and saved.boneMapVersion==1 and saved.bodies.a==1 and saved.scale==3.2 and saved.version==3 and saved.generator==18)
+-- A changed part with a body drops the collision corrections made for the old bones, even
+-- when the client did not ask (its baseline may be stale); excluded materials stay.
+r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=false}) saved=util.JSONToTable(DISK[path])
+assert(r[2]==true and saved.bodies==nil and saved.scale==nil and saved.excludedMaterials[1]=='m' and inspected.values[VB..'L_Thigh']==12)
+DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},boneMap={[VB..'L_Thigh']=12}})
+r=save({version=1,boneMap={[VB..'L_Thigh']=12,[VB..'Spine2']=5}}) saved=util.JSONToTable(DISK[path]) assert(saved.bodies.a==1,'unchanged bodies keep their corrections')
+r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=true}) saved=util.JSONToTable(DISK[path]) assert(saved.bodies==nil,'the client may still ask')
 -- An empty map removes the pins without asking the fitter.
-PROPOSED=nil r=save({version=1,boneMap={}}) saved=util.JSONToTable(DISK[path])
-assert(r[2]==true and PROPOSED==nil and saved.boneMap==nil and saved.boneMapVersion==nil and saved.version==3)
+PROPOSED={} r=save({version=1,boneMap={}}) saved=util.JSONToTable(DISK[path])
+assert(r[2]==true and #PROPOSED==0 and saved.boneMap==nil and saved.boneMapVersion==nil and saved.version==3)
 -- A model the server cannot load, and a server without the fitter pins.
 mmdhl.LoadAsset=function(asset,cb) cb(nil,'missing') end assert(says(save({version=1,boneMap={}}),'bonemap_not_on_server'))
 mmdhl.LoadAsset=function(asset,cb) cb({name='Hero'}) end mmdhl.native.GetBoneMapProposal=nil
 assert(says(save({version=1,boneMap={[VB..'L_Thigh']=12}}),'bonemap_update'))
-SAY('PASS: the save handler checks permission, rate, size, keys and values, asks the server fitter, merges the file and removes pins')
+-- The pins a player on a dedicated server starts from, a few answers per second.
+DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},boneMap={[VB..'L_Calf']=7}})
+REPLIES={} CLOCK=500 for k=1,10 do BM.HandleQuery(p,id) end BM.HandleQuery(p,'../x')
+assert(#REPLIES==8 and REPLIES[1][1]==id and REPLIES[1][2]=='{"boneMap":{"ValveBiped.Bip01_L_Calf":7}}' and REPLIES[1][3]==true)
+CLOCK=502 REPLIES={} DISK[path]=nil BM.HandleQuery(p,id) assert(REPLIES[1][2]=='{"boneMap":{}}' and REPLIES[1][3]==false)
+SAY('PASS: the save handler checks permission, rate, size, keys and values, asks the server fitter, validates the window\'s map, drops stale corrections, merges the file, removes pins, and answers pin queries')
 ''')
 
 # ---- server.lua: spawns read the pins; collision corrections keep them ----
 SERVER_LUA = (ROOT / 'addon/lua/mmdhl/server.lua').read_text(encoding='utf-8')
 lua.execute('NOTICES={} notice=function(p,text) NOTICES[#NOTICES+1]=text end')
-lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'function mmdhl.Spawn'))
+lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'function mmdhl.SavedBoneMap') + definition(lua, SERVER_LUA, 'function mmdhl.Spawn'))
 lua.execute(r'''
 local VB='ValveBiped.Bip01_'
 local id=string.rep('b',64) local path='mmd_hotloader/fit_overrides/'..id..'.json'
@@ -542,11 +624,12 @@ local seen mmdhl.ActorOptions=function(o) seen=o return o end
 local function spawn(options) seen=nil NOTICES={} mmdhl.Spawn({},id,options or {},function() end) return seen end
 DISK[path]=util.TableToJSON({version=3,generator=18,bodies={x=1},scale=2,boneMap={[VB..'L_Thigh']=12},boneMapVersion=1})
 local o=spawn() assert(o.boneMap[VB..'L_Thigh']==12 and o.collisionOverrides.x==1 and #NOTICES==0)
-o=spawn({boneMap={[VB..'L_Thigh']=7}}) assert(o.boneMap[VB..'L_Thigh']==7,'an explicit map wins')
+o=spawn({boneMap={[VB..'L_Thigh']=7}}) assert(o.boneMap[VB..'L_Thigh']==12,'pins copied from an older spawn never win over the saved ones')
 DISK[path]=util.TableToJSON({version=3,generator=18,boneMap={[VB..'L_Calf']=3}})
 o=spawn() assert(o.boneMap[VB..'L_Calf']==3 and o.collisionOverrides==nil and #NOTICES==0,'a file with only pins is valid')
 DISK[path]=util.TableToJSON({version=2,generator=9,bodies={x=1}})
-o=spawn() assert(o.boneMap==nil and o.collisionOverrides==nil and #NOTICES==1,'old corrections still give their notice')
+o=spawn({boneMap={[VB..'L_Thigh']=7}}) assert(o.boneMap==nil and o.collisionOverrides==nil and #NOTICES==1,'old corrections still give their notice; reset pins are reset')
+assert(mmdhl.SavedBoneMap('../'..string.rep('b',62))==nil and mmdhl.SavedBoneMap(id)==nil)
 DISK[path]=util.TableToJSON({version=3,generator=18,bodies={x=1},boneMap={}})
 o=spawn() assert(o.boneMap==nil)
 SAY('PASS: spawns read the saved pins next to the collision corrections')
@@ -555,7 +638,7 @@ SAY('PASS: spawns read the saved pins next to the collision corrections')
 lua.execute(r'''
 RECEIVERS={} net={Receive=function(name,fn) RECEIVERS[name]=fn end}
 ''')
-lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
+lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'local function samePins') + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
 lua.execute(r'''
 local VB='ValveBiped.Bip01_'
 local id=string.rep('c',64) local path='mmd_hotloader/fit_overrides/'..id..'.json'
@@ -572,7 +655,31 @@ DISK[path]=util.TableToJSON({version=3,generator=18,bodies={old=1},boneMap={[VB.
 queue={'fit','',util.TableToJSON({bodies={new=1},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,{})
 local saved=util.JSONToTable(DISK[path])
 assert(respawned.boneMap[VB..'L_Thigh']==12 and saved.bodies.new==1 and saved.bodies.old==nil and saved.scale==3 and saved.boneMap[VB..'L_Thigh']==12 and saved.boneMapSavedAt==5)
-SAY('PASS: the action receiver routes bone saves; collision corrections keep the saved pins')
+-- The bones were assigned again after this ragdoll was placed: its corrections would not match.
+DISK[path]=util.TableToJSON({version=3,generator=18,boneMap={[VB..'L_Thigh']=13}}) respawned=nil NOTICES={}
+queue={'fit','',util.TableToJSON({bodies={new=2},excludedMaterials={}})} RECEIVERS.mmdhl_action(0,{})
+assert(respawned==nil and NOTICES[1]==mmdhl.L'server.error.fit_bones_changed' and util.JSONToTable(DISK[path]).bodies==nil)
+-- Pin queries go to their handler.
+local queried mmdhl.boneMapper.HandleQuery=function(p,asset) queried=asset end
+queue={'bonemap_pins',id,''} RECEIVERS.mmdhl_action(0,{}) assert(queried==id)
+SAY('PASS: the action receiver routes bone saves and queries; collision corrections keep the saved pins and refuse a carrier fitted with older ones')
+
+''')
+
+# ---- actors.lua: the first-person arms preview is fitted with the same pins ----
+ACTORS_LUA = (ROOT / 'addon/lua/mmdhl/actors.lua').read_text(encoding='utf-8')
+lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, ACTORS_LUA, "net.Receive('mmdhl_arms_preview'"))
+lua.execute(r'''
+local VB='ValveBiped.Bip01_'
+local id=string.rep('d',64) DISK['mmd_hotloader/fit_overrides/'..id..'.json']=util.TableToJSON({version=3,generator=18,boneMap={[VB..'L_Calf']=3}})
+local queue={1,id,'female','{}'} net.ReadUInt=function() return table.remove(queue,1) end net.ReadString=function() return table.remove(queue,1) end
+local sent={} net.Start=function() end net.WriteUInt=function() end net.WriteString=function(v) sent[#sent+1]=v end net.Send=function() end
+mmdhl.CanUseAsset=function() return true end RealTime=function() return 10 end mmdhl.CleanArmsParts=function(t) return t end
+mmdhl.LoadAsset=function(asset,cb) cb({name='Hero'}) end mmdhl.ActorOptions=function(o) return o end mmdhl.PublishRig=function() end
+local prepared mmdhl.native.PrepareCarrier=function(asset,json) prepared=util.JSONToTable(json) return util.TableToJSON({key='rig'}) end
+RECEIVERS.mmdhl_arms_preview(0,{})
+assert(prepared.role=='arms' and prepared.boneMap[VB..'L_Calf']==3 and sent[1]=='rig','the arms preview is fitted with the saved pins')
+SAY('PASS: the first-person arms preview takes the saved pins')
 ''')
 
 # ---- the window itself: every panel builds and paints (Derma replaced by recording stubs) ----
@@ -682,7 +789,7 @@ assert(win.summary.headline=='ok',win.summary.headline)
 win:Primary() assert(BM.frame==nil and CALLS[#CALLS].options.kind=='character' and BM.sessions['C:/m/smoke.fbx']==state)
 -- Closing with changes asks first.
 local again=BM.ShowWindow(state,{}) BM.Assign(state,VB..'Spine2',state.byName['Chest'],'user')
-BM.frame:Close() assert(#QUERIES==1 and BM.frame~=nil) QUERIES[1].a() assert(BM.frame==nil and library.status==mmdhl.L'library.import.cancelled')
+BM.frame:Close() assert(#QUERIES==1 and QUERIES[1].text==mmdhl.L'bonemap.discard_text_convert' and BM.frame~=nil) QUERIES[1].a() assert(BM.frame==nil and library.status==mmdhl.L'library.import.cancelled')
 SAY('PASS: convert window builds and paints every view, runs the More menu, imports and asks before discarding')
 ''')
 lua.execute(r'''
@@ -721,6 +828,16 @@ assert(BM.frame==nil and FIT[1].ok==true and NOTES[1]==mmdhl.L('bonemap.rescued'
 mmdhl.native.AssetInfo=function() return nil,'Model was deleted; import it again' end
 TIMERS={} BM.OpenFit(id,'edit','Hero') for _,fn in ipairs(TIMERS) do fn() end TIMERS={} PAINT_ALL()
 BM.frame.Window.finish('cancelled')
+-- An admin on a dedicated server starts from the server's pins, not from his own DATA folder.
+mmdhl.native.AssetInfo=function() return util.TableToJSON({name='Hero'}) end
+game={SinglePlayer=function() return false end} DISK['mmd_hotloader/fit_overrides/'..id..'.json']=util.TableToJSON({version=3,boneMap={[VB..'Spine2']=1}})
+ACTIONS={} TIMERS={} BM.OpenFit(id,'edit','Hero') local list=TIMERS TIMERS={} for _,fn in ipairs(list) do fn() end
+assert(ACTIONS[1][1]=='bonemap_pins' and BM.state.loading)
+local answer={id,'{"boneMap":{"ValveBiped.Bip01_L_Thigh":'..idx['LeftUpLeg']..'}}',true} net.ReadString=function() return table.remove(answer,1) end net.ReadBool=function() return table.remove(answer,1) end
+NET['mmdhl_bonemap_pins']()
+s=BM.state assert(not s.loading and s.savedPins[VB..'L_Thigh']==idx['LeftUpLeg'] and s.savedPins[VB..'Spine2']==nil and s.hasCollision==true and s.notice.key=='saved_fit')
+PAINT_ALL() BM.frame.Window.finish('cancelled')
+game={SinglePlayer=function() return true end}
 -- The rescue prompt.
 local prompt=BM.ShowRescuePrompt(id,'Hero',{VB..'L_Thigh',VB..'L_Calf'}) PAINT_ALL()
 SAY('PASS: fit window loads the cached model, shows guesses and fitter notes, saves pins and closes on the answer; rescue prompt paints')

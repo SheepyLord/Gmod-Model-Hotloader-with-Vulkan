@@ -22,6 +22,20 @@ function mmdhl.LoadAsset(id,callback)
   end
  end)
 end
+-- The bone window's pins for a model are server state in fit_overrides/<id>.json (saved
+-- by admins): every new fit takes them from there, never from options an entity, a dupe
+-- or a save carries. saved: the decoded file when the caller has read it (false: none).
+function mmdhl.SavedBoneMap(id,saved)
+ if not isstring(id) or #id~=64 or id:find('[^a-f0-9]') then return nil end
+ if saved==nil then saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') end
+ if istable(saved) and istable(saved.boneMap) and next(saved.boneMap)~=nil then return saved.boneMap end
+end
+local function samePins(a,b)
+ a,b=a or {},b or {}
+ for k,v in pairs(a) do if tonumber(b[k])~=tonumber(v) then return false end end
+ for k in pairs(b) do if a[k]==nil then return false end end
+ return true
+end
 function mmdhl.Spawn(p,id,options,done,progress)
  local available,why=mmdhl.FeatureAvailable('physics') if not available then if done then done(nil,mmdhl.ServerIssue('physics',why)) end return end
  options=mmdhl.WithSpawnDefaults(p,options)
@@ -41,8 +55,9 @@ function mmdhl.Spawn(p,id,options,done,progress)
   if saved.version==3 and (saved.generator==14 or saved.generator==15 or saved.generator==18) then options.collisionOverrides=saved.bodies options.collisionOverrideScale=saved.scale options.excludedMaterials=saved.excludedMaterials
   elseif saved.bodies~=nil then notice(p,L'server.notice.old_fit_corrections') end
  end
- -- Bones assigned in the bone window (fitter pins; natives without them ignore the option).
- if options.boneMap==nil and saved and istable(saved.boneMap) and next(saved.boneMap) then options.boneMap=saved.boneMap end
+ -- Bones assigned in the bone window (fitter pins; natives without them ignore the option),
+ -- always the current ones: a respawn's copied options may carry older pins.
+ options.boneMap=mmdhl.SavedBoneMap(id,saved or false)
  if mmdhl.CanUseAsset and not mmdhl.CanUseAsset(p,id) then finish(nil,L'server.error.not_approved') return end
  if options.role=='combine' or options.hostile then options=mmdhl.HostileActorOptions(p,options) end
  local actorError options,actorError=mmdhl.ActorOptions(options) if not options then finish(nil,actorError) return end
@@ -104,6 +119,7 @@ net.Receive('mmdhl_action',function(_,p)
   return
  end
  if action=='bonemap' then if mmdhl.boneMapper and mmdhl.boneMapper.HandleSave then mmdhl.boneMapper.HandleSave(p,id,value) end return end
+ if action=='bonemap_pins' then if mmdhl.boneMapper and mmdhl.boneMapper.HandleQuery then mmdhl.boneMapper.HandleQuery(p,id) end return end
  if not mmdhl.CanEdit(p,ent,'bodygroups') then return end
  if IsValid(ent) and ent:GetClass()~='mmdhl_ragdoll' and mmdhl.IsMMD(ent) then
   local h=mmdhl.GetInstance(ent)
@@ -117,6 +133,8 @@ net.Receive('mmdhl_action',function(_,p)
    options.collisionOverrides=data.bodies or data options.collisionOverrideScale=mmdhl.GetRig(ent).scale options.excludedMaterials=data.excludedMaterials or {}
    options.position={ent:GetPos():Unpack()} options.position[2]=options.position[2]+100 options.frozen=true
    local asset=mmdhl.GetAsset(ent)
+   -- Corrections made on a carrier fitted with other bones would not match the new ones.
+   if not samePins(ent.MMDOptions and ent.MMDOptions.boneMap,mmdhl.SavedBoneMap(asset)) then notice(p,L'server.error.fit_bones_changed') return end
    mmdhl.Spawn(p,asset,options,function(created,err)
     if not IsValid(created) then notice(p,err) return end
     local path='mmd_hotloader/fit_overrides/'..asset..'.json'
@@ -168,6 +186,8 @@ duplicator.RegisterEntityClass('mmdhl_ragdoll',function(p,data)
  if not mmdhl.CanUseAsset(p,entry.asset) then notice(p,L'persistence.error.model_not_approved') return end
  if GetConVar('mmdhl_native_carrier'):GetBool() and mmdhl.SpawnNative then
   local options=table.Copy(entry.options or {}) options.backend='source' options.frozen=entry.state and entry.state.frozen or options.frozen
+  -- Dupe data comes from the pasting client: bone pins are the server's.
+  options.boneMap=mmdhl.SavedBoneMap(entry.asset)
   local oldCenter=entry.state and entry.state.center or options.position or {0,0,0}
   local offset=data.Pos-Vector(unpack(oldCenter)) options.position={((Vector(unpack(options.position or {0,0,0}))+offset)):Unpack()} options.center=nil
   local ent=mmdhl.SpawnNative(p,entry.asset,options) if not IsValid(ent) then return end

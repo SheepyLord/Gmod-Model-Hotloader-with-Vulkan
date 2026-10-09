@@ -737,6 +737,14 @@ function BM.SamePins(a,b)
  for k,v in pairs(b or {}) do if (a or {})[k]~=v then return false end end
  return true
 end
+-- {"<field>":{"<part>":<bone>}} for the native readers, with whole numbers written as
+-- such: util.TableToJSON may write 12 as 12.0. Unknown parts are left out.
+function BM.IndexJSON(field,map)
+ local parts={}
+ for key,v in pairs(istable(map) and map or {}) do local n=tonumber(v) if BM.SlotByKey[key] and n and math.abs(n)<2^31 then parts[#parts+1]='"'..key..'":'..string.format('%d',math.floor(n)) end end
+ table.sort(parts)
+ return '{"'..field..'":{'..table.concat(parts,',')..'}}'
+end
 
 -- ---- memory: the last assignment of a file, or of any file with the same skeleton ----
 local MemoryRoot='mmd_hotloader/bone_maps/'

@@ -308,6 +308,9 @@ function mmdhl.ImportHint(err,code)
 end
 -- A .blend holds a whole scene: list its meshes first, then import the chosen ones.
 local function isBlend(source) return tostring(source or ''):lower():sub(-6)=='.blend' end
+-- The file types the static prop importer reads (DAE characters are not among them).
+local staticTypes={obj=true,fbx=true,glb=true,gltf=true,pmx=true,blend=true}
+function library.StaticImportable(source) return staticTypes[tostring(source or ''):lower():match('%.(%w+)$') or '']==true end
 function library.StartStaticImport(source,objects)
  local options=mmdhl.props.ImportOptions()
  if objects then options.objects=objects elseif isBlend(source) then options.kind='blend_scene' end
@@ -342,7 +345,7 @@ function mmdhl.ShowImportFailure(status,kind)
   local pmd=extension=='.pmd' or extension=='.vrm' or tostring(status.error or ''):lower():find('vrm avatar',1,true)~=nil
   local retryKind=(kind=='static' and pmd) and 'library' or kind
   -- A file without a usable skeleton can still be a static prop.
-  local asProp=status.errorCode=='character.no_skeleton' or status.errorCode=='character.too_few_bones'
+  local asProp=(status.errorCode=='character.no_skeleton' or status.errorCode=='character.too_few_bones') and library.StaticImportable(status.source)
   if asProp then retryKind='static' end
   local retry=UI.button(buttons,asProp and L'library.failure.import_as_prop' or pmd and kind=='static' and L'library.failure.import_as_character' or L'library.failure.retry',function() frame:Close() if not library.job then startImport(retryKind,status.source) end end,s(34),f.Strong,true)
   retry:Dock(LEFT) retry:SetWide(asProp and s(200) or s(170))

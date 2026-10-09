@@ -66,10 +66,32 @@ function BM.Convertible(path)
 end
 function BM.CanSave() local p=LocalPlayer() return game.SinglePlayer() or (IsValid(p) and (p:IsListenServerHost() or p:IsAdmin())) end
 -- A native function this binary lacks: the update reminder, or a plain notice.
-local function updateNeeded()
- if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'bonemap.feature','2.3.0') return end
- notification.AddLegacy(L'bonemap.update_needed',NOTIFY_HINT,8)
+-- i18n-keys: bonemap.feature bonemap.update_needed bonemap.feature_convert library.hint.character_update
+local function updateNeeded(feature,text)
+ if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L(feature or 'bonemap.feature'),'2.3.0') return end
+ notification.AddLegacy(L(text or 'bonemap.update_needed'),NOTIFY_HINT,8)
 end
+-- The pins a model has where it is fitted: single player and the listen host share the
+-- server's DATA folder; other players ask the server. callback(pins, hasCollision), or
+-- callback(nil) when the server does not answer.
+BM.pinQueries=BM.pinQueries or {}
+function BM.ServerPins(id,callback)
+ local p=not game.SinglePlayer() and LocalPlayer()
+ if not p or (IsValid(p) and p:IsListenServerHost()) then
+  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
+  if not istable(saved) then saved={} end
+  callback(istable(saved.boneMap) and saved.boneMap or {},istable(saved.bodies) and next(saved.bodies)~=nil) return
+ end
+ local waiting=BM.pinQueries[id] if waiting then waiting[#waiting+1]=callback return end
+ BM.pinQueries[id]={callback} mmdhl.Action('bonemap_pins',id)
+ timer.Create('MMDHL.BoneMapPins.'..id,5,1,function() local list=BM.pinQueries[id] BM.pinQueries[id]=nil for _,cb in ipairs(list or {}) do cb(nil) end end)
+end
+net.Receive('mmdhl_bonemap_pins',function()
+ local id=net.ReadString() local data=util.JSONToTable(net.ReadString()) local collision=net.ReadBool()
+ local list=BM.pinQueries[id] BM.pinQueries[id]=nil timer.Remove('MMDHL.BoneMapPins.'..id)
+ local pins={} for key,v in pairs(istable(data) and istable(data.boneMap) and data.boneMap or {}) do if BM.Mapped(key) and tonumber(v) then pins[key]=math.floor(tonumber(v)) end end
+ for _,cb in ipairs(list or {}) do cb(pins,collision) end
+end)
 
 -- One bone window at a time: an open one comes to the front instead.
 function BM.BringToFront()
@@ -80,6 +102,13 @@ function BM.BringToFront()
 end
 
 -- ---- the library flow ----
+-- A window the player is working in is never replaced: the next one opens when it closes.
+function BM.Present(open,file)
+ if not IsValid(BM.frame) then open() return true end
+ BM.queued=open notification.AddLegacy(L('bonemap.status.waiting',{file=tostring(file or '')}),NOTIFY_HINT,8)
+ return false
+end
+function BM.RunQueued() local open=BM.queued BM.queued=nil if open then timer.Simple(0,open) end end
 function BM.Probe(source,opts)
  local library=mmdhl.library
  if library.job then library.status=L'library.import.busy' hook.Run('MMDHL.ImportChanged') return false end
@@ -126,7 +155,7 @@ function BM.OnJobStatus(status)
     return true
    end
   end
-  timer.Simple(0,function() BM.OpenConvert(status,opts) end)
+  timer.Simple(0,function() BM.Present(function() BM.OpenConvert(status,opts) end,file) end)
   return true
  end
  if status.state=='failed' and (status.errorCode=='character.bone_map' or status.errorCode=='character.jiggle') and isstring(status.source) then
@@ -139,7 +168,7 @@ function BM.OnJobStatus(status)
    BM.Probe(status.source,{notice=d.reason=='missing' and 'file_changed' or nil,select=nativeIssue.slot,native=nativeIssue})
   else
    library.status=L('bonemap.status.waiting',{file=tostring(status.filename or '')})
-   timer.Simple(0,function() BM.ShowWindow(session,{select=nativeIssue.slot,native=nativeIssue}) end)
+   timer.Simple(0,function() BM.Present(function() BM.ShowWindow(session,{select=nativeIssue.slot,native=nativeIssue}) end,status.filename) end)
   end
   return true
  end
@@ -147,11 +176,24 @@ function BM.OnJobStatus(status)
   local s=BM.sessions[status.source] BM.sessions[status.source]=nil
   hook.Run('MMDHL.BoneMapClosed',s,'imported')
  end
+ -- Failures the library's dialog shows, with a better hint.
+ if status.state=='failed' and isstring(status.source) and status.kind~='static' and library.jobKind~='static' then
+  local extension=status.source:lower():match('%.(%w+)$') or ''
+  local static=library.StaticImportable
+  -- An older native read an FBX, glTF or DAE character as a file of the wrong kind.
+  if not BM.Available('convert') and ({fbx=true,glb=true,gltf=true,dae=true})[extension] and tostring(status.error or ''):lower():find('belong in static props',1,true) then
+   status.hint=L'library.hint.character_update' updateNeeded('bonemap.feature_convert','library.hint.character_update')
+  -- No skeleton, and the static prop importer cannot read this type either (DAE).
+  elseif (status.errorCode=='character.no_skeleton' or status.errorCode=='character.too_few_bones') and static and not static(status.source) then
+   status.hint=L'library.hint.character_no_skeleton_export'
+  end
+ end
  return false
 end
 -- Opens the convert window from a probe status (also usable from the console with stored JSON).
 function BM.OpenConvert(status,opts)
  opts=opts or {}
+ if not istable(status) or not istable(status.probe) or not isstring(status.source) or status.source=='' then return false end
  local probe=status.probe local source=status.source
  local file=tostring(status.filename or string.GetFileFromFilename(tostring(source or '')))
  local state=BM.sessions[source]
@@ -184,22 +226,27 @@ function BM.OpenFit(id,reason,name)
   if not info and not e and RealTime()-started<60 then return end
   timer.Remove('MMDHL.BoneMapLoad')
   if not info then fail(e or L'server.error.asset_timeout') return end
-  local inspect,ie=mmdhl.Decode(native.InspectBoneMap(id,util.TableToJSON({include={'skeleton'}})))
-  local proposal,pe=mmdhl.Decode(native.GetBoneMapProposal(id,'{}'))
-  if not inspect or not proposal then fail(ie or pe) return end
-  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') or {}
-  local pins=istable(saved.boneMap) and saved.boneMap or {}
-  local current=proposal
-  if next(pins) then current=mmdhl.Decode(native.GetBoneMapProposal(id,util.TableToJSON({boneMap=pins}))) or proposal end
-  local s=BM.NewState('fit',{asset=id,name=state.name,reason=reason,skeleton=inspect.skeleton,auto=inspect.auto,proposal=proposal,current=current,pins=pins,hasCollision=istable(saved.bodies) and next(saved.bodies)~=nil,torso=current.torso})
-  s.savedPins=pins
-  s.format=entry and isstring(entry.source) and entry.source:lower():match('%.(%w+)$') or (istable(info.vrm) and 'vrm' or 'pmx')
-  if next(pins) then s.notice={key='saved_fit',args={}} end
-  if istable(info.conversion) then s.converted=true end
-  for _,i in ipairs(current.issues or {}) do if istable(i) and i.severity then s.nativeIssues[#s.nativeIssues+1]={code=i.code=='band' and 'band' or i.code=='range' and 'range' or 'native',severity=i.severity,slot=i.slot or '',args={message=tostring(i.text or '')}} end end
-  if IsValid(window) then window:SetState(s) end
+  BM.ServerPins(id,function(pins,hasCollision) if IsValid(window) then BM.FitLoaded(window,state,info,pins,hasCollision) end end)
  end)
  return true
+end
+-- The cached model, the fitter's choice and the server's pins become the window's state.
+function BM.FitLoaded(window,state,info,pins,hasCollision)
+ local id,reason=state.asset,state.reason
+ local entry=mmdhl.library.entries[id]
+ if not pins then window:LoadFailed(L'bonemap.save_timeout') return end
+ local inspect,ie=mmdhl.Decode(native.InspectBoneMap(id,util.TableToJSON({include={'skeleton'}})))
+ local proposal,pe=mmdhl.Decode(native.GetBoneMapProposal(id,'{}'))
+ if not inspect or not proposal then window:LoadFailed(ie or pe) return end
+ local current=proposal
+ if next(pins) then current=mmdhl.Decode(native.GetBoneMapProposal(id,BM.IndexJSON('boneMap',pins))) or proposal end
+ local s=BM.NewState('fit',{asset=id,name=state.name,reason=reason,skeleton=inspect.skeleton,auto=inspect.auto,proposal=proposal,current=current,pins=pins,hasCollision=hasCollision==true,torso=current.torso})
+ s.savedPins=pins
+ s.format=entry and isstring(entry.source) and entry.source:lower():match('%.(%w+)$') or (istable(info.vrm) and 'vrm' or 'pmx')
+ if next(pins) then s.notice={key='saved_fit',args={}} end
+ if istable(info.conversion) then s.converted=true end
+ for _,i in ipairs(current.issues or {}) do if istable(i) and i.severity then s.nativeIssues[#s.nativeIssues+1]={code=i.code=='band' and 'band' or i.code=='range' and 'range' or 'native',severity=i.severity,slot=i.slot or '',args={message=tostring(i.text or '')}} end end
+ window:SetState(s)
 end
 -- Fit mode without a window: the parts the fitter misses for a model, with its
 -- saved pins, or nil. callback(missing, error).
@@ -212,11 +259,12 @@ function BM.CheckFit(id,callback)
   if not info and not e and RealTime()-started<60 then return end
   timer.Remove(name)
   if not info then callback(nil,e) return end
-  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') or {}
-  local options=istable(saved.boneMap) and next(saved.boneMap) and {boneMap=saved.boneMap} or {}
-  local result,re=mmdhl.Decode(native.GetBoneMapProposal(id,util.TableToJSON(options)))
-  if not result then callback(nil,re) return end
-  callback(istable(result.missing) and result.missing or {},nil,info)
+  BM.ServerPins(id,function(pins)
+   if not pins then callback(nil,'timeout') return end
+   local result,re=mmdhl.Decode(native.GetBoneMapProposal(id,next(pins) and BM.IndexJSON('boneMap',pins) or '{}'))
+   if not result then callback(nil,re) return end
+   callback(istable(result.missing) and result.missing or {},nil,info)
+  end)
  end)
 end
 -- After a character import or a failed spawn: when the fitter (with the saved pins)
@@ -312,7 +360,7 @@ BM.IssueText=issueText
 function BM.ShowWindow(state,opts)
  opts=opts or {}
  -- A window still open (an edit started from the library while an import came back) closes.
- if IsValid(BM.frame) then local old=BM.frame.Window BM.frame.closing=true BM.frame:Remove() if old then hook.Run('MMDHL.BoneMapClosed',old.state,'cancelled') end end
+ if IsValid(BM.frame) then local old=BM.frame.Window BM.frame.closing=true BM.frame.replaced=true BM.frame:Remove() if old then hook.Run('MMDHL.BoneMapClosed',old.state,'cancelled') end end
  local UI=mmdhl.UI local s,f=UI.metrics()
  local frame=vgui.Create('DFrame') BM.frame=frame BM.state=state
  local W,H=math.min(s(1400),ScrW()-s(40)),math.min(s(860),ScrH()-s(60))
@@ -331,11 +379,12 @@ function BM.ShowWindow(state,opts)
  win.finish=finishClose
  local function askClose()
   if state.dirty and not state.loading then
-   Derma_Query(L'bonemap.discard_text',L'bonemap.discard_title',L'bonemap.discard',function() if IsValid(frame) then finishClose('cancelled') end end,L'bonemap.keep_editing')
+   -- Convert mode keeps its choices for the game session; fit mode loses them.
+   Derma_Query(state.mode=='convert' and L'bonemap.discard_text_convert' or L'bonemap.discard_text',L'bonemap.discard_title',L'bonemap.discard',function() if IsValid(frame) then finishClose('cancelled') end end,L'bonemap.keep_editing')
   else finishClose('cancelled') end
  end
  frame.Close=function() askClose() end
- frame.OnRemove=function() if BM.frame==frame then BM.frame=nil end timer.Remove('MMDHL.BoneMapRefresh') timer.Remove('MMDHL.BoneMapLoad') if IsValid(win.picker) then win.picker:Remove() end end
+ frame.OnRemove=function() if BM.frame==frame then BM.frame=nil end timer.Remove('MMDHL.BoneMapRefresh') timer.Remove('MMDHL.BoneMapLoad') if IsValid(win.picker) then win.picker:Remove() end if not frame.replaced then BM.RunQueued() end end
  -- ---- layout ----
  local title=frame:Add('DPanel') title:Dock(TOP) title:SetTall(s(34)) title:SetPaintBackground(false)
  local titleLabel=UI.label(title,'',f.Title,s(34)) titleLabel:Dock(FILL)
@@ -384,7 +433,7 @@ function BM.ShowWindow(state,opts)
   end
  end
  function win:RefreshProposal()
-  local result=mmdhl.Decode(native.GetBoneMapProposal(state.asset,util.TableToJSON({boneMap=BM.Pins(state)})))
+  local result=mmdhl.Decode(native.GetBoneMapProposal(state.asset,BM.IndexJSON('boneMap',BM.Pins(state))))
   if not istable(result) then return end
   state.nativeIssues={}
   for _,i in ipairs(result.issues or {}) do if istable(i) then state.nativeIssues[#state.nativeIssues+1]={code=i.code=='band' and 'band' or i.code=='range' and 'range' or 'native',severity=i.severity or 'warning',slot=i.slot or '',args={message=tostring(i.text or '')}} end end
@@ -986,7 +1035,7 @@ function BM.BuildInspector(win,parent)
     action(L'bonemap.summary.start',function() win:ShowFirst() end,true)
    else text(L('bonemap.summary.not_humanoid_text',{found=sum.assigned,bones=#state.bones}),f.Body,Colors.muted)
     action(L'bonemap.summary.anyway',function() win:Arm(VB..'Pelvis') end,true)
-    if state.mode=='convert' then action(L'bonemap.summary.as_prop',function() local source=state.source BM.sessions[source]=nil win.finish('cancelled') mmdhl.library.StartStaticImport(source) end) end
+    if state.mode=='convert' and (not mmdhl.library.StaticImportable or mmdhl.library.StaticImportable(state.source)) then action(L'bonemap.summary.as_prop',function() local source=state.source BM.sessions[source]=nil win.finish('cancelled') mmdhl.library.StartStaticImport(source) end) end
    end
    separator()
    text(L'bonemap.summary.parts',f.Strong)
@@ -1229,8 +1278,10 @@ function mmdhl.OpenBoneMapper(opts)
  if BM.BringToFront() then return false end
  if istable(opts.probe) then
   if not BM.Available('convert') then updateNeeded() return false end
-  local status=opts.probe.probe and opts.probe or {probe=opts.probe,source=opts.source,filename=opts.filename}
-  BM.OpenConvert(status,{}) return true
+  local status=istable(opts.probe.probe) and opts.probe or {probe=opts.probe,source=opts.source,filename=opts.filename}
+  -- The conversion reads the file again, so a probe without its source cannot open.
+  if not isstring(status.source) or status.source=='' or not istable(status.probe) then print('[Model Hotloader] OpenBoneMapper: a probe needs its source file') return false end
+  return BM.OpenConvert(status,{})~=false
  end
  if isstring(opts.asset) then
   if not BM.Available('fit') then updateNeeded() return false end

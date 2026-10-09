@@ -8,6 +8,7 @@ if SERVER then
  AddCSLuaFile('mmdhl/bone_mapper_rules.lua')
  AddCSLuaFile('mmdhl/bone_mapper_ui.lua')
  util.AddNetworkString('mmdhl_bonemap_result')
+ util.AddNetworkString('mmdhl_bonemap_pins')
 end
 include('mmdhl/bone_mapper_rules.lua')
 -- A part's name for messages: a token the client renders in its language.
@@ -62,28 +63,44 @@ if SERVER then
    if not IsValid(p) then return end
    if not info then reply(false,L'server.error.bonemap_not_on_server') return end
    if next(pins) then
-    local result,e=mmdhl.Decode(native.GetBoneMapProposal(id,util.TableToJSON({boneMap=pins})))
+    local result,e=mmdhl.Decode(native.GetBoneMapProposal(id,BM.IndexJSON('boneMap',pins)))
     if not result then invalid(tostring(e or '')) return end
     if istable(result.missing) and #result.missing>0 then invalid(BM.PartList(result.missing)) return end
     for _,i in ipairs(result.issues or {}) do if istable(i) and i.severity=='error' then invalid(tostring(i.text or i.code or '')) return end end
-    -- The structural rules on the assignment the fitter will use.
+    -- The structural rules on what the window showed and checked: the fitter's own
+    -- choice with the pins on top (the fitter's torso repairs are its own business).
     if isfunction(native.InspectBoneMap) then
-     local values={} for _,b in ipairs(result.bones or {}) do if istable(b) and BM.Mapped(b.name) then values[b.name]=tonumber(b.mmd) or -1 end end
-     local check=mmdhl.Decode(native.InspectBoneMap(id,util.TableToJSON({values=values})))
+     local base=mmdhl.Decode(native.GetBoneMapProposal(id,'{}'))
+     local values={} for _,b in ipairs(istable(base) and base.bones or {}) do if istable(b) and BM.Mapped(b.name) then values[b.name]=tonumber(b.mmd) or -1 end end
+     for key,v in pairs(pins) do values[key]=v end
+     local check=mmdhl.Decode(native.InspectBoneMap(id,BM.IndexJSON('values',values)))
      for _,i in ipairs(check and check.issues or {}) do if i.severity=='error' then invalid(tostring(i.text or i.code or '')) return end end
     end
    end
    local path='mmd_hotloader/fit_overrides/'..id..'.json'
    local saved=util.JSONToTable(file.Read(path,'DATA') or '') or {}
    if not istable(saved) then saved={} end
+   -- Collision corrections were made for the old bones: the server compares them itself.
+   local drop=payload.dropCollision==true local before=istable(saved.boneMap) and saved.boneMap or {}
+   for _,slot in ipairs(BM.Slots) do if slot.physical and tonumber(before[slot.key])~=pins[slot.key] then drop=true end end
    saved.version=saved.version or 3 saved.generator=saved.generator or 18
    if next(pins) then saved.boneMap=pins saved.boneMapVersion=1 saved.boneMapSavedAt=os.time()
    else saved.boneMap=nil saved.boneMapVersion=nil saved.boneMapSavedAt=nil end
-   -- Collision corrections were made for the old bones.
-   if payload.dropCollision then saved.bodies=nil saved.scale=nil saved.collisionOverrideScale=nil end
+   if drop then saved.bodies=nil saved.scale=nil saved.collisionOverrideScale=nil end
    file.CreateDir('mmd_hotloader/fit_overrides') file.Write(path,util.TableToJSON(saved,true))
    reply(true,L('server.notice.bonemap_saved',{name=tostring(info.name or id:sub(1,12))}))
   end)
+ end
+ -- The pins a model has on this server and whether it has collision corrections: the
+ -- bone window's starting point for an admin on a dedicated server, whose own DATA
+ -- folder is not the server's. Pins are not secret; a few answers per second.
+ function BM.HandleQuery(p,id)
+  if not IsValid(p) or not valid(id) then return end
+  local second=math.floor(SysTime()) if p.MMDHLBoneMapQuerySecond~=second then p.MMDHLBoneMapQuerySecond=second p.MMDHLBoneMapQueries=0 end
+  p.MMDHLBoneMapQueries=p.MMDHLBoneMapQueries+1 if p.MMDHLBoneMapQueries>8 then return end
+  local saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '')
+  if not istable(saved) then saved={} end
+  net.Start('mmdhl_bonemap_pins') net.WriteString(id) net.WriteString(BM.IndexJSON('boneMap',saved.boneMap)) net.WriteBool(istable(saved.bodies) and next(saved.bodies)~=nil) net.Send(p)
  end
 end
 if CLIENT then include('mmdhl/bone_mapper_ui.lua') end
