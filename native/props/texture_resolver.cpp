@@ -15,9 +15,8 @@ std::wstring key(std::wstring s){
     if(s.ends_with(L".jpeg"))s.replace(s.size()-5,5,L".jpg");
     return s;
 }
-bool regular(const fs::path& p){std::error_code error;return fs::is_regular_file(p,error);}
 }
-TextureResolver::TextureResolver(fs::path directory):root(std::move(directory)){
+TextureResolver::TextureResolver(fs::path directory,DependencyScope::Reach reach):root(std::move(directory)),scope(root,true,reach){
     folders={root,root/L"tex",root/L"textures",root.parent_path()/L"tex",root.parent_path()/L"textures",
         root.parent_path().parent_path()/L"tex",root.parent_path().parent_path()/L"textures"};
 }
@@ -38,23 +37,30 @@ void TextureResolver::index(){
 }
 ResolvedTexture TextureResolver::resolve(const std::string& reference){
     if(reference.find("://")!=std::string::npos)throw std::runtime_error("Network textures are not supported");
-    // A share on another computer is never opened: only its file name is looked up here.
-    auto ref=fs::path(wide(reference));auto direct=ref.is_absolute()?ref:root/ref;
-    if(!networkPath(reference)&&regular(direct))return{direct.lexically_normal(),false};
+    // A reference the scope refuses (a share on another computer, a denied place; for a
+    // confined resolver also one outside the model's folders) is never opened as written
+    // (DependencyScope): only the file name is looked up here.
+    auto ref=fs::path(wide(reference));
+    if(auto direct=scope.locate(reference);!direct.empty()&&scope.allows(direct))return{direct,false};
     auto name=ref.filename();
     if(name.empty())throw std::runtime_error("Texture reference has no filename");
     // A colocated exact basename is a stronger match than resource aliases.
-    if(regular(root/name))return{(root/name).lexically_normal(),true};
+    if(scope.allows(root/name))return{(root/name).lexically_normal(),true};
     std::vector<fs::path> exact;
-    for(size_t i=1;i<folders.size();++i)if(regular(folders[i]/name))exact.push_back((folders[i]/name).lexically_normal());
+    for(size_t i=1;i<folders.size();++i)if(scope.allows(folders[i]/name))exact.push_back((folders[i]/name).lexically_normal());
     std::sort(exact.begin(),exact.end());exact.erase(std::unique(exact.begin(),exact.end()),exact.end());
     if(exact.size()==1)return{exact.front(),true};
     if(exact.size()>1)throw std::runtime_error("Ambiguous texture resource: "+utf8(name.wstring()));
     index();auto found=names.find(key(name.wstring()));
     if(found!=names.end()){
-        if(found->second.size()==1)return{found->second.front(),true};
-        if(found->second.size()>1)throw std::runtime_error("Ambiguous texture alias: "+utf8(name.wstring()));
+        std::vector<fs::path> usable;for(auto& path:found->second)if(scope.allows(path))usable.push_back(path);
+        if(usable.size()==1)return{usable.front(),true};
+        if(usable.size()>1)throw std::runtime_error("Ambiguous texture alias: "+utf8(name.wstring()));
     }
     throw std::runtime_error("Missing texture: "+utf8(name.wstring())+" (checked model, tex and textures folders)");
+}
+bool TextureResolver::refuses(const std::string& reference) const {
+    auto direct=scope.locate(reference);if(direct.empty())return true;
+    std::error_code error;return fs::is_regular_file(direct,error)&&!scope.allows(direct);
 }
 }

@@ -37,7 +37,7 @@ add_library(nanoem_physics STATIC native/nanoem_backend.cpp)
 target_include_directories(nanoem_physics PRIVATE vendor/glm vendor/bullet/src vendor/json/single_include)
 target_compile_definitions(nanoem_physics PRIVATE NANOEM_ENABLE_BULLET)
 target_link_libraries(nanoem_physics PUBLIC nanoem_core BulletSoftBody BulletDynamics BulletCollision LinearMath)
-add_library(mmd_runtime SHARED native/installation.cpp native/compatibility.cpp native/compute_probe.cpp native/compute_solver.cpp vendor/bullet/src/clew/clew.c native/broadphase.cpp native/jobs.cpp native/naming.cpp native/model.cpp native/physics.cpp native/assets.cpp native/rig.cpp native/rig_animation.cpp native/rig_geometry.cpp native/sharing.cpp native/packages.cpp native/model_notes.cpp native/scene_share.cpp native/fitter.cpp native/secondary.cpp native/secondary_quality.cpp native/scene.cpp native/spring_bones.cpp native/vrm.cpp native/pmx_writer.cpp native/humanoid_map.cpp native/import_error.cpp native/physics_profile.cpp native/file_access.cpp)
+add_library(mmd_runtime SHARED native/installation.cpp native/compatibility.cpp native/compute_probe.cpp native/compute_solver.cpp vendor/bullet/src/clew/clew.c native/broadphase.cpp native/jobs.cpp native/naming.cpp native/model.cpp native/physics.cpp native/assets.cpp native/rig.cpp native/rig_animation.cpp native/rig_geometry.cpp native/sharing.cpp native/packages.cpp native/model_notes.cpp native/scene_share.cpp native/fitter.cpp native/secondary.cpp native/secondary_quality.cpp native/scene.cpp native/spring_bones.cpp native/vrm.cpp native/pmx_writer.cpp native/humanoid_map.cpp native/import_error.cpp native/physics_profile.cpp native/file_access.cpp native/picked_models.cpp native/dependency_scope.cpp)
 set_target_properties(mmd_runtime PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON OUTPUT_NAME mmdhl_runtime_win64)
 target_include_directories(mmd_runtime PUBLIC native vendor/bullet/src vendor/nanoem/nanoem vendor/json/single_include PRIVATE vendor/stb vendor/glm)
 target_link_libraries(mmd_runtime PUBLIC nanoem_core nanoem_physics BulletSoftBody BulletDynamics BulletCollision LinearMath PRIVATE bcrypt ole32 windowscodecs icu cabinet)
@@ -78,7 +78,9 @@ target_link_libraries(mmdhl_props_core PUBLIC bcrypt)
 target_compile_options(mmdhl_props_core PRIVATE /W4 /utf-8)
 add_library(mmdhl_props_import STATIC native/props/import.cpp native/props/pmx.cpp native/props/collision.cpp native/props/fast_hull.cpp native/props/texture_resolver.cpp native/props/material_overrides.cpp native/props/blend.cpp native/props/zstd_decode.cpp)
 target_include_directories(mmdhl_props_import PRIVATE vendor/stb vendor/assimp/contrib/zlib ${CMAKE_BINARY_DIR}/vendor/assimp/contrib/zlib)
-target_link_libraries(mmdhl_props_import PUBLIC mmdhl_props_core assimp meshoptimizer ole32 windowscodecs PRIVATE zlibstatic)
+# The runtime holds the dependency scope (native/dependency_scope.cpp): every importer,
+# characters and props, shares the worker's one denylist.
+target_link_libraries(mmdhl_props_import PUBLIC mmdhl_props_core mmd_runtime assimp meshoptimizer ole32 windowscodecs PRIVATE zlibstatic)
 target_compile_options(mmdhl_props_import PRIVATE /W4 /utf-8)
 # Characters in other formats (FBX, glTF, DAE) are converted to PMX in the worker,
 # which alone links Assimp; the game modules only read the converted cache.

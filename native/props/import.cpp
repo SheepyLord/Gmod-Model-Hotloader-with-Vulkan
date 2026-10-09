@@ -46,11 +46,15 @@ public:
     aiReturn Seek(size_t offset,aiOrigin origin)override{size_t next=offset;if(origin==aiOrigin_CUR){if(offset>bytes.size()-pos)return aiReturn_FAILURE;next=pos+offset;}if(origin==aiOrigin_END){if(offset>bytes.size())return aiReturn_FAILURE;next=bytes.size()-offset;}if(next>bytes.size())return aiReturn_FAILURE;pos=next;return aiReturn_SUCCESS;}
     size_t Tell()const override{return pos;}size_t FileSize()const override{return bytes.size();}void Flush()override{}
 };
+// The model file and what it names (glTF buffers, OBJ material libraries), as in 2.2
+// (DependencyScope::Reach::Local): never a network path or, through any link, a denied place.
 class UnicodeIO final:public Assimp::IOSystem {
-    fs::path root;
-    fs::path path(const char* p)const{std::string s(p);if(networkPath(s))throw std::runtime_error("Network model dependencies are not supported");auto q=fs::path(wide(s));return q.is_absolute()?q:root/q;}
+    fs::path model;DependencyScope scope;
+    fs::path path(const char* p)const{std::string s(p);if(networkPath(s))throw std::runtime_error("Network model dependencies are not supported");
+        auto q=fs::absolute(fs::path(wide(s))).lexically_normal();if(q==model)return q;
+        q=scope.locate(s);if(q.empty()||!scope.allows(q))throw std::runtime_error("Model dependency in a protected location");return q;}
 public:
-    explicit UnicodeIO(fs::path p):root(std::move(p)){}
+    explicit UnicodeIO(const fs::path& source):model(fs::absolute(source).lexically_normal()),scope(model.parent_path(),false,DependencyScope::Reach::Local){}
     bool Exists(const char* p)const override{try{return fs::is_regular_file(path(p));}catch(...){return false;}}
     char getOsSeparator()const override{return '/';}
     Assimp::IOStream* Open(const char* p,const char* mode="rb")override{try{if(std::strchr(mode,'w')||std::strchr(mode,'a'))return nullptr;return new MemoryStream(readFile(path(p)));}catch(...){return nullptr;}}
@@ -108,7 +112,7 @@ Asset importModel(const fs::path& source,const Options& options,const Progress& 
     class ParseProgress final:public Assimp::ProgressHandler { const Progress& progress; float last=-1;
     public:explicit ParseProgress(const Progress& p):progress(p){} bool Update(float percent)override{
         if(percent<0||percent-last>=.05f){last=percent;progress("Reading geometry",.02f+std::max(0.f,percent)*.08f,{},uint64_t(std::max(0.f,percent)*100),100,percent<0);}return true;
-    }};imp.SetProgressHandler(new ParseProgress(progress));imp.SetIOHandler(new UnicodeIO(source.parent_path()));imp.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS,true);imp.SetPropertyBool(AI_CONFIG_IMPORT_FBX_IGNORE_UP_DIRECTION,true);
+    }};imp.SetProgressHandler(new ParseProgress(progress));imp.SetIOHandler(new UnicodeIO(source));imp.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS,true);imp.SetPropertyBool(AI_CONFIG_IMPORT_FBX_IGNORE_UP_DIRECTION,true);
     unsigned flags=aiProcess_Triangulate|aiProcess_JoinIdenticalVertices|aiProcess_GenSmoothNormals|aiProcess_CalcTangentSpace|aiProcess_ValidateDataStructure|aiProcess_SortByPType;
     // Normalize the pinned glTF importer's sparse specular-color slot before
     // validation, then still run the full validation/postprocess pipeline.

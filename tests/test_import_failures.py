@@ -117,6 +117,8 @@ assert(mmdhl.ImportHint('Cannot open file C:/x.obj','unknown')==L'library.hint.c
 assert(mmdhl.ImportHint('x','worker.crash',nil,'pick')==L'library.hint.picker_crash' and mmdhl.ImportHint('x','worker.crash',nil,'textures')==L'library.hint.worker_crash')
 assert(mmdhl.ImportHint('x','worker.crash',nil,'start')==L'library.hint.worker_start' and mmdhl.ImportHint('x','pmx.truncated',nil,'pick')==L'library.hint.pmx_truncated')
 assert(mmdhl.ImportStage({stageCode='pick'})==L'library.stage.pick')
+-- On another player's server only models chosen in the file window open (natives after 2.3.0).
+assert(mmdhl.ImportHint('On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.')==L'library.hint.remote_picked')
 ''')
 print('PASS: hints by error code and family first; the English phrases (fixed order) for older natives')
 
@@ -290,6 +292,61 @@ MESSAGES[1][4]() assert(CALLS[#CALLS].source=='C:/m/rig.fbx' and CALLS[#CALLS].o
 mmdhl.boneMapper=nil mmdhl.props=nil library.job=nil
 ''')
 print('PASS: without the bone window\'s rules and window (a server that stopped at its installation check) imports, hints and fit explanations work as before')
+# ---- a damaged list of source paths is kept, and the player told where ----
+lua.execute(r'''
+local L=mmdhl.L local library=mmdhl.library
+color_white=Color(255,255,255) CHAT={}
+chat.AddText=function(...) local parts={} for i=1,select('#',...) do local v=select(i,...) if type(v)=='string' then parts[#parts+1]=v end end CHAT[#CHAT+1]=table.concat(parts) end
+mmdhl.boneMapper=nil library.Refresh=function() end
+local function poll(status) NOTES={} CHAT={} TIMERS={} library.job=12 library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode(status) end HOOKS['Think/MMDHL.LibraryImport']() TIMERS={} end
+local function noted(text) for _,n in ipairs(NOTES) do if n==text then return true end end return false end
+local base={state='complete',asset=string.rep('f',64),source='C:/m/hero.pmx',filename='hero.pmx',info={name='Hero'},fit={ok=true}}
+poll(base) for _,n in ipairs(NOTES) do assert(not n:find('sources.local',1,true),'a readable list was reported: '..n) end
+local damaged=table.Copy(base) damaged.registryBackup='sources.local.json.damaged-20261009-101500' poll(damaged)
+local want=L('library.import.registry_damaged',{file='mmd_hotloader/sources.local.json.damaged-20261009-101500'})
+assert(want:find('mmd_hotloader/sources.local.json.damaged-20261009-101500',1,true) and noted(want) and CHAT[#CHAT]:find(want,1,true),'the kept list was not reported')
+-- A static prop's list lives in mmd_hotloader/static.
+mmdhl.props={library={OnImported=function() return 'Imported Box',0 end},ImportOptions=function() return {} end}
+poll({state='complete',kind='static',asset=string.rep('f',64),source='C:/m/box.obj',filename='box.obj',info={name='Box'},registryBackup='sources.local.json.damaged-20261009-101501'})
+assert(noted(L('library.import.registry_damaged',{file='mmd_hotloader/static/sources.local.json.damaged-20261009-101501'})),'the static prop list was not reported')
+mmdhl.props=nil
+''')
+print('PASS: a damaged list of source paths is reported with the name it was kept under')
+
+# ---- on another player's server: the refusal in the player's language, reloads keep their terms ----
+ENTITY_EDITOR = (ROOT / 'addon/lua/mmdhl/entity_editor.lua').read_text(encoding='utf-8')
+assert 'mmdhl.library.ReloadCharacter(id)' in ENTITY_EDITOR and 'native.Reload(' not in ENTITY_EDITOR, 'the entity editor reloads around library.ReloadCharacter'
+lua.execute(r'''
+local L=mmdhl.L local library=mmdhl.library
+local REFUSED='On a server you do not host, Model Hotloader imports only models chosen in its file window. Choose the model again.'
+-- The native's English refusal gets a code: the status line and the window's cause line are the player's language.
+FRAMES={} TIMERS={}
+assert(library.StartImport(nil,REFUSED)==false and library.status==L'library.cause.not_picked','the refusal on the status line stays English')
+RUN_TIMERS() local frame=FRAMES[#FRAMES]
+assert(frame and HAS(frame,L('library.failure.while',{step=L'library.stage.start',error=L'library.cause.not_picked'})) and HAS(frame,L('library.failure.what_to_try',{hint=L'library.hint.remote_picked'})),'the window shows the English refusal')
+assert(mmdhl.ImportHint(REFUSED,'start.not_picked')==L'library.hint.remote_picked' and library.StartError('Import worker missing')=='Import worker missing','other start failures keep their message')
+-- Reimporting a prop and reloading a character return it too.
+mmdhl.props={ImportOptions=function() return {} end} mmdhl.native.PropReload=function() return nil,REFUSED end mmdhl.native.Reload=function() return nil,REFUSED end
+local ok,err=library.ReimportProp(string.rep('e',64)) assert(ok==false and err==L'library.cause.not_picked','a refused prop reimport returns English')
+ok,err=library.ReloadCharacter(string.rep('a',64)) assert(ok==false and err==L'library.cause.not_picked','a refused reload returns English')
+TIMERS={} FRAMES={} mmdhl.props=nil
+-- A reloaded character's new revision is imported with the one it replaces, so its terms
+-- record carries over where the source's readmes cannot be read again; only that source's.
+local old,new=string.rep('a',64),string.rep('b',64)
+library.Refresh=function() end mmdhl.boneMapper=nil library.entries={[old]={id=old,source='C:/m/hero.fbx'}}
+local IMPORTED={} mmdhl.terms={Imported=function(kind,id,source,previous) IMPORTED[#IMPORTED+1]={kind=kind,id=id,source=source,previous=previous} end}
+mmdhl.native.Reload=function(id) assert(id==old) return 21 end
+assert(library.ReloadCharacter(old)==true and library.job==21,'the reload did not start')
+local function poll(status) library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode(status) end HOOKS['Think/MMDHL.LibraryImport']() TIMERS={} end
+poll({state='complete',asset=string.rep('c',64),source='C:/m/other.fbx',filename='other.fbx',info={name='Other'},fit={ok=true}})
+assert(IMPORTED[1].previous==nil,'another file inherited the reloaded character\'s record')
+library.job=21 poll({state='complete',asset=new,source='C:/m/hero.fbx',filename='hero.fbx',info={name='Hero'},fit={ok=true}})
+assert(IMPORTED[2].kind=='character' and IMPORTED[2].id==new and IMPORTED[2].source=='C:/m/hero.fbx' and IMPORTED[2].previous==old,'a reloaded character was imported without the revision it replaces')
+library.job=22 poll({state='complete',asset=string.rep('d',64),source='C:/m/hero.fbx',filename='hero.fbx',info={name='Hero'},fit={ok=true}})
+assert(IMPORTED[3].previous==nil,'a later import of the same file still counted as the reload')
+mmdhl.terms=nil library.entries={}
+''')
+print('PASS: on another player\'s server the refusal is in the player\'s language; a reloaded character keeps the revision it replaces')
 
 # ---- spawn: the fitter's reason inside a translated token ----
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)

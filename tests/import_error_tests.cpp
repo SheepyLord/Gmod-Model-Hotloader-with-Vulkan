@@ -4,6 +4,7 @@
 // and crash log (argv[1] = mmdhl_worker.exe). No GPU, game, network or user models.
 #include "runtime.hpp"
 #include "import_error.hpp"
+#include "dependency_scope.hpp"
 #include "release.hpp"
 #include "rig.hpp"
 #include "spring_bones.hpp"
@@ -32,6 +33,7 @@ bool placed(const Json& where,const std::string& kind,int64_t index,const std::s
 struct PmxSpec {
  size_t bones=3,vertices=60;std::vector<std::pair<std::string,int>> materials={{"スカート",-1},{"Body",-1}}; // -1: the real index count
  int vertexType=-1;size_t badVertex=0;int boneParent=-2;size_t parentOf=2;size_t morphs=0,badMorph=size_t(-1);
+ std::vector<std::string> textures;std::vector<int> materialTexture; // texture paths; each material's base texture (-1: none)
 };
 Bytes pmx(const PmxSpec& s){
  Bytes b;auto u8=[&](uint8_t v){b.push_back(v);};auto i32=[&](int32_t v){auto p=reinterpret_cast<const unsigned char*>(&v);b.insert(b.end(),p,p+4);};
@@ -41,10 +43,10 @@ Bytes pmx(const PmxSpec& s){
  i32(int32_t(s.vertices));
  for(size_t i=0;i<s.vertices;i++){for(float v:{float(i%10),float(i/10),0.f,0.f,0.f,-1.f,0.f,0.f})f32(v);u8(uint8_t(i==s.badVertex&&s.vertexType>=0?s.vertexType:0));i32(int32_t(i%s.bones));f32(1);}
  size_t triangles=s.vertices/3;i32(int32_t(triangles*3));for(size_t i=0;i<triangles*3;i++)i32(int32_t(i));
- i32(0); // textures
+ i32(int32_t(s.textures.size()));for(auto& t:s.textures)text(t);
  i32(int32_t(s.materials.size()));size_t first=0;
  for(size_t m=0;m<s.materials.size();m++){auto& [name,count]=s.materials[m];size_t real=m+1<s.materials.size()?(triangles/2)*3:triangles*3-first;
-  text(name);text(name);for(float v:{.8f,.8f,.8f,1.f,0.f,0.f,0.f,5.f,.4f,.4f,.4f})f32(v);u8(0x0E);for(float v:{0.f,0.f,0.f,1.f,1.f})f32(v);i32(-1);i32(-1);u8(0);u8(0);i32(-1);text("");
+  text(name);text(name);for(float v:{.8f,.8f,.8f,1.f,0.f,0.f,0.f,5.f,.4f,.4f,.4f})f32(v);u8(0x0E);for(float v:{0.f,0.f,0.f,1.f,1.f})f32(v);i32(m<s.materialTexture.size()?s.materialTexture[m]:-1);i32(-1);u8(0);u8(0);i32(-1);text("");
   i32(count>=0?count:int32_t(real));first+=real;}
  i32(int32_t(s.bones));
  for(size_t i=0;i<s.bones;i++){std::string name=i==0?"センター":"bone"+std::to_string(i);
@@ -220,6 +222,27 @@ int main(int argc,char** argv){try{
   writeAtomic(vtf,bytes("not a vtf"));fs::remove(temp/L"cache2"/L"assets"/wide(id)/L"materials-v5.gma");
   auto e=failure([&]{prepareSourceMaterials(temp/L"cache2",id);},"damaged vtf");
   check(e.code=="texture.derivative"&&e.details.value("path","")==utf8(vtf.wstring())&&placed(e.details["where"],"material",int64_t(textured),result["info"]["materials"][textured].value("name","")),"a damaged cached texture names the material and the file's path");}
+
+ // ---- a PMX character's textures (dependency_scope.hpp, Reach::Local) ----
+ // As in 2.2 a texture may climb out of the model's folder or lie behind a junction (artists'
+ // working folders keep textures beside the model); a root-relative one or one in a denied
+ // place is never read, with a warning.
+ {auto pack=temp/L"pack";auto folder=pack/L"model";for(auto f:{folder/L"tex",pack/L"tex",pack/L"outside"})fs::create_directories(f);
+  for(auto f:{folder/L"beside.dds",folder/L"tex"/L"below.dds",pack/L"tex"/L"up.dds",folder/L"denied.dds",pack/L"outside"/L"secret.dds",pack/L"secret.dds"})fs::copy_file("tests/fixtures/checker.dds",f);
+  auto link=L"cmd /c mklink /J \""+(folder/L"linked").wstring()+L"\" \""+(pack/L"outside").wstring()+L"\" >nul";check(_wsystem(link.c_str())==0,"the test junction");
+  PmxSpec spec;spec.vertices=72;spec.materials.clear();
+  spec.textures={"beside.dds","tex\\below.dds","..\\tex\\up.dds","denied.dds","..\\outside\\secret.dds","../secret.dds","linked\\secret.dds","\\secret.dds"};
+  for(size_t i=0;i<spec.textures.size();i++){spec.materials.push_back({"m"+std::to_string(i),9});spec.materialTexture.push_back(int(i));}
+  writeAtomic(folder/L"model.pmx",pmx(spec));
+  setDependencyDenylist([](const fs::path& p){return p.filename()==L"denied.dds";});
+  auto result=importAsset(folder/L"model.pmx",temp/L"cache3",Json::object(),{});setDependencyDenylist({});
+  auto& textures=result["info"]["textures"];auto warnings=result["info"]["warnings"].dump();std::cout<<"  "<<warnings<<"\n";
+  check(textures.size()==8,"every material keeps its texture slot");
+  for(size_t i:{0,1,2,4,5,6})check(!textures[i].value("base","").empty(),"a texture is read as in 2.2: "+spec.textures[i]);
+  for(size_t i:{3,7}){auto shown=spec.textures[i];std::replace(shown.begin(),shown.end(),'\\','/');
+   check(textures[i].value("base","").empty()&&has(warnings,"Texture in a protected location: "+shown),"a denied or root-relative texture is not read, with a warning: "+shown);}
+  check(!has(warnings,"Cannot read"),"a refused texture is never opened");
+  fs::remove(folder/L"linked");}
 
  // ---- worker exits ----
  {auto x=describeWorkerExit(0xC0000005);check(x["cause"]=="access_violation"&&x["errorCode"]=="worker.crash"&&has(x["error"],"exited before completion")&&has(x["error"],"0xC0000005"),"0xC0000005 is an access violation (and keeps the word exited)");

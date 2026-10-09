@@ -51,6 +51,10 @@ API and its limits).
 * Only in **single player** and on a **server you host**. On anyone else's
   server every client script comes from that server, so Model Hotloader refuses
   all requests there and does not even show your remembered folders.
+* Model imports follow the same rule there: a script from another server can
+  import, reimport or read the readmes beside only models you chose in Model
+  Hotloader's own file picker, so it cannot use the importer to learn whether
+  other files exist or what they are.
 * Whatever an addon reads, it can use as it likes, including sending it to a
   server or a website. Allow only addons you trust, and only what they need.
 
@@ -286,7 +290,11 @@ with `released`.
   revoking the larger folder that replaced a smaller one ends both.
 * The picker's arming is `native/file_access_picker.hpp`: the picker is never
   shown without it (it fails as `dialog_failed` instead).
-* Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only
+* Tests: `tests/file_access_tests.cpp` (CTest `file_access`, also the picked
+  files that imports on another server are limited to, shared by two games
+  running at once, the private job folders, and the functions the module's
+  `BeginImport`, `Reload`, `PropReload`, `Browse`, `PollJob` and
+  `InspectModelNotes` go through (`native/picked_models.hpp`); with the test-only
   worker `tests/file_access_worker.cpp`, which answers from an environment
   variable and is never packaged; the shipped worker has no such path. It
   checks the picker's arming without a window; with `MMDHL_FA_UI_TESTS=1` it

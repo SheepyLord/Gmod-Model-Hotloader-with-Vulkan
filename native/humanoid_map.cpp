@@ -10,17 +10,24 @@
 namespace mmd {
 namespace {
 using U32=std::u32string;
+bool scalar(char32_t c){return c<=0x10FFFF&&(c<0xD800||c>0xDFFF);}
+// Strict UTF-8: an overlong form, a UTF-16 surrogate (ED A0 80) or a code point past
+// U+10FFFF (F4 90.., F5..F7) is not UTF-8, so its lead byte becomes U+FFFD like any
+// other stray byte. JSON (status.json, the manifest) refuses invalid UTF-8.
 U32 decode(std::string_view s){
+ static constexpr char32_t least[]={0,0,0x80,0x800,0x10000};
  U32 out;out.reserve(s.size());
  for(size_t i=0;i<s.size();){unsigned char c=s[i];char32_t cp;int n;
   if(c<0x80){cp=c;n=1;}else if((c>>5)==6){cp=c&0x1f;n=2;}else if((c>>4)==14){cp=c&0x0f;n=3;}else if((c>>3)==30){cp=c&0x07;n=4;}else{out.push_back(0xFFFD);i++;continue;}
   bool ok=i+n<=s.size();for(int k=1;ok&&k<n;k++){unsigned char d=s[i+k];ok=(d&0xC0)==0x80;cp=(cp<<6)|(d&0x3f);}
+  ok=ok&&cp>=least[n]&&scalar(cp);
   if(!ok){out.push_back(0xFFFD);i++;continue;}out.push_back(cp);i+=n;}
  return out;
 }
 std::string encode(const U32& s){
  std::string out;
- for(char32_t c:s){if(c<0x80)out+=char(c);else if(c<0x800){out+=char(0xC0|(c>>6));out+=char(0x80|(c&0x3f));}
+ for(char32_t c:s){if(!scalar(c))c=0xFFFD;
+  if(c<0x80)out+=char(c);else if(c<0x800){out+=char(0xC0|(c>>6));out+=char(0x80|(c&0x3f));}
   else if(c<0x10000){out+=char(0xE0|(c>>12));out+=char(0x80|((c>>6)&0x3f));out+=char(0x80|(c&0x3f));}
   else{out+=char(0xF0|(c>>18));out+=char(0x80|((c>>12)&0x3f));out+=char(0x80|((c>>6)&0x3f));out+=char(0x80|(c&0x3f));}}
  return out;
