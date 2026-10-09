@@ -1021,8 +1021,16 @@ local loose={'^Set','^Dock','^Make','^SizeTo','^Center','^Invalidate','^Request'
 Panel.__index=function(t,k) local f=rawget(Panel,k) if f then return f end local control=CONTROLS[rawget(t,'class')] if control and control[k] then return control[k] end if type(k)=='string' then for _,pattern in ipairs(loose) do if k:match(pattern) then return function() end end end end end
 function Panel:IsValid() return rawget(self,'removed')~=true end
 function Panel:SetMultiline(v) self.multiline=v end
--- FocusNext moves the keyboard focus on: this entry loses it (at once here; the game may do it later).
-function Panel:FocusNext() if self.OnLoseFocus then self:OnLoseFocus() end end
+-- Keyboard focus, one panel at a time. RequestFocus takes it (the panel that had it loses it);
+-- KillFocus and FocusNext (DTextEntry's Enter) give it up. Losing it calls OnLoseFocus at once,
+-- or with LATE_BLUR only at blur(): the game may change focus later than the call.
+FOCUSED=nil LATE_BLUR=false LATE={}
+local function loseFocus(p) if FOCUSED~=p then return end FOCUSED=nil if p.OnLoseFocus then p:OnLoseFocus() end end
+function blur() local list=LATE LATE={} for _,p in ipairs(list) do loseFocus(p) end end
+function Panel:RequestFocus() if FOCUSED==self then return end local had=FOCUSED if had then loseFocus(had) end FOCUSED=self if self.OnGetFocus then self:OnGetFocus() end end
+function Panel:KillFocus() if LATE_BLUR then LATE[#LATE+1]=self else loseFocus(self) end end
+Panel.FocusNext=Panel.KillFocus
+function Panel:HasFocus() return FOCUSED==self end
 function Panel:Add(class) return panel(class,self) end function Panel:SetParent(p) self.parent=p end function Panel:GetChildren() return self.children end
 function Panel:SetTall(h) self.h=h end function Panel:GetTall() return self.h end function Panel:SetWide(w) self.w=w end function Panel:GetWide() return self.w end
 function Panel:SetSize(w,h) self.w,self.h=w,h end function Panel:GetSize() return self.w,self.h end function Panel:SetPos(x,y) self.x,self.y=x,y end function Panel:GetPos() return self.x or 0,self.y or 0 end
@@ -1030,7 +1038,7 @@ function Panel:SetVisible(v) self.visible=v end function Panel:IsVisible() retur
 function Panel:SetText(t) self.text=t end function Panel:GetText() return self.text end function Panel:GetValue() return self.text end
 function Panel:SetValue(v) if self.class=='DCheckBoxLabel' then self.checked=v==true or v==1 if self.OnChange then self:OnChange(self.checked) end else self.text=v end end
 function Panel:SetFont(f) self.font=f end function Panel:GetFont() return self.font end function Panel:Remove() self.removed=true end function Panel:Clear() for _,c in ipairs(self.children) do c.removed=true end self.children={} end
-function Panel:SetChecked(v) self.checked=v end function Panel:GetChecked() return self.checked==true end function Panel:CursorPos() return 0,0 end function Panel:HasFocus() return false end function Panel:IsHovered() return false end
+function Panel:SetChecked(v) self.checked=v end function Panel:GetChecked() return self.checked==true end function Panel:CursorPos() return 0,0 end function Panel:IsHovered() return false end
 function Panel:AddChoice(text,data,selected) self.choices[#self.choices+1]={text,data} end
 function Panel:ChooseOptionID(i) local c=self.choices[i] if c then self.text=c[1] if self.OnSelect then self:OnSelect(i,c[1],c[2]) end end end
 function Panel:AddColumn() return panel('DListView_Column',self) end function Panel:AddLine(...) local l=panel('DListView_Line',self) l.columns={...} self.lines=self.lines or {} self.lines[#self.lines+1]=l return l end function Panel:GetLines() return self.lines or {} end
@@ -1237,12 +1245,41 @@ walk()
 -- Enter in a number field commits it: DTextEntry's own Enter moves the focus on and calls OnEnter.
 local weight for _,p in ipairs(ALL) do if not weight and p.class=='DTextEntry' and rawget(p,'Show') and not p.removed then weight=p end end
 local steps=#e.undo
-weight:OnGetFocus() weight:SetText('82,5') weight:OnKeyCodeTyped(KEY_ENTER)
+weight:RequestFocus() weight:SetText('82,5') weight:OnKeyCodeTyped(KEY_ENTER)
 assert(e.draft.mass==82.5,'Enter in a number field did not commit it')
-assert(#e.undo==steps+1 and weight:GetText()=='82.5','Enter committed the value twice')
-weight:OnGetFocus() weight:SetText('90') weight:OnLoseFocus() assert(e.draft.mass==90 and #e.undo==steps+2,'leaving the field no longer commits')
-weight:OnGetFocus() weight:OnKeyCodeTyped(KEY_UP) SHIFT=true weight:OnKeyCodeTyped(KEY_UP) SHIFT=false assert(e.draft.mass==101,'the arrow keys do not step the value')
+assert(#e.undo==steps+1 and weight:GetText()=='82.5' and not weight:HasFocus(),'Enter committed the value twice')
+-- The game may move the focus after OnEnter: still one commit.
+weight:RequestFocus() weight:SetText('84') LATE_BLUR=true weight:OnKeyCodeTyped(KEY_ENTER) LATE_BLUR=false blur()
+assert(e.draft.mass==84 and #e.undo==steps+2 and weight:GetText()=='84','Enter before the blur committed the value twice')
+weight:RequestFocus() weight:SetText('90') weight:KillFocus() assert(e.draft.mass==90 and #e.undo==steps+3,'leaving the field no longer commits')
+weight:RequestFocus() weight:OnKeyCodeTyped(KEY_UP) SHIFT=true weight:OnKeyCodeTyped(KEY_UP) SHIFT=false assert(e.draft.mass==101 and #e.undo==steps+5,'the arrow keys do not step the value')
+weight:KillFocus() assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101','leaving the field after the arrows committed again')
+-- Esc reverts what was typed, also through the blur KillFocus causes (at once or later).
+weight:RequestFocus() weight:SetText('120') weight:OnKeyCodeTyped(KEY_ESCAPE)
+assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101' and not weight:HasFocus(),'Esc committed the typed value')
+weight:RequestFocus() weight:SetText('130') LATE_BLUR=true weight:OnKeyCodeTyped(KEY_ESCAPE) LATE_BLUR=false blur()
+assert(e.draft.mass==101 and #e.undo==steps+5 and weight:GetText()=='101','Esc committed the typed value when the blur came later')
+-- The value the draft has, typed again in another form, is no edit.
+weight:RequestFocus() weight:SetText('101,0') weight:KillFocus() assert(#e.undo==steps+5 and weight:GetText()=='101','an unchanged value made an undo step')
 weight:Think() assert((rawget(weight,'convarThinks') or 0)>0,'the number field replaced DTextEntry:Think')
+-- Clicking into a field to read it and out again changes nothing, in every field. Shape fields
+-- would make the fitted shape explicit (and, mirrored, replace the other side's), part fields
+-- would pin their value on both sides, friction would round 0.123 (shown ×5 as 0.61) to 0.122.
+RunConsoleCommand('mmdhl_physics_editor_advanced','1') RunConsoleCommand('mmdhl_physics_editor_mirror','1')
+e:Edit(function(d) d.explicit[6]={limits={x={-30,40,.123}}} end)
+e:ShowTab('numbers') e:Select(6) e:Sync() walk()
+local function same(a,b) if type(a)~='table' or type(b)~='table' then return a==b end for k,v in pairs(a) do if not same(v,b[k]) then return false end end for k in pairs(b) do if a[k]==nil then return false end end return true end
+local draft,before=table.Copy(e.draft),#e.undo local read=0
+for _,p in ipairs(ALL) do if p.class=='DTextEntry' and rawget(p,'Show') and not p.removed and p:IsEnabled() then
+ p:RequestFocus() read=read+1 e.world:RequestFocus()
+ assert(#e.undo==before and same(e.draft,draft),'leaving a number field unchanged (now showing '..tostring(p:GetText())..') changed the draft')
+end end
+assert(read>=15 and e.draft.shapes[6]==nil and e.draft.shapes[10]==nil and e.draft.explicit[6].limits.x[3]==.123 and e.draft.explicit[10]==nil,'reading the fields pinned, mirrored or rounded values')
+-- Enter moves the focus on to the next field: leaving that one unchanged commits nothing either.
+local fields={} for _,p in ipairs(ALL) do if p.class=='DTextEntry' and rawget(p,'Show') and not p.removed and p:IsEnabled() then fields[#fields+1]=p end end
+fields[1]:RequestFocus() fields[1]:SetText('3') fields[1]:OnKeyCodeTyped(KEY_ENTER) fields[2]:RequestFocus() fields[2]:KillFocus()
+assert(#e.undo==before+1,'the field Enter moved on to committed its unchanged value')
+FOCUSED=nil
 -- The QC paste dialog keeps DFrame's Think, which moves it while its title bar is dragged.
 e:PasteDialog() local d=e.dialog
 d.Dragging={10,20} MOUSE_X,MOUSE_Y=300,400 d:Think() d.Dragging=nil
@@ -1273,4 +1310,4 @@ label(true,false) label(false,true) assert(LABELS==3,'a depth or skybox pass was
 FRAME=FRAME+1 copy.removed=true label(false,false) assert(listed==2 and LABELS==3,'a removed test copy is still labelled')
 assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 ''')
-print('PASS: the preview fits with the server\'s pins; Enter commits a number field once and its Think stays DTextEntry\'s; the QC paste dialog drags; the material boxes follow Undo; test copies are labelled from one lookup a frame')
+print('PASS: the preview fits with the server\'s pins; Enter commits a number field once, Esc and a field left unchanged commit nothing, its Think stays DTextEntry\'s; the QC paste dialog drags; the material boxes follow Undo; test copies are labelled from one lookup a frame')

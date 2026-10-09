@@ -233,26 +233,37 @@ local function stopSlider(parent,s,stops,get,set,enabled)
  end
  return p
 end
--- A numeric field (§9.6): comma or point, Enter or blur commits, Esc reverts, arrows step (Shift ×10, Ctrl ×0.1).
+-- A numeric field (§9.6): comma or point, Enter or blur commits what was typed, Esc reverts, arrows step (Shift ×10, Ctrl ×0.1).
 local function numberField(parent,s,f,get,set,lo,hi,step,decimals,enabled)
  local t=parent:Add('DTextEntry') t:SetFont(f.Small) t:SetTall(s(24)) t:SetContentAlignment(6) t:SetUpdateOnType(false)
- local function show() if not t:HasFocus() then local v=get() t:SetText(type(v)=='number' and fmt(v,decimals) or '') end end
+ -- t.shown is the text the field last displayed or committed. Leaving the field with it
+ -- (a click in to read the value, Esc, the blur after Enter's commit, the field Enter moves
+ -- on to) is no edit: setting a value pins it, mirrors it, makes a shape explicit and adds
+ -- an undo step, and the displayed text is rounded (friction shows a fifth ×5).
+ local function display(text) t.shown=text t:SetText(text) end
+ local function show() if not t:HasFocus() then local v=get() display(type(v)=='number' and fmt(v,decimals) or '') end end
+ -- value: an arrow key's step; otherwise the typed text.
  local function commit(value)
+  local typed=value==nil and t:GetValue() or nil
+  if typed~=nil and typed==t.shown then show() return end
   -- One value: gsub's count would be tonumber's base (an error).
-  local v=tonumber((tostring(value or t:GetValue()):gsub(',','.')))
+  local v=tonumber((tostring(value or typed):gsub(',','.')))
   if not v then show() return end
   if v<lo or v>hi then t.flashUntil=RealTime()+3 t:SetTooltip(L('physics_editor.clamped',{min=fmt(lo,decimals),max=fmt(hi,decimals)})) v=math.Clamp(v,lo,hi) end
-  -- Enter commits and moves the focus on, whose blur commits again: once per value while focused.
-  v=P.Quantize(v,decimals) if t.committed~=v then t.committed=v set(v) end show()
+  -- The value the draft already has (typed again, or 1.0 for 1) is no edit either.
+  v=P.Quantize(v,decimals) local current=get()
+  if not (type(current)=='number' and P.Quantize(current,decimals)==v) then set(v) end
+  if typed~=nil then t.shown=typed end
+  show()
  end
  t.OnEnter=function() commit() end
  local base=vgui.GetControlTable('DTextEntry')
- t.OnGetFocus=function(self) self.committed=nil if base and base.OnGetFocus then base.OnGetFocus(self) end end
  t.OnLoseFocus=function(self) commit() if base and base.OnLoseFocus then base.OnLoseFocus(self) end end
  t.OnKeyCodeTyped=function(self,code)
-  if code==KEY_ESCAPE then self:KillFocus() show() return true end
+  -- Back to the displayed text first: the blur that KillFocus causes then commits nothing.
+  if code==KEY_ESCAPE then self:SetText(self.shown or '') self:KillFocus() show() return true end
   if code==KEY_UP or code==KEY_DOWN then local v=tonumber((self:GetValue():gsub(',','.'))) or get() or 0
-   local k=step*((input.IsShiftDown() and 10) or (input.IsControlDown() and .1) or 1) commit((v+(code==KEY_UP and k or -k))) self:SetText(fmt(get(),decimals)) self:SetCaretPos(#self:GetText()) return true end
+   local k=step*((input.IsShiftDown() and 10) or (input.IsControlDown() and .1) or 1) commit((v+(code==KEY_UP and k or -k))) display(fmt(get(),decimals)) self:SetCaretPos(#self:GetText()) return true end
   -- Enter and every other key as DTextEntry handles them: its Enter calls OnEnter.
   if base and base.OnKeyCodeTyped then return base.OnKeyCodeTyped(self,code) end
  end
