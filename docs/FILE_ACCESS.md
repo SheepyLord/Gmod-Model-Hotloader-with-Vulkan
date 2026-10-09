@@ -57,11 +57,14 @@ API and its limits).
 
 The decision is made in the native module, where Lua cannot reach it:
 
-* The dialogs run in a separate process (`mmdhl_worker.exe`). Lua can click
-  Derma buttons and override hooks, but not windows of another process. Their
-  sentences are compiled into the module in the player's language; only the
-  addon's name, its reported script, its stated purpose and a short title come
-  from Lua. They are shown in quotes or marked as reported and not verified,
+* The dialogs run in a separate process (`mmdhl_worker.exe`), and only while
+  the installation check allows that worker, as for model imports (a worker
+  from another release, or one that failed or is still running its
+  self-test, shows nothing; turning file access off needs no dialog). Lua can
+  click Derma buttons and override hooks, but not windows of another process.
+  Their sentences are compiled into the module in the player's language; only
+  the addon's name, its reported script, its stated purpose and a short title
+  come from Lua. They are shown in quotes or marked as reported and not verified,
   cleaned of control and text-direction characters, cut to length, and their
   own quotation marks (`"`, `“ ”`, `« »`, `「 」` and look-alikes) become
   apostrophes, so the text cannot close the quotes and add sentences that look
@@ -170,7 +173,7 @@ affect others.
 
 | Function | |
 |---|---|
-| `IsAvailable()` | `true`, or `false, message, code` (`needs_update`, `unavailable_remote`, `disabled`, `worker_missing`). |
+| `IsAvailable()` | `true`, or `false, message, code` (`needs_update`, `unavailable_remote`, `disabled`, `worker_missing`, `worker_unavailable`). |
 | `Pick(opts, cb)` | Opens the picker. `opts`: `addon` (required), `title`, `purpose`, `filters` (`{{label, '*.ext;*.ext'}, ...}`), `multiple`, `folder` (pick folders instead). `cb(true, items, refused)`; `refused` lists chosen names that cannot be read, with their codes. |
 | `RequestPath(path, opts, cb)` | Asks for an exact absolute path. `opts`: `addon` (required), `folder` (the path is a folder), `purpose`. `cb(true, items)`. |
 | `Read(item, opts, cb)` | `opts`: `mode` `'binary'` (default) or `'text'`, `offset`, `maxBytes` (default 1 MiB, at most 16 MiB), `relative` (a path inside a folder item, with `/` or `\`), `hidden`. `cb(true, data, info)`; `info` has `name`, `size`, `offset`, `read`, `eof`, `limited` (the file continues past 256 MiB) and, in text mode, `encoding`. |
@@ -200,8 +203,10 @@ pickers in this map, from any addons), `busy`, `not_found`, `network`,
 `offset_too_large`, `not_a_file`, `not_a_folder`, `released`, `unreadable`,
 `dialog_failed`, `too_many_items`, `invalid_options`, `denied_by_hook`,
 `needs_update`, `unavailable_remote`, `disabled` (also for a read or listing
-the player turned file access off during), `worker_missing`. A read or listing
-of a folder the player revoked meanwhile ends with `released`.
+the player turned file access off during), `worker_missing`,
+`worker_unavailable` (the installation check does not allow the worker that
+shows the dialogs; the message carries its reason). A read or listing of a
+folder the player revoked meanwhile ends with `released`.
 
 ### Hooks
 
@@ -268,4 +273,5 @@ of a folder the player revoked meanwhile ends with `released`.
   worker `tests/file_access_worker.cpp`, which answers from an environment
   variable and is never packaged; the shipped worker has no such path. With
   `MMDHL_FA_UI_TESTS=1` it also opens the real folder picker on the desktop and
-  checks that an OK sent at once chooses nothing) and `tests/test_file_access.py`.
+  checks that an OK sent at once chooses nothing), `tests/test_file_access.py`
+  and `tests/test_file_access_worker_gate.py`.

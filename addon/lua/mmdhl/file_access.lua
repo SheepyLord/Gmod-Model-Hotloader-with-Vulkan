@@ -27,6 +27,8 @@ local function message(code,detail)
  -- Native cannot tell a remote server from single player whose server part failed to load.
  if code=='no_local_server' or code=='unavailable_remote' then code=localHost() and 'no_server_realm' or 'unavailable_remote' end
  if code=='invalid_options' then return L('file_access.error.invalid_options',{error=tostring(detail or '')}) end
+ -- The installation check's own reason: a worker from another release, one that failed its self-test, the check still running.
+ if code=='worker_unavailable' then return L('file_access.worker_unavailable',{reason=tostring(detail or '')}) end
  if messages[code] then return L('file_access.error.'..messages[code]) end
  if unavailable[code] then return L('file_access.'..unavailable[code]) end
  return L('file_access.error.other',{error=tostring(detail or code or '?')})
@@ -37,11 +39,17 @@ local function noteOldBinary()
  if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'file_access.feature','2.3.0')
  else notification.AddLegacy(L'file_access.needs_update',NOTIFY_HINT,8) end
 end
+-- The dialogs run in mmdhl_worker.exe: the installation check's verdict on it applies, as to imports.
+local function workerReady() if not isfunction(mmdhl.FeatureAvailable) then return true end return mmdhl.FeatureAvailable('imports') end
 -- ok, reason text, reason code. Old binaries and remote servers say why.
 function FA.IsAvailable()
  if not supported() then return false,message('needs_update'),'needs_update' end
  local info,err,code=decode(native.FileAccessInfo())
  if not istable(info) then return false,message(code or 'unavailable_remote',err),code or 'unavailable_remote' end
+ -- Asking needs the worker's windows, and so does turning file access on.
+ if info.available or info.reason=='disabled' then
+  local ready,why=workerReady() if not ready then return false,message('worker_unavailable',why),'worker_unavailable' end
+ end
  if info.available then return true end
  local reason=info.reason=='no_local_server' and 'unavailable_remote' or tostring(info.reason or 'unavailable_remote')
  return false,message(info.reason,info.reason),reason
@@ -248,9 +256,10 @@ function FA.OpenManager()
  local function refresh()
   if not IsValid(frame) then return end
   local state=FA.Grants()
-  -- The switch works while file access is available or merely turned off.
+  -- The switch works while file access is available or merely turned off, and it always
+  -- turns file access off (that needs no window).
   local okNow,why,code=FA.IsAvailable() status:SetText(okNow and '' or why) status:SetVisible(not okNow)
-  updating=true enabled:SetChecked(state.enabled==true) updating=false enabled:SetEnabled(okNow==true or code=='disabled')
+  updating=true enabled:SetChecked(state.enabled==true) updating=false enabled:SetEnabled(okNow==true or code=='disabled' or state.enabled==true)
   list:Clear()
   for _,g in ipairs(state.grants or {}) do
    local line=list:AddLine(tostring(g.requester or '?'),tostring(g.folder or '?'),(tonumber(g.used) or 0)>0 and os.date('%Y-%m-%d %H:%M',tonumber(g.used)) or '') line.grant=g.id
@@ -264,6 +273,8 @@ function FA.OpenManager()
  -- Turning on is confirmed natively; the box shows the native state, not the click.
  enabled.OnChange=function(_,value) if updating then return end FA.SetEnabled(value,function() refresh() end) timer.Simple(0,refresh) end
  hook.Add('MMDHL.FileAccessChanged',frame,function() refresh() end)
+ -- The worker's self-test ends, or the player accepts or repairs the installation.
+ hook.Add('MMDHL.InstallationChanged',frame,function() refresh() end)
  refresh()
 end
 concommand.Add('mmdhl_file_access',function() FA.OpenManager() end)
