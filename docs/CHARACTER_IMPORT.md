@@ -123,7 +123,7 @@ The window's starting point: `mmdhl.Action('bonemap_pins', assetId)` answers on 
 
 Pins reach the native readers as `BM.IndexJSON` writes them, with whole numbers (`util.TableToJSON` writes 12 as 12.0). Spawn options still go through `util.TableToJSON`, so the fitter must accept integral numbers in `options.boneMap` (as `InspectBoneMap` does).
 
-`mmdhl.SavedBoneMap(id)` returns the saved pins. `mmdhl.Spawn` reads the file once: collision corrections as before, and `options.boneMap` always from the file, whatever the options carry (respawns copy an entity's options). The arms preview, pasted dupes and NPC variants of saved ragdolls take them the same way. Saving collision corrections keeps the pins and is refused for a ragdoll fitted with other pins than the saved ones.
+`mmdhl.SavedBoneMap(id)` returns the saved pins. `mmdhl.Spawn` reads the file once: collision corrections as before, and `options.boneMap` always from the file, whatever the options carry (respawns copy an entity's options). The arms preview, pasted dupes and NPC variants of saved ragdolls take them the same way. Saving collision corrections keeps the pins and is refused for a ragdoll fitted with other pins than the saved ones; the physics editor's saves and **Forget** keep them too, and its preview and builds are fitted with them (`mmdhl.SamePins` compares two pin sets).
 
 ### Lua (`mmdhl.boneMapper`)
 

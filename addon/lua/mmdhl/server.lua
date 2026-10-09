@@ -40,8 +40,11 @@ function mmdhl.SavedBoneMap(id,saved)
  if saved==nil then saved=util.JSONToTable(file.Read('mmd_hotloader/fit_overrides/'..id..'.json','DATA') or '') end
  if istable(saved) and istable(saved.boneMap) and next(saved.boneMap)~=nil then return saved.boneMap end
 end
-local function samePins(a,b)
- a,b=a or {},b or {}
+-- Whether two pin sets are the same (nil is none). Collision corrections are made in their
+-- bones' frames: the collision and physics editors refuse those of a carrier fitted with
+-- other pins than the saved ones, which the next fit would use.
+function mmdhl.SamePins(a,b)
+ a,b=istable(a) and a or {},istable(b) and b or {}
  for k,v in pairs(a) do if tonumber(b[k])~=tonumber(v) then return false end end
  for k in pairs(b) do if a[k]==nil then return false end end
  return true
@@ -172,7 +175,7 @@ net.Receive('mmdhl_action',function(_,p)
    options.position={ent:GetPos():Unpack()} options.position[2]=options.position[2]+100 options.frozen=true
    local asset=mmdhl.GetAsset(ent)
    -- Corrections made on a carrier fitted with other bones would not match the new ones.
-   if not samePins(ent.MMDOptions and ent.MMDOptions.boneMap,mmdhl.SavedBoneMap(asset)) then notice(p,L'server.error.fit_bones_changed') return end
+   if not mmdhl.SamePins(ent.MMDOptions and ent.MMDOptions.boneMap,mmdhl.SavedBoneMap(asset)) then notice(p,L'server.error.fit_bones_changed') return end
    mmdhl.Spawn(p,asset,options,function(created,err)
     if not IsValid(created) then notice(p,err) return end
     -- The model's default is server-wide: only those who may save physics defaults change it.

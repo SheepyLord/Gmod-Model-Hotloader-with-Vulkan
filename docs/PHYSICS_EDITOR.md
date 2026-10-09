@@ -174,6 +174,15 @@ keeps these fields. Workshop packages carry the file without the saver's name
 and SteamID; on dedicated servers it is installed from the package when there is
 no local one.
 
+The same file holds the bone window's pins (`boneMap`, `boneMapVersion`,
+`boneMapSavedAt`, see [CHARACTER_IMPORT.md](CHARACTER_IMPORT.md)). Saving and
+**Forget** change only the physics fields: the pins stay, and a file with only
+pins counts as no saved physics. Every build is fitted with the saved pins, and
+so is the editor's preview. Shapes were made for the bones a ragdoll was fitted
+with: after the pins changed, **Test copy**, **Apply**, **Save for new spawns**
+and a **Previous version** made with the old pins are refused (*spawn it again*);
+**Reset** and **Restore saved** rebuild it with the current pins.
+
 If a saved profile cannot be built (for example on an older server module), the
 model spawns with automatic physics and the player is told. A saved profile from
 a newer addon is ignored with a notice, never half applied.

@@ -616,16 +616,18 @@ proposal.missing={}
 proposal.issues={{code='band',severity='warning',text='aliased'}}
 -- Saving merges into the collision corrections and checks the structure of what the window
 -- showed: the fitter's own choice with the pins on top, not the fitter's repaired torso.
-DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},scale=3.2,excludedMaterials={'m'}})
+DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},scale=3.2,excludedMaterials={'m'},mass=62,physics={schema=1,massMode='volume'},editor={schema=1,savedByName='Admin'}})
 PROPOSED={} RAWPROPOSED={} r=save('{"version":1,"boneMap":{"ValveBiped.Bip01_Spine2":5.0},"dropCollision":false}')
 assert(r[2]==true and says(r,'server.notice.bonemap_saved') and PROPOSED[1].boneMap[VB..'Spine2']==5 and RAWPROPOSED[2]=='{}')
 assert(RAWPROPOSED[1]=='{"boneMap":{"ValveBiped.Bip01_Spine2":5}}','pins reach the fitter as whole numbers')
 assert(inspected.values[VB..'Spine2']==5 and inspected.values[VB..'Spine1']==2 and inspected.values[VB..'Pelvis']==1 and inspected.values[VB..'L_Thigh']==-1)
 local saved=util.JSONToTable(DISK[path]) assert(saved.boneMap[VB..'Spine2']==5 and saved.boneMapVersion==1 and saved.bodies.a==1 and saved.scale==3.2 and saved.version==3 and saved.generator==18)
+assert(saved.mass==62 and saved.physics.massMode=='volume' and saved.editor.savedByName=='Admin','saving bones dropped the physics editor\'s saved physics')
 -- A changed part with a body drops the collision corrections made for the old bones, even
 -- when the client did not ask (its baseline may be stale); excluded materials stay.
 r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=false}) saved=util.JSONToTable(DISK[path])
 assert(r[2]==true and saved.bodies==nil and saved.scale==nil and saved.excludedMaterials[1]=='m' and inspected.values[VB..'L_Thigh']==12)
+assert(saved.mass==62 and saved.physics.massMode=='volume' and saved.editor,'dropping the collision corrections dropped the saved physics')
 DISK[path]=util.TableToJSON({version=3,generator=18,bodies={a=1},boneMap={[VB..'L_Thigh']=12}})
 r=save({version=1,boneMap={[VB..'L_Thigh']=12,[VB..'Spine2']=5}}) saved=util.JSONToTable(DISK[path]) assert(saved.bodies.a==1,'unchanged bodies keep their corrections')
 r=save({version=1,boneMap={[VB..'L_Thigh']=12},dropCollision=true}) saved=util.JSONToTable(DISK[path]) assert(saved.bodies==nil,'the client may still ask')
@@ -672,7 +674,7 @@ SAY('PASS: spawns read the saved pins next to the collision corrections')
 lua.execute(r'''
 RECEIVERS={} net={Receive=function(name,fn) RECEIVERS[name]=fn end}
 ''')
-lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'local function samePins') + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
+lua.execute('local native,L=mmdhl.native,mmdhl.L ' + definition(lua, SERVER_LUA, 'function mmdhl.SamePins') + definition(lua, SERVER_LUA, "net.Receive('mmdhl_action'"))
 lua.execute(r'''
 local VB='ValveBiped.Bip01_'
 local id=string.rep('c',64) local path='mmd_hotloader/fit_overrides/'..id..'.json'

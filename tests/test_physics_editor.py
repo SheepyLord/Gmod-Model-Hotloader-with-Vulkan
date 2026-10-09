@@ -399,6 +399,10 @@ print('PASS: ReadPhyFile skips the binary solids of a .phy and returns its text 
 
 # ---- The server: permissions, limits, operations, saved defaults, replace in place ----
 EDITOR = read('addon/lua/mmdhl/physics_editor.lua')
+SERVER_LUA = read('addon/lua/mmdhl/server.lua')
+CHECK = LuaRuntime()  # definition() compiles with the newer load(string)
+# server.lua's bone pin helpers, which the editor uses (server.lua loads before it).
+PINS = definition(CHECK, SERVER_LUA, 'function mmdhl.SavedBoneMap') + definition(CHECK, SERVER_LUA, 'function mmdhl.SamePins')
 
 
 def json_bridge(rt):
@@ -426,7 +430,8 @@ def json_bridge(rt):
 
 SERVER_MOCKS = r'''
 SERVER=true CLIENT=false NOW=100 CurTime=function() return NOW end SysTime=CurTime
-IsValid=function(v) return type(v)=='table' and not v.removed end
+-- As in GMod: a table is valid only through its own IsValid method.
+IsValid=function(v) if type(v)~='table' then return false end local f=v.IsValid if not f then return false end return f(v) end
 isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end isfunction=function(v) return type(v)=='function' end isnumber=function(v) return type(v)=='number' end
 local function deep(t) if type(t)~='table' then return t end local c={} for k,v in pairs(t) do c[k]=deep(v) end return setmetatable(c,getmetatable(t)) end
 -- As in GMod: table.Copy takes a table (or nil) and errors on anything else.
@@ -469,17 +474,18 @@ constraint={GetTable=function(e) return e.constraints or {} end}
 MADE={} duplicator={CreateConstraintFromTable=function(c,map,p) if c.fail then error('constraint failed') end MADE[#MADE+1]={c=c,map=map} return {} end}
 UNDO={} undo={ReplaceEntity=function(a,b) UNDO[#UNDO+1]={a,b} end} CLEAN={} cleanup={ReplaceEntity=function(a,b) CLEAN[#CLEAN+1]={a,b} end}
 GAMEMODE={} CALLED={} gamemode={Call=function(name,...) CALLED[#CALLED+1]=name local f=GAMEMODE[name] if f then return f(...) end end}
-ENTS={} Entity=function(i) return ENTS[i] end NULL={removed=true}
+ENTS={} Entity=function(i) return ENTS[i] or NULL end NULL={removed=true,IsValid=function() return false end}
 local nextIndex=10
 function physobj(i)
  local o={pos=Vector(i,0,0),ang=Angle(0,i,0),motion=true,vel=Vector(0,0,i),angvel=Vector(i,0,0),asleep=false}
+ function o:IsValid() return true end
  function o:GetPos() return self.pos end function o:GetAngles() return self.ang end function o:SetPos(v) self.pos=v end function o:SetAngles(a) self.ang=a end
  function o:IsMotionEnabled() return self.motion end function o:EnableMotion(v) self.motion=v end function o:GetVelocity() return self.vel end function o:SetVelocity(v) self.vel=v end
  function o:GetAngleVelocity() return self.angvel end function o:AddAngleVelocity(v) self.angvel=self.angvel+v end function o:IsAsleep() return self.asleep end function o:Sleep() self.asleep=true end function o:Wake() self.asleep=false end
  return o
 end
 local E={} E.__index=function(t,k) local f=rawget(E,k) if f then return f end if type(k)=='string' and k:match('^%u') and not k:match('^MMD') then return function(self,...) self.calls=self.calls or {} self.calls[#self.calls+1]=k end end end
-function E:GetClass() return self.class end function E:GetPhysicsObjectCount() return 18 end function E:GetPhysicsObjectNum(i) return self.objs[i] end
+function E:IsValid() return not self.removed end function E:GetClass() return self.class end function E:GetPhysicsObjectCount() return 18 end function E:GetPhysicsObjectNum(i) return self.objs[i] end
 function E:GetNW2String(k,d) local v=self.nw[k] if v==nil then return d end return v end E.SetNW2String=function(self,k,v) self.nw[k]=v end
 E.GetNW2Bool=E.GetNW2String E.SetNW2Bool=E.SetNW2String
 function E:GetPos() return self.pos end function E:GetAngles() return self.ang end function E:BoundingRadius() return 40 end function E:EntIndex() return self.index end
@@ -493,7 +499,7 @@ function ragdoll(key,options,owner)
 end
 function player(admin,super,host,name)
  local p={admin=admin,super=super,host=host,name=name or 'P'}
- function p:IsAdmin() return self.admin==true or self.super==true end function p:IsSuperAdmin() return self.super==true end function p:IsListenServerHost() return self.host==true end
+ function p:IsValid() return not self.removed end function p:IsAdmin() return self.admin==true or self.super==true end function p:IsSuperAdmin() return self.super==true end function p:IsListenServerHost() return self.host==true end
  function p:SteamID64() return '7656119800000000'..(self.name=='Admin' and '1' or '2') end function p:Nick() return self.name end function p:EyeAngles() return Angle(10,90,0) end
  return p
 end
@@ -507,6 +513,8 @@ EDITABLE=function() return true end mmdhl.CanEdit=function(p,e,prop) return EDIT
 BOUND={} mmdhl.CaptureNativeState=function(e) return {asset=e.asset,from=e.index} end mmdhl.BindEntity=function(e,s) BOUND[#BOUND+1]={e,s} return true end mmdhl.StoreNativeState=function() end
 SPAWNS={} SPAWN_FAIL=nil
 mmdhl.Spawn=function(p,asset,o,done,progress,flags)
+ -- As server.lua's: every fit takes the saved pins, whatever the options carry.
+ o.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(asset) or nil
  SPAWNS[#SPAWNS+1]={p=p,asset=asset,options=o,flags=flags}
  if SPAWN_FAIL then done(nil,SPAWN_FAIL) return end
  local n=#SPAWNS
@@ -536,6 +544,7 @@ def server_runtime():
     rt.execute(SERVER_MOCKS)
     attach(rt)
     rt.execute('AddCSLuaFile=function() end include=function() end')
+    rt.execute(PINS)
     rt.execute(PROFILE)
     rt.execute(EDITOR)
     rt.execute(SERVER_SETUP)
@@ -735,6 +744,70 @@ request(admin,'clear_default',ent,{}) assert(last(admin).state=='ready' and FILE
 ''')
 print('PASS: Save for new spawns writes the ragdoll\'s own options and canonical physics (not the client\'s), with who and when; saved files are validated; Forget deletes them')
 
+# L13b: the bone window's pins share the saved file; the editor keeps them, previews and builds with them.
+s = server_runtime()
+s.execute(r'''
+local P=mmdhl.physics CONVARS.mmdhl_physics_editor.value='2'
+local admin=player(true,true,false,'Admin')
+local calf,chest='ValveBiped.Bip01_L_Calf','ValveBiped.Bip01_Spine4'
+local pins={[calf]=7}
+local ent=ragdoll(KEY,{boneMap=pins,mass=62,collisionOverrides={}},admin)
+local path=P.SavedPath(ent.asset)
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=pins,boneMapVersion=1,boneMapSavedAt=5})
+-- A file with only pins is no saved physics: nothing to forget or restore. The preview fits with the pins.
+request(admin,'open',ent,{}) local st=last(admin).data
+assert(st.savedDefault.exists==false,'a file with only the bone window\'s pins is offered as saved physics')
+assert(st.fitOptions.boneMap and st.fitOptions.boneMap[calf]==7,'the preview is fitted without the pins every build uses')
+request(admin,'restore_saved',ent,{base=KEY}) assert(says(last(admin),'physics_editor.error.no_saved') and #SPAWNS==0,'Restore saved rebuilt from a file with only pins')
+-- Save for new spawns replaces the default and keeps the pins.
+request(admin,'save_default',ent,{base=KEY}) assert(last(admin).state=='ready')
+local fit=util.JSONToTable(FILES[path])
+assert(fit.boneMap and fit.boneMap[calf]==7 and fit.boneMapVersion==1 and fit.boneMapSavedAt==5,'Save for new spawns deleted the bone window\'s pins')
+assert(fit.version==3 and fit.generator==18 and fit.mass==62 and fit.editor.savedByName=='Admin' and mmdhl.SavedBoneMap(ent.asset)[calf]==7)
+NOW=NOW+1 request(admin,'open',ent,{}) assert(last(admin).data.savedDefault.exists==true)
+-- Saving again replaces the whole default (a profile the ragdoll no longer has goes), still with the pins.
+fit.physics={schema=1,massMode='volume'} FILES[path]=util.TableToJSON(fit)
+request(admin,'save_default',ent,{base=KEY}) fit=util.JSONToTable(FILES[path]) assert(fit.physics==nil and fit.boneMap[calf]==7)
+-- Forget removes the default and keeps the pins.
+request(admin,'clear_default',ent,{}) fit=util.JSONToTable(FILES[path])
+assert(last(admin).state=='ready' and fit,'Forget deleted the file with the pins')
+assert(fit.boneMap[calf]==7 and fit.boneMapSavedAt==5 and fit.bodies==nil and fit.scale==nil and fit.excludedMaterials==nil and fit.mass==nil and fit.physics==nil and fit.editor==nil,'Forget kept the default or lost the pins')
+-- An older file's corrections no longer load and are replaced; its pins stay.
+FILES[path]=util.TableToJSON({version=2,generator=9,bodies={old=1},mass=10,boneMap=pins})
+request(admin,'save_default',ent,{base=KEY}) fit=util.JSONToTable(FILES[path])
+assert(fit.version==3 and fit.generator==18 and fit.boneMap[calf]==7 and fit.bodies.old==nil and fit.mass==62)
+assert(#REFUSED==0 and FILES['mmd_hotloader/fit_overrides/'..ent.asset..'.new.txt']==nil)
+
+-- The bones were assigned again after this ragdoll was placed: its shapes, its draft's and its
+-- earlier versions' were made for the old bones. Builds that use them and saving them are refused.
+local owner=player(false,false,false,'Owner')
+local old,new={[chest]=5},{[chest]=6}
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,boneMapVersion=1})
+local placed=ragdoll(KEY,{boneMap=old,collisionOverrides={[chest]={center={0,0,1},extent={2,2,2}}}},owner)
+local draft={collisionOverrides={[chest]={center={0,0,1},extent={3,3,3}}},mass=70}
+for _,op in ipairs({'test','apply','save_default'}) do NOW=NOW+10 request(admin,op,placed,{base=KEY,request=draft}) assert(says(last(admin),'server.error.fit_bones_changed'),op..' used shapes made for other bones') end
+assert(#SPAWNS==0 and util.JSONToTable(FILES[path]).bodies==nil,'shapes for the old bones were built or saved')
+-- Reset uses none of them: it rebuilds with the saved pins, and its earlier version (old bones) cannot come back.
+NOW=NOW+10 request(admin,'reset',placed,{base=KEY}) local r=last(admin)
+assert(r.state=='ready' and SPAWNS[1].options.boneMap[chest]==6 and next(SPAWNS[1].options.collisionOverrides)==nil,'Reset did not rebuild with the saved pins')
+local rebuilt=ENTS[r.ent] assert(rebuilt.MMDHLPhysicsHistory[1].boneMap[chest]==5,'a version does not remember its pins')
+NOW=NOW+10 request(admin,'previous',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig')}) assert(says(last(admin),'server.error.fit_bones_changed') and #SPAWNS==1,'Previous version brought back shapes for the old bones')
+-- The rebuilt ragdoll has the current pins: it is edited, tested and saved as usual.
+NOW=NOW+10 request(admin,'apply',rebuilt,{base=rebuilt:GetNW2String('MMDHLRig'),request=draft}) r=last(admin)
+assert(r.state=='ready' and SPAWNS[2].options.boneMap[chest]==6 and SPAWNS[2].options.collisionOverrides[chest].extent[1]==3)
+local current=ENTS[r.ent] assert(current.MMDHLPhysicsHistory[1].boneMap[chest]==6)
+NOW=NOW+10 request(admin,'previous',current,{base=current:GetNW2String('MMDHLRig')}) assert(last(admin).state=='ready','Previous version refused a version made for the current bones')
+-- Restore saved builds the saved shapes with the saved pins, whatever the ragdoll had.
+FILES[path]=util.TableToJSON({version=3,generator=18,boneMap=new,bodies={[chest]={center={0,0,2},extent={1,1,1}}},mass=50})
+local stale=ragdoll(KEY,{boneMap=old},owner)
+NOW=NOW+10 request(admin,'restore_saved',stale,{base=KEY}) local o=SPAWNS[#SPAWNS].options
+assert(last(admin).state=='ready' and o.mass==50 and o.collisionOverrides[chest].center[3]==2 and o.boneMap[chest]==6,'Restore saved did not rebuild the saved shapes with the saved pins')
+-- Pins compare as numbers; none and empty are the same.
+assert(mmdhl.SamePins({[chest]=6},{[chest]='6'}) and mmdhl.SamePins(nil,{}) and not mmdhl.SamePins({[chest]=6},nil) and not mmdhl.SamePins({},{[chest]=6}) and not mmdhl.SamePins({[chest]=6},{[chest]=-1}))
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+''')
+print('PASS: Save for new spawns and Forget keep the bone window\'s pins (a file with only pins is no saved physics); the editor\'s preview fits with the saved pins; shapes made for older pins are neither built nor saved, Reset and Restore saved rebuild with the current ones')
+
 spawn = lua51.LuaRuntime(unpack_returned_tuples=True)
 json_bridge(spawn)
 spawn.execute(SERVER_MOCKS)
@@ -809,7 +882,6 @@ WRITTEN={} function writeIfMissing(path,value) WRITTEN[path]=value end function 
 FILES={} file={Read=function(p) return FILES[p] end}
 mmdhl={}
 ''')
-CHECK = LuaRuntime()  # definition() compiles with the newer load(string)
 workshop = read('addon/lua/mmdhl/workshop.lua')
 w.execute(definition(CHECK, workshop, 'function W.ItemFit('))
 w.execute(definition(CHECK, workshop, 'local function installed(job)').replace('local function installed(job)', 'function installed(job)'))
