@@ -186,7 +186,10 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     report("Reading the file","read",.02f);auto raw=readFile(source);
     // VRM avatars become a PMX in memory with their embedded textures; spring
     // bones and licence metadata travel in the manifest (and so in its identity).
-    const bool vrmSource=!character&&isVrmData(raw);std::map<std::string,Bytes> embedded;Json vrm,conversion;std::vector<std::string> converted;
+    // A .vrm is always a GLB: one that does not read as an avatar is converted anyway, so the
+    // converter says why (cut off, broken JSON, no VRM extension) instead of "rename it".
+    const bool vrmSource=!character&&(isVrmData(raw)||(!lstrcmpiW(source.extension().c_str(),L".vrm")&&raw.size()>=4&&!std::memcmp(raw.data(),"glTF",4)));
+    std::map<std::string,Bytes> embedded;Json vrm,conversion;std::vector<std::string> converted;
     if(vrmSource){report("Converting VRM avatar","convert_vrm",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
     // Characters in other formats arrive converted by the worker the same way (character_import.cpp).
     if(character){report("Converting the character","convert_character",.05f);conversion=std::move(character->conversion);conversion["sourceSha256"]=hash(raw);raw=std::move(character->pmx);embedded=std::move(character->textures);converted=std::move(character->warnings);}

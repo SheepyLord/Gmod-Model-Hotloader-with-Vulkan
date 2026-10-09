@@ -153,7 +153,18 @@ int main(int argc,char** argv){try{
  {auto e=failure([&]{convertVrm(vrm([](Json& j){j["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"].erase("leftFoot");}),"Tiny");},"vrm humanoid");
   check(e.code=="vrm.humanoid"&&e.details.value("bone","")=="leftFoot"&&placed(e.details["where"],"humanoid_bone",-1,"leftFoot"),"a missing humanoid bone is named");}
  {auto e=failure([&]{convertVrm(vrm([](Json& j){j["accessors"][1]["count"]=4;}),"Tiny");},"vrm index");
-  check(e.code=="vrm.truncated"||e.code=="vrm.data","a VRM index accessor past its data is reported with a VRM code");}
+  check(e.code=="vrm.truncated"&&e.details.contains("viewSize")&&!e.details.contains("offset"),"a VRM index accessor past its data is vrm.truncated; its position inside the view is not a file offset");}
+ // A damaged .vrm is called damaged, never a GLB to rename: cut off, broken JSON, no VRM extension.
+ {auto cut=temp/L"cut.vrm";auto data=vrm();data.resize(40);writeAtomic(cut,data);
+  auto e=failure([&]{importAsset(cut,temp/L"cache",Json::object(),temp/L"cut.json");},"cut vrm");
+  check(e.code=="vrm.truncated"&&e.details.value("offset",0)==20&&readJson(temp/L"cut.json")["stageCode"]=="convert_vrm","a .vrm cut off inside its JSON chunk is vrm.truncated while converting");
+  auto stub=temp/L"stub.vrm";writeAtomic(stub,bytes("glTF\x02"));e=failure([&]{importAsset(stub,temp/L"cache",Json::object(),{});},"stub vrm");
+  check(e.code=="vrm.truncated","a .vrm that ends inside its GLB header is vrm.truncated");
+  auto broken=temp/L"broken-json.vrm";data=vrm();data[20]='#';writeAtomic(broken,data);
+  auto d=describe([&]{importAsset(broken,temp/L"cache",Json::object(),{});});check(d["errorCode"]=="vrm.json"&&has(d["error"],"The VRM file's data is malformed"),"a .vrm whose JSON does not parse is vrm.json");
+  auto plain=temp/L"plain.vrm";writeAtomic(plain,vrm([](Json& j){j["extensions"].erase("VRMC_vrm");j.erase("extensionsUsed");}));
+  e=failure([&]{importAsset(plain,temp/L"cache",Json::object(),{});},"no vrm extension");check(e.code=="vrm.container"&&has(e.what(),"no VRM extension"),"a glTF binary named .vrm without the VRM extension says so");
+  e=failure([&]{notCharacterFile(vrm(),L"avatar.pmx");},"renamed glb");check(e.code=="format.renamed"&&e.details.value("extension","")==".glb","a GLB named .pmx is still told to be renamed to .glb");}
 
  // ---- spring bones name the spring joint and the value ----
  {auto model=parse(pmx(PmxSpec{}));Json spring={{"springBone",{{"colliders",Json::array()},{"colliderGroups",Json::array()},{"springs",Json::array({{{"name","Hair"}}})},
@@ -231,6 +242,8 @@ int main(int argc,char** argv){try{
   check(r.status["errorCode"]=="format.archive"&&r.status["stageCode"]=="read","worker: an archive named .pmx fails while reading the file with format.archive");
   auto broken=temp/L"broken.vrm";writeAtomic(broken,vrm([](Json& j){j["bufferViews"][0].erase("byteLength");}));r=request(worker,temp/L"job3",broken);
   check(r.status["errorCode"]=="vrm.json"&&r.status["stageCode"]=="convert_vrm"&&has(r.status["context"].dump(),"Converting VRM avatar"),"worker: a broken VRM fails with vrm.json while converting");
+  auto cut=temp/L"download.vrm";auto data=vrm();data.resize(40);writeAtomic(cut,data);r=request(worker,temp/L"job4",cut);
+  check(r.status["errorCode"]=="vrm.truncated"&&r.status["stageCode"]=="convert_vrm"&&has(r.status["error"],"incomplete"),"worker: a .vrm cut off by an interrupted download is truncated, not a GLB to rename");
   auto crash=temp/L"crash";fs::create_directories(crash);
   auto code=run(worker,L"--crash-test \""+crash.wstring()+L"\" access");auto log=readFile(crash/L"worker.log");std::string text(log.begin(),log.end());
   check(code==0xC0000005&&has(text,"unhandled exception 0xC0000005")&&has(text,"during stage test"),"worker: an access violation ends with its exception code and one log line");

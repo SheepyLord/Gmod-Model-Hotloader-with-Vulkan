@@ -63,12 +63,13 @@ struct Document {
   ImportScope scope("buffer_view",index,{});
   auto& v=views[index];int buffer=v.at("buffer");size_t offset=v.value("byteOffset",size_t(0)),length=v.at("byteLength");
   if(buffer<0||size_t(buffer)>=buffers.size())vrmFail("vrm.data","Invalid VRM file: buffer view "+std::to_string(index)+" uses buffer "+std::to_string(buffer)+", which does not exist (the file has "+number(buffers.size())+")",Json(),{{"buffer",buffer}});
-  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)vrmFail("vrm.truncated","Truncated VRM file: buffer view "+std::to_string(index)+" reads bytes "+number(offset)+" to "+number(offset+length)+" of buffer "+std::to_string(buffer)+", which has only "+number(data.size()),Json(),{{"buffer",buffer},{"offset",offset},{"length",length},{"size",data.size()}});
+  auto data=buffers[buffer];if(offset>data.size()||length>data.size()-offset)vrmFail("vrm.truncated","Truncated VRM file: buffer view "+std::to_string(index)+" reads bytes "+number(offset)+" to "+number(offset+length)+" of buffer "+std::to_string(buffer)+", which has only "+number(data.size()),Json(),{{"buffer",buffer},{"byteOffset",offset},{"byteLength",length},{"bufferSize",data.size()}});
   return data.subspan(offset,length);
  }
 };
 Document open(std::span<const unsigned char> b){
- if(b.size()<20||std::memcmp(b.data(),"glTF",4))vrmFail("vrm.container","Not a VRM file: the glTF binary (GLB) header is missing",place("header"));
+ if(b.size()<4||std::memcmp(b.data(),"glTF",4))vrmFail("vrm.container","Not a VRM file: the glTF binary (GLB) header is missing",place("header"));
+ if(b.size()<20)vrmFail("vrm.truncated","Truncated VRM file: it ends after "+number(b.size())+" bytes, inside its GLB header; the file is incomplete",place("header"),{{"offset",b.size()},{"size",b.size()}});
  if(le32(b.data()+4)!=2)vrmFail("vrm.container","Unsupported glTF container version "+std::to_string(le32(b.data()+4))+"; VRM uses glTF 2.0",place("header"));
  size_t length=std::min<size_t>(le32(b.data()+8),b.size());Document d;bool json=false;std::span<const unsigned char> bin;
  for(size_t at=12;at+8<=length;){
@@ -114,7 +115,7 @@ Accessor accessor(const Document& d,int index){
  if(out.count>(1ull<<28)/out.components)vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(out.count)+" elements, more than the importer reads",Json(),{{"count",out.count}});
  size_t element=size_t(size)*out.components;std::span<const unsigned char> data;size_t offset=0,step=element;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,element);
-  if(!fits(data,offset,step,element,out.count))vrmFail("vrm.truncated","Truncated VRM file: accessor "+std::to_string(index)+" reads "+number(out.count)+" elements past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",out.count},{"offset",offset},{"stride",step},{"size",data.size()}});}
+  if(!fits(data,offset,step,element,out.count))vrmFail("vrm.truncated","Truncated VRM file: accessor "+std::to_string(index)+" reads "+number(out.count)+" elements past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",out.count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  out.values.assign(out.count*out.components,0.f);
  if(viewed)for(size_t i=0;i<out.count;i++)for(int c=0;c<out.components;c++)out.values[i*out.components+c]=component(data.data()+offset+i*step+size_t(c)*size,type,normalized);
  if(a.contains("sparse")){
@@ -134,7 +135,7 @@ std::vector<uint32_t> indexAccessor(const Document& d,int index){
  size_t count=a.at("count");int size=componentSize(type);if(count>(1ull<<28))vrmFail("vrm.data","Invalid VRM file: accessor "+std::to_string(index)+" has "+number(count)+" elements, more than the importer reads",Json(),{{"count",count}});
  std::span<const unsigned char> data;size_t offset=0,step=size;bool viewed=a.contains("bufferView");
  if(viewed){data=d.view(a["bufferView"]);offset=a.value("byteOffset",size_t(0));step=stride(d,a,size);
-  if(!fits(data,offset,step,size,count))vrmFail("vrm.truncated","Truncated VRM file: triangle index accessor "+std::to_string(index)+" reads past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",count},{"size",data.size()}});}
+  if(!fits(data,offset,step,size,count))vrmFail("vrm.truncated","Truncated VRM file: triangle index accessor "+std::to_string(index)+" reads past the end of its buffer view ("+number(data.size())+" bytes)",Json(),{{"count",count},{"byteOffset",offset},{"byteStride",step},{"viewSize",data.size()}});}
  std::vector<uint32_t> out(count,0);
  if(viewed)for(size_t i=0;i<count;i++)out[i]=unsignedComponent(data.data()+offset+i*step,type);
  if(a.contains("sparse")){auto acc=accessor(d,index);for(size_t i=0;i<count;i++)out[i]=uint32_t(acc.values[i]);}
