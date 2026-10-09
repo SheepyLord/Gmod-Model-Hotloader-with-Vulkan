@@ -12,7 +12,7 @@ Exact source revisions are recorded in `dependencies.lock.json`; bootstrap recor
 | [nlohmann/json](https://github.com/nlohmann/json) | Internal metadata and cache serialization | MIT |
 | [nothings/stb](https://github.com/nothings/stb) | Image decoding and PNG encoding | MIT option |
 | [SCell555/ShaderCompile](https://github.com/SCell555/ShaderCompile) | Build-time shader compiler, not shipped in the runtime ZIP | Upstream tool terms |
-| [assimp/assimp](https://github.com/assimp/assimp) | Static props: OBJ, FBX and glTF parsing in `mmdhl_worker.exe` only (import-only build with its bundled zlib, poly2tri, pugixml, rapidjson, utf8cpp, earcut and openddlparser) | BSD-3-Clause; bundled notices in `licenses/` |
+| [assimp/assimp](https://github.com/assimp/assimp) | Static props (OBJ, FBX and glTF) and characters in other formats (FBX, glTF and COLLADA/DAE) parsed in `mmdhl_worker.exe` only (import-only build with its bundled zlib, poly2tri, pugixml, rapidjson, utf8cpp, earcut and openddlparser; the COLLADA importer reads XML through pugixml) | BSD-3-Clause (pugixml: MIT); bundled notices in `licenses/` |
 | [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) | Static props: position welding and simplification of the collision copy | MIT |
 | [SarahWeiii/CoACD](https://github.com/SarahWeiii/CoACD) 1.0.14 | Static props: optional detailed (multi-hull) collision. `lib_coacd.dll` is the pinned upstream wheel binary (SHA-256 in `dependencies.lock.json`), loaded by the worker only | MIT; its bundled OpenVDB, oneTBB, Boost, spdlog, fmt and CDT notices are in `licenses/` |
 | [KhronosGroup/Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | Vulkan API declarations for the `gpu_vulkan` solver, which loads `vulkan-1.dll` at run time | Apache-2.0 or MIT |
@@ -20,6 +20,8 @@ Exact source revisions are recorded in `dependencies.lock.json`; bootstrap recor
 | [doitsujin/dxvk](https://github.com/doitsujin/dxvk) 3.1.1 | Default drop-in package only: `bin/win64/d3d9.dll`, Garry's Mod's Direct3D 9 on Vulkan, built by `scripts/build-dxvk.ps1` with `patches/dxvk` (shared compute queues for the Vulkan solver, a built-in Garry's Mod profile). Links its dxbc-spirv and libdisplay-info subprojects | zlib (DXVK), MIT (dxbc-spirv, libdisplay-info); notices in the package's `bin/win64/DXVK-LICENSES` folder |
 
 The static-prop importer (`native/props/`) is ported from the GModel Hot Loader project by the same author, including its cache format, fast single-hull collider, material analysis, texture resolver and render plan.
+
+The bone-name tables of the character importer (`native/humanoid_map.cpp`) were written for this project from public naming conventions (Mixamo, Unreal, Unity/VRoid, Rigify, 3ds Max Biped, Daz, ValveBiped and the MMD standard names); no third-party tables or code are used.
 
 The shader compiler release is `build_235_20231013.2`; its executable SHA-256 is `c341f397483b70b4e2260211dcba772e7c3e0e82db0edb9c15b75abb8e12db70`. `scripts/shaders.py` verifies it before execution.
 

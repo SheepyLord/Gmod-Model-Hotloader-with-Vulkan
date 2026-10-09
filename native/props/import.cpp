@@ -48,7 +48,7 @@ public:
 };
 class UnicodeIO final:public Assimp::IOSystem {
     fs::path root;
-    fs::path path(const char* p)const{std::string s(p);if(s.find("://")!=std::string::npos)throw std::runtime_error("Network model dependencies are not supported");auto q=fs::path(wide(s));return q.is_absolute()?q:root/q;}
+    fs::path path(const char* p)const{std::string s(p);if(networkPath(s))throw std::runtime_error("Network model dependencies are not supported");auto q=fs::path(wide(s));return q.is_absolute()?q:root/q;}
 public:
     explicit UnicodeIO(fs::path p):root(std::move(p)){}
     bool Exists(const char* p)const override{try{return fs::is_regular_file(path(p));}catch(...){return false;}}

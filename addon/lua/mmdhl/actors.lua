@@ -183,6 +183,8 @@ if SERVER then
   mmdhl.LoadAsset(id,function(info,err)
    if not info then reply(nil,err) return end
    local options,error=mmdhl.ActorOptions({role='arms',gender=gender,armsParts=clean}) if not options then reply(nil,error) return end
+   -- The same bones as the player model the preview stands for (pins from the bone window).
+   options.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(id) or nil
    local rig,e=mmdhl.Decode(native.PrepareCarrier(id,util.TableToJSON(options))) reply(rig,e)
   end)
  end)

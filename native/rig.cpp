@@ -6,6 +6,7 @@
 #include "mmd_names.hpp"
 #include "fitter.hpp"
 #include "spring_bones.hpp"
+#include "import_error.hpp"
 #include <BulletCollision/NarrowPhaseCollision/btGjkPairDetector.h>
 #include <BulletCollision/NarrowPhaseCollision/btGjkEpaPenetrationDepthSolver.h>
 #include <BulletCollision/NarrowPhaseCollision/btPointCollector.h>
@@ -97,11 +98,15 @@ void validateRig(const Rig& r,const Model& m){
  }
  for(auto key:{"meshYaw","actorOrigin"}){auto it=r.manifest.find(key);if(it!=r.manifest.end()&&(!it->is_number()||!(std::abs(it->get<double>())<1e6)))reject("mesh bind");}
 }
-void prepareModelFit(Model& model,const fs::path& cache){
- if(model.fittedRig)return;
+Json prepareModelFit(Model& model,const fs::path& cache){
+ const Json ok={{"ok",true}};
+ if(model.fittedRig)return ok;
  auto path=cache/L"fits"/wide("g"+std::to_string(RigGenerator)+"-"+shapeAtlasHash().substr(0,16)+"-"+model.id+".json");
- try{auto stored=readJson(path);auto text=stored.at("fit").dump();if(stored.at("sha256")==hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))&&stored["fit"]["asset"]==model.id){auto rig=rigFromManifest(stored["fit"]);validateRig(rig,model);model.fittedRig=std::make_shared<Rig>(std::move(rig));return;}}catch(const std::exception&){}
- try{auto rig=fitRig(model,Json::object());auto text=rig.manifest.dump();writeJson(path,{{"fit",rig.manifest},{"sha256",hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))}});model.fittedRig=std::make_shared<Rig>(std::move(rig));}catch(const std::exception& e){model.warnings.push_back(std::string("Native fit unavailable: ")+e.what());}
+ try{auto stored=readJson(path);auto text=stored.at("fit").dump();if(stored.at("sha256")==hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))&&stored["fit"]["asset"]==model.id){auto rig=rigFromManifest(stored["fit"]);validateRig(rig,model);model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}}catch(const std::exception&){}
+ try{auto rig=fitRig(model,Json::object());auto text=rig.manifest.dump();writeJson(path,{{"fit",rig.manifest},{"sha256",hash(std::span(reinterpret_cast<const unsigned char*>(text.data()),text.size()))}});model.fittedRig=std::make_shared<Rig>(std::move(rig));return ok;}
+ catch(const std::exception& e){model.warnings.push_back(std::string("Native fit unavailable: ")+e.what());
+  auto failure=dynamic_cast<const ImportError*>(&e);
+  return {{"ok",false},{"errorCode",failure?failure->code:"fit.error"},{"error",e.what()},{"missing",failure?failure->details.value("missing",Json::array()):Json::array()}};}
 }
 // The canonical profile a fit writes: c_arms have no physics bodies of their own; every other role carries it.
 static Json fitPhysics(const Json& options){return options.value("role",std::string("ragdoll"))=="arms"?Json::object():requireCanonicalPhysics(options.value("physicsOverrides",Json::object()));}
@@ -159,7 +164,12 @@ Rig fitRig(const Model& m,const Json& options){
   int parent=int(i);std::set<int> seen;while(parent>=0&&seen.insert(parent).second){auto& current=m.bones[parent];if(!current.inheritRotation||std::abs(current.coefficient-1.f)>.001f)break;parent=current.inherit;if(parent==b.mmd){b.aliases.push_back(int(i));break;}}
  }
  // Reject unsupported rigs before generating an engine asset, rather than manufacturing a humanoid.
- for(auto name:{"Pelvis","Spine1","Head1","L_UpperArm","R_UpperArm","L_Forearm","R_Forearm","L_Hand","R_Hand","L_Thigh","R_Thigh","L_Calf","R_Calf","L_Foot","R_Foot"})if(r.bones[index(name)].mmd<0)throw std::runtime_error(std::string("Missing humanoid landmark: ")+name);
+ // Every missing one is named, so the bone window can show them all at once.
+ {std::vector<std::string> missing;std::string words;
+  for(auto [name,word]:{std::pair{"Pelvis","hips"},{"Spine1","spine"},{"Head1","head"},{"L_UpperArm","left upper arm"},{"R_UpperArm","right upper arm"},{"L_Forearm","left forearm"},{"R_Forearm","right forearm"},{"L_Hand","left hand"},{"R_Hand","right hand"},
+   {"L_Thigh","left thigh"},{"R_Thigh","right thigh"},{"L_Calf","left lower leg"},{"R_Calf","right lower leg"},{"L_Foot","left foot"},{"R_Foot","right foot"}})
+   if(r.bones[index(name)].mmd<0){missing.push_back(std::string("ValveBiped.Bip01_")+name);words+=(words.empty()?"":", ")+std::string(word);}
+  if(!missing.empty())importFail("fit.landmarks","No bone found for: "+words,{{"missing",missing}});}
  auto& pelvis=r.bones[index("Pelvis")];auto& chest=r.bones[index("Spine4")];auto& neck=r.bones[index("Neck1")];auto& head=r.bones[index("Head1")];
  if(neck.mmd<0)neck.rest.setOrigin(head.rest.getOrigin().lerp(r.bones[index("Spine1")].rest.getOrigin(),.25f));
  if(chest.mmd<0)chest.rest.setOrigin(r.bones[index("Spine1")].rest.getOrigin().lerp(neck.rest.getOrigin(),.55f));

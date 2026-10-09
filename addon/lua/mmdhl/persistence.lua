@@ -44,6 +44,8 @@ local function rigForClass(rig,class,state)
  local key=rig.key..':'..role..':'..gender
  local converted=variants[key]
  local o=optionsFor(rig,state) o.role=role o.gender=gender o.rigManifest=nil
+ -- A new fit takes the server's current bone pins, not those a save or dupe carries.
+ o.boneMap=mmdhl.SavedBoneMap and mmdhl.SavedBoneMap(rig.asset) or nil
  if not converted then
   local err o,err=mmdhl.ActorOptions(o) if not o then return nil,err end
   local raw,e=native.PrepareCarrier(rig.asset,util.TableToJSON(o))

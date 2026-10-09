@@ -74,7 +74,7 @@ print('PASS: the grabber refuses grab, freeze, reset and remove on another playe
 server = LuaRuntime(unpack_returned_tuples=True)
 server.execute(r'''
 SERVER=true CLIENT=false NOW=0 SysTime=function() return NOW end unpack=unpack or table.unpack
-IsValid=function(v) return type(v)=='table' and not v.removed end isstring=function(v) return type(v)=='string' end
+IsValid=function(v) return type(v)=='table' and not v.removed end isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end
 table.Copy=function(t) local c={} for k,v in pairs(t or {}) do c[k]=v end return c end
 local V={} V.__index=V
 function Vector(x,y,z) return setmetatable({x=x or 0,y=y or 0,z=z or 0},V) end

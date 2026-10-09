@@ -1,0 +1,980 @@
+[
+ {
+  "anchors": [],
+  "convertOnly": false,
+  "family": "pelvis",
+  "group": "torso",
+  "id": "hips",
+  "key": "ValveBiped.Bip01_Pelvis",
+  "mmdEn": "lower body",
+  "mmdJp": "下半身",
+  "partner": "",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [],
+  "convertOnly": false,
+  "family": "spine",
+  "group": "torso",
+  "id": "spine",
+  "key": "ValveBiped.Bip01_Spine1",
+  "mmdEn": "upper body",
+  "mmdJp": "上半身",
+  "partner": "",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "spine",
+  "group": "torso",
+  "id": "middle_spine",
+  "key": "ValveBiped.Bip01_Spine2",
+  "mmdEn": "upper body2",
+  "mmdJp": "上半身2",
+  "partner": "",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Spine2",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "spine",
+  "group": "torso",
+  "id": "chest",
+  "key": "ValveBiped.Bip01_Spine4",
+  "mmdEn": "upper body3",
+  "mmdJp": "上半身3",
+  "partner": "",
+  "physical": true,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "neck",
+  "group": "torso",
+  "id": "neck",
+  "key": "ValveBiped.Bip01_Neck1",
+  "mmdEn": "neck",
+  "mmdJp": "首",
+  "partner": "",
+  "physical": false,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Neck1",
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "head",
+  "group": "torso",
+  "id": "head",
+  "key": "ValveBiped.Bip01_Head1",
+  "mmdEn": "head",
+  "mmdJp": "頭",
+  "partner": "",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": ""
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Head1"
+  ],
+  "convertOnly": true,
+  "family": "eye",
+  "group": "eyes",
+  "id": "left_eye",
+  "key": "Eye_L",
+  "mmdEn": "eye_L",
+  "mmdJp": "左目",
+  "partner": "Eye_R",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Head1"
+  ],
+  "convertOnly": true,
+  "family": "eye",
+  "group": "eyes",
+  "id": "right_eye",
+  "key": "Eye_R",
+  "mmdEn": "eye_R",
+  "mmdJp": "右目",
+  "partner": "Eye_L",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "clavicle",
+  "group": "left_arm",
+  "id": "left_shoulder",
+  "key": "ValveBiped.Bip01_L_Clavicle",
+  "mmdEn": "shoulder_L",
+  "mmdJp": "左肩",
+  "partner": "ValveBiped.Bip01_R_Clavicle",
+  "physical": true,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Clavicle",
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "upperarm",
+  "group": "left_arm",
+  "id": "left_upper_arm",
+  "key": "ValveBiped.Bip01_L_UpperArm",
+  "mmdEn": "arm_L",
+  "mmdJp": "左腕",
+  "partner": "ValveBiped.Bip01_R_UpperArm",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_UpperArm"
+  ],
+  "convertOnly": false,
+  "family": "forearm",
+  "group": "left_arm",
+  "id": "left_forearm",
+  "key": "ValveBiped.Bip01_L_Forearm",
+  "mmdEn": "elbow_L",
+  "mmdJp": "左ひじ",
+  "partner": "ValveBiped.Bip01_R_Forearm",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Forearm"
+  ],
+  "convertOnly": false,
+  "family": "hand",
+  "group": "left_arm",
+  "id": "left_hand",
+  "key": "ValveBiped.Bip01_L_Hand",
+  "mmdEn": "wrist_L",
+  "mmdJp": "左手首",
+  "partner": "ValveBiped.Bip01_R_Hand",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "clavicle",
+  "group": "right_arm",
+  "id": "right_shoulder",
+  "key": "ValveBiped.Bip01_R_Clavicle",
+  "mmdEn": "shoulder_R",
+  "mmdJp": "右肩",
+  "partner": "ValveBiped.Bip01_L_Clavicle",
+  "physical": true,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Clavicle",
+   "ValveBiped.Bip01_Spine4",
+   "ValveBiped.Bip01_Spine1"
+  ],
+  "convertOnly": false,
+  "family": "upperarm",
+  "group": "right_arm",
+  "id": "right_upper_arm",
+  "key": "ValveBiped.Bip01_R_UpperArm",
+  "mmdEn": "arm_R",
+  "mmdJp": "右腕",
+  "partner": "ValveBiped.Bip01_L_UpperArm",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_UpperArm"
+  ],
+  "convertOnly": false,
+  "family": "forearm",
+  "group": "right_arm",
+  "id": "right_forearm",
+  "key": "ValveBiped.Bip01_R_Forearm",
+  "mmdEn": "elbow_R",
+  "mmdJp": "右ひじ",
+  "partner": "ValveBiped.Bip01_L_Forearm",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Forearm"
+  ],
+  "convertOnly": false,
+  "family": "hand",
+  "group": "right_arm",
+  "id": "right_hand",
+  "key": "ValveBiped.Bip01_R_Hand",
+  "mmdEn": "wrist_R",
+  "mmdJp": "右手首",
+  "partner": "ValveBiped.Bip01_L_Hand",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Pelvis"
+  ],
+  "convertOnly": false,
+  "family": "thigh",
+  "group": "left_leg",
+  "id": "left_thigh",
+  "key": "ValveBiped.Bip01_L_Thigh",
+  "mmdEn": "leg_L",
+  "mmdJp": "左足",
+  "partner": "ValveBiped.Bip01_R_Thigh",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Thigh"
+  ],
+  "convertOnly": false,
+  "family": "calf",
+  "group": "left_leg",
+  "id": "left_lower_leg",
+  "key": "ValveBiped.Bip01_L_Calf",
+  "mmdEn": "knee_L",
+  "mmdJp": "左ひざ",
+  "partner": "ValveBiped.Bip01_R_Calf",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Calf"
+  ],
+  "convertOnly": false,
+  "family": "foot",
+  "group": "left_leg",
+  "id": "left_foot",
+  "key": "ValveBiped.Bip01_L_Foot",
+  "mmdEn": "ankle_L",
+  "mmdJp": "左足首",
+  "partner": "ValveBiped.Bip01_R_Foot",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Foot"
+  ],
+  "convertOnly": false,
+  "family": "toe",
+  "group": "left_leg",
+  "id": "left_toes",
+  "key": "ValveBiped.Bip01_L_Toe0",
+  "mmdEn": "toe_L",
+  "mmdJp": "左つま先",
+  "partner": "ValveBiped.Bip01_R_Toe0",
+  "physical": false,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_Pelvis"
+  ],
+  "convertOnly": false,
+  "family": "thigh",
+  "group": "right_leg",
+  "id": "right_thigh",
+  "key": "ValveBiped.Bip01_R_Thigh",
+  "mmdEn": "leg_R",
+  "mmdJp": "右足",
+  "partner": "ValveBiped.Bip01_L_Thigh",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Thigh"
+  ],
+  "convertOnly": false,
+  "family": "calf",
+  "group": "right_leg",
+  "id": "right_lower_leg",
+  "key": "ValveBiped.Bip01_R_Calf",
+  "mmdEn": "knee_R",
+  "mmdJp": "右ひざ",
+  "partner": "ValveBiped.Bip01_L_Calf",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Calf"
+  ],
+  "convertOnly": false,
+  "family": "foot",
+  "group": "right_leg",
+  "id": "right_foot",
+  "key": "ValveBiped.Bip01_R_Foot",
+  "mmdEn": "ankle_R",
+  "mmdJp": "右足首",
+  "partner": "ValveBiped.Bip01_L_Foot",
+  "physical": true,
+  "recommended": false,
+  "required": true,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Foot"
+  ],
+  "convertOnly": false,
+  "family": "toe",
+  "group": "right_leg",
+  "id": "right_toes",
+  "key": "ValveBiped.Bip01_R_Toe0",
+  "mmdEn": "toe_R",
+  "mmdJp": "右つま先",
+  "partner": "ValveBiped.Bip01_L_Toe0",
+  "physical": false,
+  "recommended": true,
+  "required": false,
+  "segment": 0,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Hand"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "left_fingers",
+  "id": "left_thumb_1",
+  "key": "ValveBiped.Bip01_L_Finger0",
+  "mmdEn": "thumb0_L",
+  "mmdJp": "左親指０",
+  "partner": "ValveBiped.Bip01_R_Finger0",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger0"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "left_fingers",
+  "id": "left_thumb_2",
+  "key": "ValveBiped.Bip01_L_Finger01",
+  "mmdEn": "thumb1_L",
+  "mmdJp": "左親指１",
+  "partner": "ValveBiped.Bip01_R_Finger01",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger01"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "left_fingers",
+  "id": "left_thumb_3",
+  "key": "ValveBiped.Bip01_L_Finger02",
+  "mmdEn": "thumb2_L",
+  "mmdJp": "左親指２",
+  "partner": "ValveBiped.Bip01_R_Finger02",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Hand"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "left_fingers",
+  "id": "left_index_1",
+  "key": "ValveBiped.Bip01_L_Finger1",
+  "mmdEn": "fore1_L",
+  "mmdJp": "左人指１",
+  "partner": "ValveBiped.Bip01_R_Finger1",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger1"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "left_fingers",
+  "id": "left_index_2",
+  "key": "ValveBiped.Bip01_L_Finger11",
+  "mmdEn": "fore2_L",
+  "mmdJp": "左人指２",
+  "partner": "ValveBiped.Bip01_R_Finger11",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger11"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "left_fingers",
+  "id": "left_index_3",
+  "key": "ValveBiped.Bip01_L_Finger12",
+  "mmdEn": "fore3_L",
+  "mmdJp": "左人指３",
+  "partner": "ValveBiped.Bip01_R_Finger12",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Hand"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "left_fingers",
+  "id": "left_middle_1",
+  "key": "ValveBiped.Bip01_L_Finger2",
+  "mmdEn": "middle1_L",
+  "mmdJp": "左中指１",
+  "partner": "ValveBiped.Bip01_R_Finger2",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger2"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "left_fingers",
+  "id": "left_middle_2",
+  "key": "ValveBiped.Bip01_L_Finger21",
+  "mmdEn": "middle2_L",
+  "mmdJp": "左中指２",
+  "partner": "ValveBiped.Bip01_R_Finger21",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger21"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "left_fingers",
+  "id": "left_middle_3",
+  "key": "ValveBiped.Bip01_L_Finger22",
+  "mmdEn": "middle3_L",
+  "mmdJp": "左中指３",
+  "partner": "ValveBiped.Bip01_R_Finger22",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Hand"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "left_fingers",
+  "id": "left_ring_1",
+  "key": "ValveBiped.Bip01_L_Finger3",
+  "mmdEn": "third1_L",
+  "mmdJp": "左薬指１",
+  "partner": "ValveBiped.Bip01_R_Finger3",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger3"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "left_fingers",
+  "id": "left_ring_2",
+  "key": "ValveBiped.Bip01_L_Finger31",
+  "mmdEn": "third2_L",
+  "mmdJp": "左薬指２",
+  "partner": "ValveBiped.Bip01_R_Finger31",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger31"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "left_fingers",
+  "id": "left_ring_3",
+  "key": "ValveBiped.Bip01_L_Finger32",
+  "mmdEn": "third3_L",
+  "mmdJp": "左薬指３",
+  "partner": "ValveBiped.Bip01_R_Finger32",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Hand"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "left_fingers",
+  "id": "left_little_1",
+  "key": "ValveBiped.Bip01_L_Finger4",
+  "mmdEn": "little1_L",
+  "mmdJp": "左小指１",
+  "partner": "ValveBiped.Bip01_R_Finger4",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger4"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "left_fingers",
+  "id": "left_little_2",
+  "key": "ValveBiped.Bip01_L_Finger41",
+  "mmdEn": "little2_L",
+  "mmdJp": "左小指２",
+  "partner": "ValveBiped.Bip01_R_Finger41",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_L_Finger41"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "left_fingers",
+  "id": "left_little_3",
+  "key": "ValveBiped.Bip01_L_Finger42",
+  "mmdEn": "little3_L",
+  "mmdJp": "左小指３",
+  "partner": "ValveBiped.Bip01_R_Finger42",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "L"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Hand"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "right_fingers",
+  "id": "right_thumb_1",
+  "key": "ValveBiped.Bip01_R_Finger0",
+  "mmdEn": "thumb0_R",
+  "mmdJp": "右親指０",
+  "partner": "ValveBiped.Bip01_L_Finger0",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger0"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "right_fingers",
+  "id": "right_thumb_2",
+  "key": "ValveBiped.Bip01_R_Finger01",
+  "mmdEn": "thumb1_R",
+  "mmdJp": "右親指１",
+  "partner": "ValveBiped.Bip01_L_Finger01",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger01"
+  ],
+  "convertOnly": false,
+  "family": "thumb",
+  "group": "right_fingers",
+  "id": "right_thumb_3",
+  "key": "ValveBiped.Bip01_R_Finger02",
+  "mmdEn": "thumb2_R",
+  "mmdJp": "右親指２",
+  "partner": "ValveBiped.Bip01_L_Finger02",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Hand"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "right_fingers",
+  "id": "right_index_1",
+  "key": "ValveBiped.Bip01_R_Finger1",
+  "mmdEn": "fore1_R",
+  "mmdJp": "右人指１",
+  "partner": "ValveBiped.Bip01_L_Finger1",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger1"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "right_fingers",
+  "id": "right_index_2",
+  "key": "ValveBiped.Bip01_R_Finger11",
+  "mmdEn": "fore2_R",
+  "mmdJp": "右人指２",
+  "partner": "ValveBiped.Bip01_L_Finger11",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger11"
+  ],
+  "convertOnly": false,
+  "family": "index",
+  "group": "right_fingers",
+  "id": "right_index_3",
+  "key": "ValveBiped.Bip01_R_Finger12",
+  "mmdEn": "fore3_R",
+  "mmdJp": "右人指３",
+  "partner": "ValveBiped.Bip01_L_Finger12",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Hand"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "right_fingers",
+  "id": "right_middle_1",
+  "key": "ValveBiped.Bip01_R_Finger2",
+  "mmdEn": "middle1_R",
+  "mmdJp": "右中指１",
+  "partner": "ValveBiped.Bip01_L_Finger2",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger2"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "right_fingers",
+  "id": "right_middle_2",
+  "key": "ValveBiped.Bip01_R_Finger21",
+  "mmdEn": "middle2_R",
+  "mmdJp": "右中指２",
+  "partner": "ValveBiped.Bip01_L_Finger21",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger21"
+  ],
+  "convertOnly": false,
+  "family": "middle",
+  "group": "right_fingers",
+  "id": "right_middle_3",
+  "key": "ValveBiped.Bip01_R_Finger22",
+  "mmdEn": "middle3_R",
+  "mmdJp": "右中指３",
+  "partner": "ValveBiped.Bip01_L_Finger22",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Hand"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "right_fingers",
+  "id": "right_ring_1",
+  "key": "ValveBiped.Bip01_R_Finger3",
+  "mmdEn": "third1_R",
+  "mmdJp": "右薬指１",
+  "partner": "ValveBiped.Bip01_L_Finger3",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger3"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "right_fingers",
+  "id": "right_ring_2",
+  "key": "ValveBiped.Bip01_R_Finger31",
+  "mmdEn": "third2_R",
+  "mmdJp": "右薬指２",
+  "partner": "ValveBiped.Bip01_L_Finger31",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger31"
+  ],
+  "convertOnly": false,
+  "family": "ring",
+  "group": "right_fingers",
+  "id": "right_ring_3",
+  "key": "ValveBiped.Bip01_R_Finger32",
+  "mmdEn": "third3_R",
+  "mmdJp": "右薬指３",
+  "partner": "ValveBiped.Bip01_L_Finger32",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Hand"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "right_fingers",
+  "id": "right_little_1",
+  "key": "ValveBiped.Bip01_R_Finger4",
+  "mmdEn": "little1_R",
+  "mmdJp": "右小指１",
+  "partner": "ValveBiped.Bip01_L_Finger4",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 1,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger4"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "right_fingers",
+  "id": "right_little_2",
+  "key": "ValveBiped.Bip01_R_Finger41",
+  "mmdEn": "little2_R",
+  "mmdJp": "右小指２",
+  "partner": "ValveBiped.Bip01_L_Finger41",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 2,
+  "side": "R"
+ },
+ {
+  "anchors": [
+   "ValveBiped.Bip01_R_Finger41"
+  ],
+  "convertOnly": false,
+  "family": "little",
+  "group": "right_fingers",
+  "id": "right_little_3",
+  "key": "ValveBiped.Bip01_R_Finger42",
+  "mmdEn": "little3_R",
+  "mmdJp": "右小指３",
+  "partner": "ValveBiped.Bip01_L_Finger42",
+  "physical": false,
+  "recommended": false,
+  "required": false,
+  "segment": 3,
+  "side": "R"
+ }
+]

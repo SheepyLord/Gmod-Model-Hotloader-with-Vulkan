@@ -22,7 +22,9 @@ Rig fitRig(const Model&,const Json& options);
 Rig rigFromManifest(const Json&);
 // Throws unless every index and transform of the rig is usable with this model.
 void validateRig(const Rig&,const Model&);
-void prepareModelFit(Model&,const fs::path& cache);
+// The import-time fit, cached per asset: {"ok":true}, or {"ok":false,"errorCode",
+// "error","missing":[carrier names]} (the import result's "fit" block).
+Json prepareModelFit(Model&,const fs::path& cache);
 std::map<std::string,Bytes> carrierFiles(const Rig&,const Model* armsModel=nullptr);
 Bytes makeGma(const std::map<std::string,Bytes>&,const std::string& title);
 // A package entry held in memory, or streamed from `file` when that is set.

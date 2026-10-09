@@ -3,6 +3,9 @@
 #include "rig.hpp"
 #include "spring_bones.hpp"
 #include "vrm.hpp"
+#include "character_import.hpp"
+#include "humanoid_map.hpp"
+#include "import_error.hpp"
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
 #include "props/core.hpp"
@@ -10,13 +13,20 @@
 #include <shobjidl.h>
 #include <atomic>
 #include <condition_variable>
+#include <cwctype>
 #include <iostream>
 #include <mutex>
 #include <set>
 #include <thread>
 namespace {
-// Characters for --inspect/--fit: PMX/PMD as-is, VRM through the same conversion as import.
+// Characters for --inspect/--fit: PMX/PMD as-is, VRM and other formats through the
+// same conversion as import (FBX/glTF/DAE with the automatic bone assignment).
 std::shared_ptr<mmd::Model> loadCharacter(const mmd::fs::path& path){
+    if(mmd::convertibleCharacter(path)&&!mmd::isVrmPath(path)){
+        auto converted=mmd::convertCharacter(path,mmd::Json::object(),{});auto model=mmd::parse(converted.pmx);
+        for(auto& w:converted.warnings)model->warnings.push_back(w);model->springs=mmd::SpringSetup::fromManifest(converted.conversion,*model);
+        for(auto& [key,value]:converted.conversion["boneMap"].items())model->conversionBoneMap[key]=value.get<int>();return model;
+    }
     auto raw=mmd::readFile(path);if(!mmd::isVrmData(raw))return mmd::parse(raw);
     auto converted=mmd::convertVrm(raw,mmd::utf8(path.stem().wstring()));auto model=mmd::parse(converted.pmx);
     for(auto& w:converted.warnings)model->warnings.push_back(w);model->springs=mmd::SpringSetup::fromManifest(converted.vrm,*model);return model;
@@ -150,13 +160,20 @@ int wmain(int argc,wchar_t** argv){
             for(size_t i=0;i<m->joints.size();i++){auto j=m->joints[i];auto r=m->jointReferences[i];result["joints"].push_back({{"name",m->text(nanoemModelJointGetName(j,NANOEM_LANGUAGE_TYPE_JAPANESE))},{"a",r.a},{"b",r.b},{"valid",r.valid},{"lower",xyz(nanoemModelJointGetLinearLowerLimit(j))},{"upper",xyz(nanoemModelJointGetLinearUpperLimit(j))},{"spring",xyz(nanoemModelJointGetLinearStiffness(j))}});}
             std::cout<<result.dump()<<std::endl;return 0;
         }
+        // Development aids for characters in other formats: the bone window's probe,
+        // a conversion written to a folder, and the bone map inspection of any character.
+        if(argc==3&&std::wstring(argv[1])==L"--probe-character"){std::cout<<probeCharacter(argv[2],Json::object(),{}).dump()<<std::endl;return 0;}
+        if((argc==4||argc==5)&&std::wstring(argv[1])==L"--convert-character"){auto converted=convertCharacter(argv[2],argc==5?readJson(argv[4]):Json::object(),{});fs::path out=argv[3];
+            writeAtomic(out/L"model.pmx",converted.pmx);for(auto& [path,bytes]:converted.textures)writeAtomic(out/fs::path(wide(path)),bytes);
+            auto info=converted.conversion;info["warnings"]=converted.warnings;info["textures"]=converted.textures.size();writeJson(out/L"conversion.json",info);std::cout<<converted.pmx.size()<<" bytes"<<std::endl;return 0;}
+        if((argc==3||argc==4)&&std::wstring(argv[1])==L"--inspect-bone-map"){auto m=loadCharacter(argv[2]);std::cout<<inspectBoneMap(*m,argc==4?readJson(argv[3]):Json{{"include",{"skeleton"}}}).dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&(std::wstring(argv[1])==L"--fit"||std::wstring(argv[1])==L"--fit-raw")){auto m=loadCharacter(argv[2]);std::cout<<fitRig(*m,argc==4?Json::parse(utf8(argv[3])):Json{{"calibrated",std::wstring(argv[1])!=L"--fit-raw"}}).manifest.dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--pick"){
             fs::path dir=argv[2];status=dir/L"status.json";bool prop=argc==4&&std::wstring(argv[3])==L"static";
-            const wchar_t* title=prop?L"Import static prop":L"Import character (PMX, PMD or VRM)";
+            const wchar_t* title=prop?L"Import static prop":L"Import character";
             CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);IFileOpenDialog* dialog=nullptr;
             if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))))throw std::runtime_error("Cannot open file picker");
-            COMDLG_FILTERSPEC characters[]={{L"Character models (PMX, PMD, VRM)",L"*.pmx;*.pmd;*.vrm"},{L"All files",L"*.*"}};
+            COMDLG_FILTERSPEC characters[]={{L"Character models (PMX, PMD, VRM, FBX, glTF, DAE)",L"*.pmx;*.pmd;*.vrm;*.fbx;*.glb;*.gltf;*.dae"},{L"All files",L"*.*"}};
             COMDLG_FILTERSPEC models[]={{L"3D models (OBJ, FBX, glTF, PMX, Blender)",L"*.obj;*.fbx;*.glb;*.gltf;*.pmx;*.blend"},{L"All files",L"*.*"}};
             if(prop)dialog->SetFileTypes(2,models);else dialog->SetFileTypes(2,characters);
             dialog->SetOptions(FOS_FORCEFILESYSTEM|FOS_FILEMUSTEXIST|FOS_PATHMUSTEXIST);dialog->SetTitle(title);
@@ -173,13 +190,31 @@ int wmain(int argc,wchar_t** argv){
             requestSource=j.value("source",std::string());requestKind=options.value("kind",std::string());
             auto source=fs::path(wide(j.at("source").get<std::string>())),cache=fs::path(wide(j.at("cache").get<std::string>()));
             auto kind=options.value("kind",std::string());
-            auto result=kind=="derive"?deriveProp(cache,options,status):kind=="blend_scene"?listBlend(source,options,status):kind=="static"?importProp(source,cache,options,status):importAsset(source,cache,options,status);
+            auto filename=utf8(source.filename().wstring());
+            auto report=[&](const char* code){return [&,code](const char* stage,float progress){writeJson(status,{{"state","running"},{"stage",stage},{"stageCode",code},{"progress",progress},{"filename",filename}});};};
+            auto extension=source.extension().wstring();for(auto& c:extension)c=wchar_t(towlower(c));
+            bool mmdFile=extension==L".pmx"||extension==L".pmd"||isVrmPath(source);
+            Json result;
+            // Characters in other formats: the probe reads the skeleton for the bone
+            // window; the import converts with the player's assignment. PMX, PMD and VRM
+            // (also a VRM saved as .glb) import as before.
+            if(kind=="character_probe"){
+                if(extension==L".obj")importFail("character.format","OBJ files have no skeleton. Characters must be PMX, PMD, VRM, FBX, glTF or DAE files.",{{"format","obj"}});
+                if(extension==L".blend")importFail("character.blend","Blender files cannot be imported as characters. In Blender, export FBX or glTF with the armature and import that file.");
+                if(mmdFile||!convertibleCharacter(source))result=importAsset(source,cache,Json::object(),status);
+                else result={{"state","complete"},{"kind","bone_map"},{"progress",1},{"stage","Reading the skeleton"},{"filename",filename},{"probe",probeCharacter(source,options,report("probe"))}};
+            }
+            else if((kind=="character"||kind.empty())&&convertibleCharacter(source)&&!mmdFile)result=importConverted(source,cache,options,status,convertCharacter(source,options,report("convert_character")));
+            else if(kind=="character")result=importAsset(source,cache,Json::object(),status);
+            else result=kind=="derive"?deriveProp(cache,options,status):kind=="blend_scene"?listBlend(source,options,status):kind=="static"?importProp(source,cache,options,status):importAsset(source,cache,options,status);
             if(kind!="derive")result["source"]=requestSource;writeJson(status,result);return 0;}
         std::cerr<<"mmdhl_worker --inspect model.pmx | --request request.json | --pick job-directory [static]\n";return 2;
     }catch(const std::exception& e){
         Json j={{"state","failed"},{"error",e.what()}};
+        // A structured failure names the part at fault, so the bone window can reopen on it.
+        if(auto failure=dynamic_cast<const ImportError*>(&e)){j["errorCode"]=failure->code;j["errorDetails"]=failure->details;}
         if(!status.empty()){
-            try{auto last=readJson(status);for(auto key:{"stage","filename","detail"})if(last.contains(key)&&last[key].is_string())j[key]=last[key];}catch(...){}
+            try{auto last=readJson(status);for(auto key:{"stage","stageCode","filename","detail"})if(last.contains(key)&&last[key].is_string())j[key]=last[key];}catch(...){}
             if(!requestSource.empty()){j["source"]=requestSource;if(!j.contains("filename"))j["filename"]=utf8(fs::path(wide(requestSource)).filename().wstring());}
             if(!requestKind.empty())j["kind"]=requestKind;
             try{writeJson(status,j);}catch(...){}

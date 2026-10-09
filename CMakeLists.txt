@@ -37,7 +37,7 @@ add_library(nanoem_physics STATIC native/nanoem_backend.cpp)
 target_include_directories(nanoem_physics PRIVATE vendor/glm vendor/bullet/src vendor/json/single_include)
 target_compile_definitions(nanoem_physics PRIVATE NANOEM_ENABLE_BULLET)
 target_link_libraries(nanoem_physics PUBLIC nanoem_core BulletSoftBody BulletDynamics BulletCollision LinearMath)
-add_library(mmd_runtime SHARED native/installation.cpp native/compatibility.cpp native/compute_probe.cpp native/compute_solver.cpp vendor/bullet/src/clew/clew.c native/broadphase.cpp native/jobs.cpp native/naming.cpp native/model.cpp native/physics.cpp native/assets.cpp native/rig.cpp native/rig_animation.cpp native/rig_geometry.cpp native/sharing.cpp native/packages.cpp native/model_notes.cpp native/scene_share.cpp native/fitter.cpp native/secondary.cpp native/secondary_quality.cpp native/scene.cpp native/spring_bones.cpp native/vrm.cpp native/import_error.cpp native/physics_profile.cpp native/file_access.cpp)
+add_library(mmd_runtime SHARED native/installation.cpp native/compatibility.cpp native/compute_probe.cpp native/compute_solver.cpp vendor/bullet/src/clew/clew.c native/broadphase.cpp native/jobs.cpp native/naming.cpp native/model.cpp native/physics.cpp native/assets.cpp native/rig.cpp native/rig_animation.cpp native/rig_geometry.cpp native/sharing.cpp native/packages.cpp native/model_notes.cpp native/scene_share.cpp native/fitter.cpp native/secondary.cpp native/secondary_quality.cpp native/scene.cpp native/spring_bones.cpp native/vrm.cpp native/pmx_writer.cpp native/humanoid_map.cpp native/import_error.cpp native/physics_profile.cpp native/file_access.cpp)
 set_target_properties(mmd_runtime PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON OUTPUT_NAME mmdhl_runtime_win64)
 target_include_directories(mmd_runtime PUBLIC native vendor/bullet/src vendor/nanoem/nanoem vendor/json/single_include PRIVATE vendor/stb vendor/glm)
 target_link_libraries(mmd_runtime PUBLIC nanoem_core nanoem_physics BulletSoftBody BulletDynamics BulletCollision LinearMath PRIVATE bcrypt ole32 windowscodecs icu cabinet)
@@ -61,12 +61,13 @@ add_custom_command(OUTPUT "${MMDHL_VULKAN_PROFILE_SPV}"
   DEPENDS "${CMAKE_SOURCE_DIR}/shaders/vulkan/solver.comp" glslang-standalone VERBATIM)
 target_sources(mmd_runtime PRIVATE native/vulkan_solver.cpp "${MMDHL_VULKAN_SPV}" "${MMDHL_VULKAN_PROFILE_SPV}")
 target_include_directories(mmd_runtime PRIVATE vendor/vulkan_headers/include)
-# Static props (OBJ/FBX/glTF/PMX). Only the worker parses source files; the game
-# modules decode, validate and draw the resulting content-addressed caches.
+# Static props (OBJ/FBX/glTF/PMX) and characters in other formats (FBX/glTF/DAE).
+# Only the worker parses source files; the game modules decode, validate and draw
+# the resulting content-addressed caches.
 foreach(option ASSIMP_BUILD_TESTS ASSIMP_BUILD_ASSIMP_TOOLS ASSIMP_INSTALL ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT ASSIMP_WARNINGS_AS_ERRORS ASSIMP_BUILD_DRACO ASSIMP_INJECT_DEBUG_POSTFIX)
   set(${option} OFF CACHE BOOL "" FORCE)
 endforeach()
-foreach(option ASSIMP_BUILD_ZLIB ASSIMP_BUILD_OBJ_IMPORTER ASSIMP_BUILD_FBX_IMPORTER ASSIMP_BUILD_GLTF_IMPORTER ASSIMP_NO_EXPORT)
+foreach(option ASSIMP_BUILD_ZLIB ASSIMP_BUILD_OBJ_IMPORTER ASSIMP_BUILD_FBX_IMPORTER ASSIMP_BUILD_GLTF_IMPORTER ASSIMP_BUILD_COLLADA_IMPORTER ASSIMP_NO_EXPORT)
   set(${option} ON CACHE BOOL "" FORCE)
 endforeach()
 add_subdirectory(vendor/assimp EXCLUDE_FROM_ALL)
@@ -82,7 +83,7 @@ target_compile_options(mmdhl_props_import PRIVATE /W4 /utf-8)
 # Characters in other formats (FBX, glTF, DAE) are converted to PMX in the worker,
 # which alone links Assimp; the game modules only read the converted cache.
 add_library(mmdhl_character_import STATIC native/character_import.cpp)
-target_include_directories(mmdhl_character_import PRIVATE vendor/stb)
+target_include_directories(mmdhl_character_import PRIVATE vendor/stb vendor/glm)
 target_link_libraries(mmdhl_character_import PUBLIC mmd_runtime mmdhl_props_import assimp)
 target_compile_options(mmdhl_character_import PRIVATE /W4 /utf-8)
 add_executable(mmdhl_worker native/worker.cpp)
@@ -275,8 +276,11 @@ add_test(NAME file_access COMMAND mmdhl_file_access_tests)
 set_tests_properties(file_access PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 add_executable(mmdhl_character_import_tests tests/character_import_tests.cpp)
 target_link_libraries(mmdhl_character_import_tests PRIVATE mmdhl_character_import)
-target_include_directories(mmdhl_character_import_tests PRIVATE vendor/stb)
+target_include_directories(mmdhl_character_import_tests PRIVATE vendor/stb vendor/glm)
 target_compile_options(mmdhl_character_import_tests PRIVATE /utf-8)
 set_target_properties(mmdhl_character_import_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME character_import COMMAND mmdhl_character_import_tests)
 set_tests_properties(character_import PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+# The worker's status.json contract for the bone window, on models the tests generate.
+add_test(NAME character_import_worker COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/test-character-import.py" "$<TARGET_FILE:mmdhl_worker>" "$<TARGET_FILE:mmdhl_character_import_tests>" "$<TARGET_FILE:mmdhl_vrm_tests>")
+set_tests_properties(character_import_worker PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

@@ -66,7 +66,7 @@ bool textDocument(const fs::path& path){
  if(!extension.empty())return false;
  auto name=lower(path.filename().wstring());return name==L"license"||name==L"licence"||name==L"copying"||name==L"readme";
 }
-bool modelFile(const fs::path& path){auto e=lower(path.extension().wstring());return e==L".pmx"||e==L".pmd"||e==L".vrm";}
+bool modelFile(const fs::path& path){auto e=lower(path.extension().wstring());return e==L".pmx"||e==L".pmd"||e==L".vrm"||e==L".fbx"||e==L".glb"||e==L".gltf"||e==L".dae";}
 struct Reader{
  std::ifstream in;
  template<class T>bool value(T& v){return bool(in.read(reinterpret_cast<char*>(&v),sizeof v));}

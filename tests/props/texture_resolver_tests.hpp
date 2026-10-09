@@ -13,6 +13,11 @@ void textureResolverTests(){
     check(resolver.resolve(utf8(L"中文.png")).path==dir/L"textures"/L"中文.png","Unicode sibling texture did not resolve");
     rejects([&]{resolver.resolve("different-image.png");},"unrelated texture name was guessed");
     rejects([&]{resolver.resolve("https://example.invalid/body.png");},"network texture reference accepted");
+    // Shares on other computers, in every spelling Windows accepts, are never opened.
+    for(auto unc:{"\\\\example.invalid\\share\\x.png","//example.invalid/share/x.png","/\\example.invalid\\share\\x.png","\\/example.invalid/share/x.png",
+        "\\\\?\\UNC\\example.invalid\\share\\x.png","\\??\\UNC\\example.invalid\\share\\x.png","\\\\.\\pipe\\x","file://example.invalid/x.png"})check(networkPath(unc),"network path not recognised");
+    for(auto local:{"body.png","tex/body.png","..\\textures\\body.png","C:\\models\\body.png","C:/models/body.png","\\models\\body.png","C:body.png"})check(!networkPath(local),"local path taken for a network path");
+    check(resolver.resolve("/\\example.invalid\\share\\body.png").path==dir/L"model"/L"body.png"&&resolver.resolve("\\??\\UNC\\example.invalid\\share\\body.png").repaired,"network texture reference did not fall back to the local file name");
     writeAtomic(dir/L"textures"/L"normal_map.png",data);
     TextureResolver ambiguous(dir/L"model");
     rejects([&]{ambiguous.resolve("normal map.png");},"ambiguous texture alias was selected");
