@@ -199,7 +199,11 @@ Codes: `denied` (the player refused, closed the window or chose nothing),
 * The same release closes older ways for Lua to touch other computers or read
   beside any path: `BeginImport`, `Reload`, `PropReload` and the worker's
   `--request` refuse network sources before anything opens them (mapped drive
-  letters still work), `InspectModelNotes` reads only beside an existing local
+  letters still work). The game passes its cache folder to the worker's
+  `--request` on the command line: `request.json` sits in `data/`, where any
+  script can rewrite it before the worker reads it, so its `cache` field is
+  read only when a development tool runs the worker without that argument,
+  and a network path there is refused. `InspectModelNotes` reads only beside an existing local
   model file (`.pmx`, `.pmd`, `.vrm`, `.fbx`, `.glb`, `.gltf`, `.dae`, `.obj`,
   `.blend`), and the Workshop package scan ignores network paths.
 * Tests: `tests/file_access_tests.cpp` (CTest `file_access`, with the test-only

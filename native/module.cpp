@@ -77,10 +77,12 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
     pruneJobs();
     Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.dir=context->cache/L"jobs"/(std::to_wstring(GetCurrentProcessId())+L"_"+std::to_wstring(j.started)+L"_"+std::to_wstring(id));fs::create_directories(j.dir);
     writeJson(j.dir/L"status.json",{{"state","running"},{"stage",picker?"Select model":"Starting import"},{"progress",0}});
-    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"cache",utf8(context->cache.wstring())},{"options",options}});
+    if(!picker)writeJson(j.dir/L"request.json",{{"source",source},{"options",options}});
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
-    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker&&options.value("kind",std::string())=="static"?L" static":L"");
+    // The cache folder goes on the command line, not in request.json: any script can rewrite
+    // that file in data/ before the worker reads it (and point the worker at another computer).
+    auto cmd=quote(exe)+(picker?L" --pick ":L" --request ")+quote(picker?j.dir:j.dir/L"request.json")+(picker?(options.value("kind",std::string())=="static"?L" static":L""):L" "+quote(context->cache));
     j.group=CreateJobObjectW(nullptr,nullptr);JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;SetInformationJobObject(j.group,JobObjectExtendedLimitInformation,&limits,sizeof(limits));
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESHOWWINDOW;start.wShowWindow=SW_HIDE;PROCESS_INFORMATION process{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,context->bin.c_str(),&start,&process)){CloseHandle(j.group);throw std::runtime_error("Cannot start import worker");}

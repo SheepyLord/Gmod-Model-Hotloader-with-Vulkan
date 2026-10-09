@@ -1,7 +1,8 @@
 // File access for other addons: the path policy, links and junctions, final-path checks,
 // limits, text decoding, the grants store, the local-session rule and the dialog round
 // trip through the test-only worker (argv[1], answers from MMDHL_FA_TEST_ANSWER). argv[2]
-// is the shipped worker: its --request refuses network sources before opening them.
+// is the shipped worker: its --request refuses network sources and cache folders before
+// opening them, and takes the cache folder from its command line when the game names one.
 #include "file_access.hpp"
 #include "props/network_path.hpp"
 #include <windows.h>
@@ -76,11 +77,22 @@ int wmain(int argc,wchar_t** argv){try{
  check(resolveFile(root/L"allowed"/L"escape"/L"secret.txt").path==root/L"outside"/L"secret.txt","a junction in the middle of a path does not show in its final path");
  check(insideFolder(root/L"allowed"/L"a.json",root/L"ALLOWED")&&!insideFolder(root/L"allowedx",root/L"allowed")&&insideFolder(root,root),"folder containment");
  // ---- Imports only from this computer (model notes: model_notes_tests.cpp) ----
- {auto job=root/L"job";write(job/L"request.json",Json{{"source","\\\\127.0.0.1\\mmdhl-test\\m.vrm"},{"cache",u8(root/L"cache")},{"options",Json::object()}}.dump());
-  auto cmd=L"\""+std::wstring(argv[2])+L"\" --request \""+(job/L"request.json").wstring()+L"\"";STARTUPINFOW start{};start.cb=sizeof(start);PROCESS_INFORMATION process{};
-  check(CreateProcessW(argv[2],cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&start,&process)!=0,"cannot start the worker");
-  check(WaitForSingleObject(process.hProcess,20000)==WAIT_OBJECT_0,"the worker hung on a network source");CloseHandle(process.hThread);CloseHandle(process.hProcess);
-  auto status=readJson(job/L"status.json");check(status.value("state","")=="failed"&&status.value("errorCode","")=="io.network","the worker imported from a network path: "+status.dump());}
+ {auto importJob=[&](const fs::path& job,const Json& request,const fs::path& cache){
+   write(job/L"request.json",request.dump());
+   auto cmd=L"\""+std::wstring(argv[2])+L"\" --request \""+(job/L"request.json").wstring()+L"\""+(cache.empty()?L"":L" \""+cache.wstring()+L"\"");STARTUPINFOW start{};start.cb=sizeof(start);PROCESS_INFORMATION process{};
+   check(CreateProcessW(argv[2],cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&start,&process)!=0,"cannot start the worker");
+   check(WaitForSingleObject(process.hProcess,20000)==WAIT_OBJECT_0,"the worker hung");CloseHandle(process.hThread);CloseHandle(process.hProcess);
+   return readJson(job/L"status.json");};
+  auto status=importJob(root/L"job",{{"source","\\\\127.0.0.1\\mmdhl-test\\m.vrm"},{"cache",u8(root/L"cache")},{"options",Json::object()}},{});
+  check(status.value("state","")=="failed"&&status.value("errorCode","")=="io.network","the worker imported from a network path: "+status.dump());
+  // request.json sits in data/, where a script can rewrite it before the worker reads it. Tools
+  // that name the cache there cannot name another computer...
+  status=importJob(root/L"job2",{{"source",""},{"cache","\\\\127.0.0.1\\mmdhl-test"},{"options",{{"kind","derive"},{"parent",std::string(64,'a')}}}},{});
+  check(status.value("state","")=="failed"&&status.value("errorCode","")=="io.network","the worker used a network cache folder: "+status.dump());
+  // ...and when the game starts the worker, its command line names the cache: the file's field is not read.
+  write(root/L"tetra.obj","v 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n");
+  status=importJob(root/L"job3",{{"source",u8(root/L"tetra.obj")},{"cache",u8(root/L"forged")},{"options",{{"kind","static"}}}},root/L"cache");
+  check(status.value("state","")=="complete"&&fs::exists(root/L"cache"/L"static"/L"assets"/wide(status.value("asset","")+".gmdl"))&&!fs::exists(root/L"forged"),"the worker took its cache folder from request.json: "+status.dump());}
  // ---- Requests, dialogs and reads ----
  auto log=root/L"dialogs.log";SetEnvironmentVariableW(L"MMDHL_FA_TEST_LOG",log.c_str());
  FileAccessConfig config;config.worker=argv[1];config.store=root/L"store"/L"file-access.json";config.temp=root/L"tmp";config.policy=policy;fs::create_directories(config.temp);
