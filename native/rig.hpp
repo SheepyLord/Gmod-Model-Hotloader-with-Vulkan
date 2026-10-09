@@ -4,7 +4,7 @@
 namespace mmd {
 // The on-disk formats use 32-bit offsets even in the 64-bit engine.
 constexpr int RigVersion=3;
-constexpr int RigGenerator=30;
+constexpr int RigGenerator=31;
 struct RigBone { std::string name; int parent=-1,mmd=-1,physics=-1; std::vector<int> aliases; btTransform rest=btTransform::getIdentity(); };
 struct RigBody { int bone=-1,parent=-1; std::vector<btVector3> hull; float confidence=0,massBias=1,rotationDamping=3; btVector3 lower{0,0,0},upper{0,0,0}; };
 struct Rig { std::string key,path; float scale=1,mass=70; std::vector<RigBone> bones; std::vector<RigBody> bodies; Json morphs,manifest; };
