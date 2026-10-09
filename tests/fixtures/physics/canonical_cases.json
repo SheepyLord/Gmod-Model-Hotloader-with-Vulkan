@@ -1,0 +1,877 @@
+[
+ {
+  "canonical": {},
+  "input": null,
+  "label": "absent"
+ },
+ {
+  "canonical": {},
+  "input": {},
+  "label": "empty object"
+ },
+ {
+  "canonical": {},
+  "input": [],
+  "label": "empty array"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "schema": 1
+  },
+  "label": "schema only"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "collisions": {
+    "mode": "all"
+   },
+   "massMode": "bias",
+   "schema": 1,
+   "surfaceprop": "flesh"
+  },
+  "label": "model defaults spelled out"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Forearm": {
+     "limits": {
+      "z": [
+       -120,
+       10,
+       0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "limit equal to SCMI"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Forearm": {
+     "limits": {
+      "z": [
+       -120.04,
+       9.96,
+       0.0004
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "limit noise rounds to SCMI"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Forearm": {
+     "limits": {
+      "x": [
+       -30.1,
+       11.3,
+       0.6
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Forearm": {
+     "limits": {
+      "x": [
+       -30.05,
+       11.25,
+       0.6
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "limit tenth rounding half away"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       0,
+       0,
+       0.5
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "fixed axis drops friction"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Forearm": {
+     "limits": {
+      "y": [
+       0,
+       0,
+       1
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "fixed axis equal to default dropped"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "y": [
+       -360.0,
+       360.0,
+       0.4
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "y": [
+       -360,
+       360,
+       0.4
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "free axis keeps friction"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "z": [
+       0.0,
+       20.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "z": [
+       -0.0,
+       20,
+       0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "negative zero"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Calf": {
+     "limits": {
+      "z": [
+       -10.0,
+       125.0,
+       1.5
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Calf": {
+     "limits": {
+      "z": [
+       -10,
+       125,
+       1.5
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "friction only"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_Head1": {
+     "damping": 0.8,
+     "inertia": 12,
+     "massBias": 4,
+     "rotdamping": 3,
+     "surfaceprop": "flesh"
+    }
+   },
+   "schema": 1
+  },
+  "label": "body fields at defaults dropped"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_Head1": {
+     "damping": 1.235,
+     "drag": 0.5,
+     "rotdamping": 6.0
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_Head1": {
+     "damping": 1.2345,
+     "drag": 0.5,
+     "inertia": 11.9996,
+     "massBias": 4.0004,
+     "rotdamping": 6
+    }
+   },
+   "schema": 1
+  },
+  "label": "body fields changed"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_Pelvis": {
+     "drag": 0.0
+    }
+   },
+   "schema": 1
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_Pelvis": {
+     "drag": 0
+    }
+   },
+   "schema": 1
+  },
+  "label": "drag zero kept"
+ },
+ {
+  "canonical": {
+   "schema": 1,
+   "surfaceprop": "metal"
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "surfaceprop": "metal"
+    }
+   },
+   "schema": 1,
+   "surfaceprop": "metal"
+  },
+  "label": "body surfaceprop equal to model dropped"
+ },
+ {
+  "canonical": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "surfaceprop": "flesh"
+    }
+   },
+   "schema": 1,
+   "surfaceprop": "metal"
+  },
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "surfaceprop": "flesh"
+    }
+   },
+   "schema": 1,
+   "surfaceprop": "metal"
+  },
+  "label": "body surfaceprop differs from model"
+ },
+ {
+  "canonical": {
+   "massMode": "volume",
+   "schema": 1
+  },
+  "input": {
+   "massMode": "volume",
+   "schema": 1
+  },
+  "label": "massMode volume"
+ },
+ {
+  "canonical": {
+   "automass": {
+    "density": 985.1
+   },
+   "schema": 1
+  },
+  "input": {
+   "automass": {
+    "density": 985.06
+   },
+   "schema": 1
+  },
+  "label": "automass density rounded"
+ },
+ {
+  "canonical": {
+   "collisions": {
+    "mode": "none"
+   },
+   "schema": 1
+  },
+  "input": {
+   "collisions": {
+    "mode": "none"
+   },
+   "schema": 1
+  },
+  "label": "collisions none"
+ },
+ {
+  "canonical": {
+   "collisions": {
+    "mode": "none"
+   },
+   "schema": 1
+  },
+  "input": {
+   "collisions": {
+    "mode": "none",
+    "pairs": []
+   },
+   "schema": 1
+  },
+  "label": "collisions none with empty pairs"
+ },
+ {
+  "canonical": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": [
+     [
+      3,
+      7
+     ],
+     [
+      3,
+      11
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "input": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": [
+     [
+      11,
+      3
+     ],
+     [
+      3,
+      7
+     ],
+     [
+      7,
+      3
+     ],
+     [
+      3,
+      11.0
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "label": "custom pairs sorted and deduplicated"
+ },
+ {
+  "canonical": {
+   "collisions": {
+    "mode": "none"
+   },
+   "schema": 1
+  },
+  "input": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": []
+   },
+   "schema": 1
+  },
+  "label": "custom empty is none"
+ },
+ {
+  "canonical": {
+   "animatedFriction": {
+    "max": 600,
+    "min": 80,
+    "timeHold": 1.75,
+    "timeIn": 0.15,
+    "timeOut": 0.25
+   },
+   "schema": 1
+  },
+  "input": {
+   "animatedFriction": {
+    "max": 600.0,
+    "min": 80,
+    "timeHold": 1.749,
+    "timeIn": 0.151,
+    "timeOut": 0.25
+   },
+   "schema": 1
+  },
+  "label": "animated friction"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {}
+   },
+   "schema": 1
+  },
+  "label": "empty body removed"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {},
+   "schema": 1
+  },
+  "label": "empty bodies removed"
+ },
+ {
+  "canonical": {},
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": []
+   },
+   "schema": 1
+  },
+  "label": "empty array body"
+ },
+ {
+  "error": "schema_unsupported",
+  "input": {
+   "massMode": "volume"
+  },
+  "label": "error schema missing"
+ },
+ {
+  "error": "schema_unsupported",
+  "input": {
+   "schema": 2
+  },
+  "label": "error schema 2"
+ },
+ {
+  "error": "unknown_field",
+  "input": {
+   "preset": "statue",
+   "schema": 1
+  },
+  "label": "error unknown field"
+ },
+ {
+  "error": "unknown_field",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "massbias": 2
+    }
+   },
+   "schema": 1
+  },
+  "label": "error unknown body field"
+ },
+ {
+  "error": "unknown_body",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_Spine2": {
+     "damping": 1
+    }
+   },
+   "schema": 1
+  },
+  "label": "error unknown body"
+ },
+ {
+  "error": "root_joint",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_Pelvis": {
+     "limits": {
+      "x": [
+       -10,
+       10,
+       0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "error root joint"
+ },
+ {
+  "error": "limit_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       -10,
+       181,
+       0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "error limit range"
+ },
+ {
+  "error": "limit_order",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       10,
+       -10,
+       0
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "error limit order"
+ },
+ {
+  "error": "limit_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       10,
+       20
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "error limit triple"
+ },
+ {
+  "error": "friction_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "limits": {
+      "x": [
+       -10,
+       10,
+       -1
+      ]
+     }
+    }
+   },
+   "schema": 1
+  },
+  "label": "error friction"
+ },
+ {
+  "error": "mass_bias_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "massBias": 0.004
+    }
+   },
+   "schema": 1
+  },
+  "label": "error mass bias"
+ },
+ {
+  "error": "damping_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "damping": 10.5
+    }
+   },
+   "schema": 1
+  },
+  "label": "error damping"
+ },
+ {
+  "error": "rotdamping_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "rotdamping": 100.1
+    }
+   },
+   "schema": 1
+  },
+  "label": "error rotdamping"
+ },
+ {
+  "error": "inertia_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "inertia": 0.04
+    }
+   },
+   "schema": 1
+  },
+  "label": "error inertia"
+ },
+ {
+  "error": "drag_range",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "drag": -1
+    }
+   },
+   "schema": 1
+  },
+  "label": "error drag"
+ },
+ {
+  "error": "not_finite",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "damping": "fast"
+    }
+   },
+   "schema": 1
+  },
+  "label": "error not a number"
+ },
+ {
+  "error": "surfaceprop",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": {
+     "surfaceprop": "Flesh!"
+    }
+   },
+   "schema": 1
+  },
+  "label": "error surfaceprop"
+ },
+ {
+  "error": "surfaceprop",
+  "input": {
+   "schema": 1,
+   "surfaceprop": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "label": "error long surfaceprop"
+ },
+ {
+  "error": "mass_mode",
+  "input": {
+   "massMode": "heavy",
+   "schema": 1
+  },
+  "label": "error mass mode"
+ },
+ {
+  "error": "density_range",
+  "input": {
+   "automass": {
+    "density": 5
+   },
+   "schema": 1
+  },
+  "label": "error density"
+ },
+ {
+  "error": "collision_mode",
+  "input": {
+   "collisions": {
+    "mode": "some"
+   },
+   "schema": 1
+  },
+  "label": "error collision mode"
+ },
+ {
+  "error": "pair_index",
+  "input": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": [
+     [
+      3,
+      18
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "label": "error pair index"
+ },
+ {
+  "error": "pair_index",
+  "input": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": [
+     [
+      3,
+      3
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "label": "error pair self"
+ },
+ {
+  "error": "pair_adjacent",
+  "input": {
+   "collisions": {
+    "mode": "custom",
+    "pairs": [
+     [
+      0,
+      1
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "label": "error pair adjacent"
+ },
+ {
+  "error": "collision_mode",
+  "input": {
+   "collisions": {
+    "mode": "none",
+    "pairs": [
+     [
+      3,
+      7
+     ]
+    ]
+   },
+   "schema": 1
+  },
+  "label": "error pairs with mode none"
+ },
+ {
+  "error": "animated_friction_range",
+  "input": {
+   "animatedFriction": {
+    "max": 80,
+    "min": 600,
+    "timeHold": 0.1,
+    "timeIn": 0.1,
+    "timeOut": 0.1
+   },
+   "schema": 1
+  },
+  "label": "error animated order"
+ },
+ {
+  "error": "not_integer",
+  "input": {
+   "animatedFriction": {
+    "max": 600,
+    "min": 80.5,
+    "timeHold": 0.1,
+    "timeIn": 0.1,
+    "timeOut": 0.1
+   },
+   "schema": 1
+  },
+  "label": "error animated integer"
+ },
+ {
+  "error": "animated_friction_range",
+  "input": {
+   "animatedFriction": {
+    "max": 600,
+    "min": 80
+   },
+   "schema": 1
+  },
+  "label": "error animated missing"
+ },
+ {
+  "error": "not_object",
+  "input": {
+   "bodies": {
+    "ValveBiped.Bip01_L_Hand": 3
+   },
+   "schema": 1
+  },
+  "label": "error not object"
+ }
+]

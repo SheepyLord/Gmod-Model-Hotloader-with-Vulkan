@@ -32,6 +32,8 @@ std::string legacyFitKey(const std::string& id,const Json& options){Json geometr
 std::string mdlHash(const Rig& r){auto files=carrierFiles(r);auto& mdl=files.at(r.path);return hash(std::span(mdl.data(),mdl.size()));}
 const char* Fixture="tests/fixtures/native-cloth21.pmx";
 const char* Golden="tests/fixtures/physics/golden.json";
+// Shared with tests/test_physics_editor.py: Lua's P.Canonical and P.CheckPhysics must agree.
+const char* CanonicalCases="tests/fixtures/physics/canonical_cases.json";
 std::shared_ptr<Model> fixture(bool cached){auto m=parse(readFile(Fixture));if(cached)m->fittedRig=std::make_shared<Rig>(fitRig(*m,Json::object()));return m;}
 // Each case fits the fixture through the full path ("full") or the cached fast path ("cached").
 Rig fitCase(const Json& c){auto m=fixture(c.at("path")=="cached");return fitRig(*m,c.at("options"));}
@@ -73,6 +75,12 @@ int main(int argc,char** argv){
             for(auto c:goldenCases()){auto rig=fitCase(c);c["key"]=rig.key;c["mdlSha256"]=mdlHash(rig);c["phy"]=legacyPhysicsText(rig);out["cases"].push_back(c);}
             fs::create_directories(fs::path(Golden).parent_path());std::ofstream(Golden,std::ios::binary)<<out.dump(1)<<"\n";
             std::cout<<"Recorded "<<out["cases"].size()<<" golden carriers\n";return 0;
+        }
+        // Writes the shared canonicalisation cases (tests/fixtures/physics/canonical_cases.json) from their inputs.
+        if(argc==3&&std::string(argv[1])=="--record-canonical"){
+            auto cases=readJson(fs::path(wide(argv[2])));
+            for(auto& c:cases){auto result=canonicalPhysics(c.value("input",Json()));if(result.errors.empty())c["canonical"]=result.value;else c["error"]=result.errors.front().code;}
+            std::ofstream(CanonicalCases,std::ios::binary)<<cases.dump(1)<<"\n";std::cout<<"Recorded "<<cases.size()<<" canonical cases\n";return 0;
         }
         // Offline check on other models: unedited carriers write the 2.2 text (never run by CTest).
         if(argc>2&&std::string(argv[1])=="--compare"){
@@ -155,6 +163,14 @@ int main(int argc,char** argv){
             auto ca=canonicalPhysics(a).value,cb=canonicalPhysics(b).value;
             check(ca.dump()==cb.dump()&&!ca.empty()&&fitRig(*cached,{{"physicsOverrides",a}}).key==fitRig(*cached,{{"physicsOverrides",b}}).key,"quantising and pair normalisation remove float noise and ordering");
             check(ca["bodies"].size()==1&&!ca["bodies"].begin()->contains("damping")&&!ca["bodies"].begin()->contains("inertia"),"values that round to their default are dropped");
+        }
+        // N5/N6 (shared): the hand-written cases Lua also checks.
+        {
+            auto cases=readJson(CanonicalCases);bool all=cases.size()>=40;
+            for(auto& c:cases){auto result=canonicalPhysics(c.value("input",Json()));
+                bool ok=c.contains("error")?!result.errors.empty()&&result.errors.front().code==c["error"]&&result.value.empty():result.errors.empty()&&result.value==c.at("canonical");
+                if(!ok)std::cout<<"  case: "<<c.value("label","")<<"\n";all&=ok;}
+            check(all,"the shared canonicalisation cases ("+std::to_string(cases.size())+")");
         }
         // N6: canonical forms.
         {

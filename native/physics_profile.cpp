@@ -99,7 +99,7 @@ CanonicalPhysics canonicalPhysics(const Json& raw){
    if(set.empty())result["collisions"]={{"mode","none"}};
    else if(set.size()<136){Json pairs=Json::array();for(auto [a,b]:set)pairs.push_back({a,b});result["collisions"]={{"mode","custom"},{"pairs",pairs}};}
   }
-  else if(mode=="none"||mode=="all"){if(o->contains("pairs"))c.fail("collision_mode","collisions.pairs","pairs need mode custom");else if(mode=="none")result["collisions"]={{"mode","none"}};}
+  else if(mode=="none"||mode=="all"){if(o->contains("pairs")&&!o->at("pairs").empty())c.fail("collision_mode","collisions.pairs","pairs need mode custom");else if(mode=="none")result["collisions"]={{"mode","none"}};}
   else c.fail("collision_mode","collisions.mode","expected all, none or custom");
  }
  if(auto it=raw.find("animatedFriction");it!=raw.end())if(auto o=c.object(*it,"animatedFriction")){
