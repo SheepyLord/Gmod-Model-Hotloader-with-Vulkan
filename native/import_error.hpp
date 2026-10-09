@@ -83,6 +83,7 @@ Json describeWorkerExit(uint32_t exitCode);
 // The result of a worker that has ended. A final status gets exitCode (and, when failed,
 // the tail of its crash log as "log"); a status that still says running, or none
 // (readError), becomes a failure from describeWorkerExit that keeps the step, file and
-// detail it had reached, with the job's source and kind.
+// detail it had reached, with the job's source and kind, and this build as its worker
+// (the module and the worker ship together).
 Json finishedWorkerStatus(Json last,uint32_t exitCode,const std::string& log,const std::string& source,const std::string& kind,const std::string& readError={});
 }

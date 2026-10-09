@@ -333,8 +333,12 @@ local function codeEntry(map,families,code)
  if not isstring(code) then return nil end
  return map[code] or (families and families[code:match('^([%w_]+)%.') or ''])
 end
--- details: the error's errorDetails; their extension fills the renamed-file hint.
-function mmdhl.ImportHint(err,code,details)
+-- details: the error's errorDetails; their extension fills the renamed-file hint. stage: the
+-- stageCode; a crash in the file picker or before the first step is not the file's fault.
+local crashHints={pick='library.hint.picker_crash',start='library.hint.worker_start'}
+-- i18n-keys: library.hint.picker_crash library.hint.worker_start
+function mmdhl.ImportHint(err,code,details,stage)
+ if code=='worker.crash' and crashHints[stage] then return L(crashHints[stage]) end
  local key=codeEntry(codeHints,familyHints,code)
  if key then return L(key,{extension=istable(details) and isstring(details.extension) and details.extension or '.fbx'}) end
  local lower=tostring(err or ''):lower()
@@ -363,9 +367,9 @@ function mmdhl.ImportCause(status)
 end
 -- The step, for "While {step}: …": by stageCode in the player's language, else the
 -- importer's own name for it (older natives, static props).
-local stages={read=true,parse=true,convert_vrm=true,convert_character=true,probe=true,textures=true,cache=true,materials=true,fit=true,start=true,worker=true}
+local stages={read=true,parse=true,convert_vrm=true,convert_character=true,probe=true,textures=true,cache=true,materials=true,fit=true,start=true,worker=true,pick=true}
 -- i18n-keys: library.stage.read library.stage.parse library.stage.convert_vrm library.stage.convert_character library.stage.probe library.stage.textures
--- i18n-keys: library.stage.cache library.stage.materials library.stage.fit library.stage.start library.stage.worker
+-- i18n-keys: library.stage.cache library.stage.materials library.stage.fit library.stage.start library.stage.worker library.stage.pick
 function mmdhl.ImportStage(status)
  if stages[status.stageCode] then return L('library.stage.'..status.stageCode) end
  return tostring(status.stage or L'library.failure.importing'):lower()
@@ -449,7 +453,7 @@ function mmdhl.ShowImportFailure(status,kind)
  local UI=mmdhl.UI if not UI then Derma_Message(tostring(status.error),L'library.failure.title_short',L'common.close') return end
  local s,f=UI.metrics()
  local file=tostring(status.filename or (status.source and string.GetFileFromFilename(status.source)) or L'library.failure.selected_file')
- local hint=status.hint or mmdhl.ImportHint(status.error,status.errorCode,status.errorDetails)
+ local hint=status.hint or mmdhl.ImportHint(status.error,status.errorCode,status.errorDetails,status.stageCode)
  local details=mmdhl.ImportFailureDetails(status,kind)
  local where=mmdhl.ImportWhere(status)
  -- What failed (and while doing what), where in the file, and what to try.

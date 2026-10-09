@@ -113,6 +113,10 @@ assert(mmdhl.ImportHint('Cyclic bone hierarchy')==L'library.hint.skeleton','othe
 assert(mmdhl.ImportHint('Import worker missing')==L'library.hint.worker_missing' and mmdhl.ImportHint('Cannot start import worker')==L'library.hint.worker_start')
 -- A code no hint knows (unknown, json) falls back to the phrases.
 assert(mmdhl.ImportHint('Cannot open file C:/x.obj','unknown')==L'library.hint.cannot_open' and mmdhl.ImportHint('?','json')==L'library.hint.default')
+-- A crash while the file picker is open, or before the importer's first step, is not the file's fault.
+assert(mmdhl.ImportHint('x','worker.crash',nil,'pick')==L'library.hint.picker_crash' and mmdhl.ImportHint('x','worker.crash',nil,'textures')==L'library.hint.worker_crash')
+assert(mmdhl.ImportHint('x','worker.crash',nil,'start')==L'library.hint.worker_start' and mmdhl.ImportHint('x','pmx.truncated',nil,'pick')==L'library.hint.pmx_truncated')
+assert(mmdhl.ImportStage({stageCode='pick'})==L'library.stage.pick')
 ''')
 print('PASS: hints by error code and family first; the English phrases (fixed order) for older natives')
 
@@ -170,6 +174,11 @@ local long=table.Copy(status) long.errorDetails={where={{kind='material',index=0
 mmdhl.ShowImportFailure(long,'library')
 assert(FRAMES[#FRAMES].h>short,'a longer Where line made no room')
 for _,c in ipairs(FRAMES[#FRAMES].children) do if c.kind=='DLabel' then assert(c.tall and c.tall>=16,'a label has no height for its text') end end
+-- The file picker crashed (a shell extension): the step is the picker's and the hint does not blame a file.
+mmdhl.ShowImportFailure({state='failed',error='The import worker exited before completion after an access violation (exit code 0xC0000005).',errorCode='worker.crash',stage='Select model',stageCode='pick',kind='character',
+ exitCode=3221225477,errorDetails={exitCodeHex='0xC0000005',cause='access_violation'}},'library')
+frame=FRAMES[#FRAMES]
+assert(HAS(frame,L('library.failure.while',{step=L'library.stage.pick',error=L('library.cause.worker_crash',{code='0xC0000005'})})) and HAS(frame,L('library.failure.what_to_try',{hint=L'library.hint.picker_crash'})))
 -- Older natives: no code, no Where, the English error and the phrase hint still show.
 mmdhl.ShowImportFailure({state='failed',error='Invalid spring bone stiffness',stage='Converting VRM avatar',filename='a.vrm',source='C:/m/a.vrm'},'library')
 frame=FRAMES[#FRAMES]

@@ -196,7 +196,8 @@ int wmain(int argc,wchar_t** argv){
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--inspect-bone-map"){auto m=loadCharacter(argv[2]);std::cout<<inspectBoneMap(*m,argc==4?readJson(argv[3]):Json{{"include",{"skeleton"}}}).dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&(std::wstring(argv[1])==L"--fit"||std::wstring(argv[1])==L"--fit-raw")){auto m=loadCharacter(argv[2]);std::cout<<fitRig(*m,argc==4?Json::parse(utf8(argv[3])):Json{{"calibrated",std::wstring(argv[1])!=L"--fit-raw"}}).manifest.dump()<<std::endl;return 0;}
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--pick"){
-            fs::path dir=argv[2];status=dir/L"status.json";bool prop=argc==4&&std::wstring(argv[3])==L"static";
+            // Shell extensions run inside the file dialog: a crash there is logged as the picker's.
+            fs::path dir=argv[2];status=dir/L"status.json";bool prop=argc==4&&std::wstring(argv[3])==L"static";watchCrashes(dir/L"worker.log");setImportStage("pick");
             const wchar_t* title=prop?L"Import static prop":L"Import character";
             CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);IFileOpenDialog* dialog=nullptr;
             if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))))throw std::runtime_error("Cannot open file picker");

@@ -1,4 +1,5 @@
 #include "import_error.hpp"
+#include "release.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -240,7 +241,7 @@ Json finishedWorkerStatus(Json last,uint32_t exitCode,const std::string& log,con
   for(auto key:{"stage","stageCode","filename","detail","current","total"})if(last.contains(key))failed[key]=last[key];
   if(!readError.empty())failed["errorDetails"]["statusError"]=readError;
   if(!source.empty()){failed["source"]=source;if(!failed.contains("filename"))try{failed["filename"]=utf8(fs::path(wide(source)).filename().wstring());}catch(...){}}
-  failed["kind"]=kind.empty()?std::string("character"):kind;last=std::move(failed);
+  failed["kind"]=kind.empty()?std::string("character"):kind;failed["worker"]={{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID}};last=std::move(failed);
  }
  if(last.value("state","")=="failed"){last["exitCode"]=exitCode;if(!log.empty())last["log"]=clean(log,true);}
  return last;

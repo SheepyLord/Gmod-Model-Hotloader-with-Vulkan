@@ -226,8 +226,10 @@ int main(int argc,char** argv){try{
   check(describeWorkerExit(0xC00000FD)["cause"]=="stack_overflow"&&describeWorkerExit(0xC0000017)["errorCode"]=="memory"&&describeWorkerExit(3)["cause"]=="abort"&&describeWorkerExit(0xDEADBEEF)["cause"]=="unknown","other exit codes: stack overflow, out of memory, abort, unknown");
   Json running={{"state","running"},{"stage","Preparing textures"},{"stageCode","textures"},{"detail","Material 3 of 9 “Hair”: hair.png"},{"current",3},{"total",9},{"filename","x.pmx"}};
   auto r=finishedWorkerStatus(running,0xC0000005,"unhandled exception 0xC0000005 at mmdhl_runtime_win64.dll+0x1234 during stage textures\r\n","C:/models/x.pmx","");
-  check(r["state"]=="failed"&&r["errorCode"]=="worker.crash"&&r["stageCode"]=="textures"&&r["detail"]==running["detail"]&&r["source"]=="C:/models/x.pmx"&&r["kind"]=="character"&&r["exitCode"]==0xC0000005u&&has(r["log"],"during stage textures")&&r["errorDetails"]["cause"]=="access_violation",
-   "a crashed worker's result keeps the step, file and detail it reached, with the exit code and log");
+  check(r["state"]=="failed"&&r["errorCode"]=="worker.crash"&&r["stageCode"]=="textures"&&r["detail"]==running["detail"]&&r["source"]=="C:/models/x.pmx"&&r["kind"]=="character"&&r["exitCode"]==0xC0000005u&&has(r["log"],"during stage textures")&&r["errorDetails"]["cause"]=="access_violation"&&r["worker"]["release"]==MMDHL_RELEASE&&r["worker"]["build"]==MMDHL_BUILD_ID,
+   "a crashed worker's result keeps the step, file and detail it reached, with the exit code, log and build");
+  r=finishedWorkerStatus({{"state","running"},{"stage","Select model"},{"stageCode","pick"}},0xC0000005,"","","static");
+  check(r["stageCode"]=="pick"&&r["kind"]=="static"&&!r.contains("source"),"a crash while the file picker is open keeps the picker's step and kind");
   Json final={{"state","failed"},{"error","x"},{"errorCode","pmx.truncated"}};r=finishedWorkerStatus(final,1,"","C:/m.pmx","");
   check(r["errorCode"]=="pmx.truncated"&&r["exitCode"]==1&&!r.contains("log"),"a reported failure keeps its own error and gains the exit code");
   r=finishedWorkerStatus(Json(),0xC0000409,"","C:/m.pmx","static","bad json");check(r["errorCode"]=="worker.crash"&&r["kind"]=="static"&&r["errorDetails"]["statusError"]=="bad json","an unreadable status is a crash with the reason");
