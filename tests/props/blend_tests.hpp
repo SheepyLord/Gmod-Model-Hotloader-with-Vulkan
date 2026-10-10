@@ -2,7 +2,11 @@
 // binary fixtures are needed. The real-Blender corpus (2.60 to 5.2, gzip and
 // zstd) is in docs/STATIC_PROPS_VALIDATION.md.
 #include "zstd_decode.hpp"
+#ifdef _WIN32
 #include <psapi.h>
+#else
+#include <sys/resource.h>
+#endif
 #include <tuple>
 #include <fstream>
 #include <map>
@@ -61,7 +65,12 @@ inline Bytes zstdLongMatches(unsigned count){
     content.insert(content.end(),stream.begin(),stream.end());
     return zstdFrame(0x38,{{false,0,Bytes{'x'},1},{true,2,content,content.size()}});
 }
+#ifdef _WIN32
 inline size_t peakPrivateBytes(){PROCESS_MEMORY_COUNTERS counters{};GetProcessMemoryInfo(GetCurrentProcess(),&counters,sizeof counters);return counters.PeakPagefileUsage;}
+#else
+// The peak resident size: what the decoder wrote, as allocations are filled when made.
+inline size_t peakPrivateBytes(){rusage usage{};getrusage(RUSAGE_SELF,&usage);return size_t(usage.ru_maxrss)*1024;}
+#endif
 // A Zstandard frame of raw (stored) blocks, as a size-checked container test.
 inline Bytes zstdStored(const Bytes& in){
     Bytes out={0x28,0xB5,0x2F,0xFD,0xE0};uint64_t size=in.size();for(int i=0;i<8;++i)out.push_back(uint8_t(size>>(8*i)));
@@ -235,7 +244,7 @@ void blendTests(){
         check(peakPrivateBytes()-before<(64u<<20),"zstd allocated past the block bound before rejecting");
     }
     // .blend files: both header layouts, compressed, per-ID addresses, transforms.
-    auto dir=fs::temp_directory_path()/fs::path(L"mmdhl-blend-test-"+std::to_wstring(GetCurrentProcessId()));fs::create_directories(dir);
+    auto dir=fs::temp_directory_path()/fs::path(L"mmdhl-blend-test-"+std::to_wstring(processId()));fs::create_directories(dir);
     auto w=scene();auto legacy=w.file(false),large=w.file(true);
     auto save=[&](const std::wstring& name,const Bytes& bytes){auto p=dir/name;std::ofstream(p,std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),std::streamsize(bytes.size()));return p;};
     const float u=39.3700787f;auto same=[&](Vec a,Vec b){return std::abs(a.x-b.x)<1e-3f&&std::abs(a.y-b.y)<1e-3f&&std::abs(a.z-b.z)<1e-3f;};

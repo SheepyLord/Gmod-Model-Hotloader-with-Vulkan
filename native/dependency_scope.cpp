@@ -1,9 +1,17 @@
 #include "dependency_scope.hpp"
+#include <algorithm>
 #include "props/network_path.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "posix.hpp"
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <atomic>
 #include <stdexcept>
 
@@ -12,6 +20,7 @@ namespace fs=std::filesystem;
 namespace {
 std::function<bool(const fs::path&)>& denylist(){static std::function<bool(const fs::path&)> denied;return denied;}
 std::atomic_bool unknownFinals=false;
+#ifdef _WIN32
 struct Handle{HANDLE h=INVALID_HANDLE_VALUE;~Handle(){if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);}};
 std::wstring fromUtf8(std::string_view s){
     if(s.empty())return {};
@@ -89,6 +98,41 @@ std::wstring longName(const std::wstring& path){
     if(b.starts_with(L"\\\\?\\"))return b.substr(4);
     return b;
 }
+#else
+// The same rules with POSIX paths: names compare exactly, '/' separates, symbolic links
+// take the place of junctions, and an open file's real place is /proc/self/fd/<n>.
+struct Handle{int fd=-1;~Handle(){if(fd>=0)close(fd);}};
+std::wstring absoluteText(const fs::path& p){std::error_code error;auto full=fs::absolute(p,error);return error?std::wstring():full.lexically_normal().wstring();}
+std::wstring finalPath(int fd){
+    if(unknownFinals)return {};
+    std::error_code error;auto real=fs::read_symlink("/proc/self/fd/"+std::to_string(fd),error);
+    if(error||real.is_relative())return {};
+    return real.wstring();
+}
+std::wstring trimmed(std::wstring s){while(s.size()>1&&s.back()==L'/')s.pop_back();return s;}
+bool within(const std::wstring& path,const std::wstring& folder){
+    auto p=trimmed(path),f=trimmed(folder);if(f.empty()||p.size()<f.size())return false;
+    if(f==L"/")return p.starts_with(L"/");
+    return p.compare(0,f.size(),f)==0&&(p.size()==f.size()||p[f.size()]==L'/');
+}
+// "." and ".." would be read differently than written (the model's text is normalized first).
+bool plainParts(const fs::path& p){
+    for(auto& part:p.relative_path()){auto s=part.wstring();if(s.empty())continue;if(s==L"."||s==L"..")return false;}
+    return true;
+}
+bool notLink(const std::wstring& path){struct stat st{};return lstat(fs::path(path).c_str(),&st)==0&&!S_ISLNK(st.st_mode);}
+bool linkFreeBelow(const std::wstring& tree,const std::wstring& file,bool checkTree){
+    auto folder=trimmed(tree),text=trimmed(file);
+    if(!within(text,folder)||text.size()==folder.size())return false;
+    if(checkTree&&!notLink(folder))return false;
+    for(size_t at=folder==L"/"?1:folder.size()+1;;){
+        auto next=text.find(L'/',at);
+        if(!notLink(text.substr(0,next)))return false;
+        if(next==std::wstring::npos)return true;
+        at=next+1;
+    }
+}
+#endif
 }
 void setDependencyDenylist(std::function<bool(const fs::path&)> denied){denylist()=std::move(denied);}
 void simulateUnknownFinalPaths(bool unknown){unknownFinals=unknown;}
@@ -96,6 +140,46 @@ DependencyScope::DependencyScope(path modelFolder,bool textureFolders,Reach r):r
     trees={root};
     if(textureFolders)for(auto base:{root.parent_path(),root.parent_path().parent_path()})for(auto name:{L"tex",L"textures"})trees.push_back(base/name);
 }
+#ifndef _WIN32
+const std::vector<std::wstring>& DependencyScope::finalTrees() const {
+    if(resolved)return finals;resolved=true;
+    for(size_t i=0;i<trees.size();i++){
+        // A tex or textures folder near the model counts as itself, never where a link leads.
+        if(i&&!notLink(trees[i].wstring()))continue;
+        Handle h;h.fd=open(trees[i].c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC);if(h.fd<0)continue;
+        auto real=finalPath(h.fd);if(!real.empty())finals.push_back(real);
+    }
+    return finals;
+}
+DependencyScope::path DependencyScope::locate(std::string_view reference) const {
+    if(reference.empty()||props::networkPath(reference))return {};
+    // Model files come from Windows: '\\' separates as '/' does, and letter case may differ.
+    std::wstring text;try{text=posix::wideFromUtf8(reference,true);}catch(...){return {};}
+    std::replace(text.begin(),text.end(),L'\\',L'/');
+    path ref(text);
+    path candidate=ref.is_absolute()?ref.lexically_normal():(root/ref).lexically_normal();
+    if(!plainParts(candidate))return {};
+    candidate=posix::matchCase(candidate);
+    auto full=absoluteText(candidate);if(full.empty())return {};
+    if(reach==Reach::Local)return candidate;
+    for(auto& tree:trees)if(within(full,absoluteText(tree)))return candidate;
+    return {};
+}
+bool DependencyScope::allows(const path& file) const {
+    if(!plainParts(file))return false;
+    auto text=absoluteText(file);if(text.empty())return false;
+    std::vector<size_t> holders;for(size_t i=0;i<trees.size();i++)if(within(text,absoluteText(trees[i])))holders.push_back(i);
+    if(holders.empty()&&reach==Reach::Confined)return false;
+    Handle h;h.fd=open(fs::path(text).c_str(),O_RDONLY|O_CLOEXEC|O_NONBLOCK);if(h.fd<0)return false;
+    struct stat st{};if(fstat(h.fd,&st)!=0||!S_ISREG(st.st_mode))return false;
+    // Links are followed: where the file really is decides.
+    auto real=finalPath(h.fd);
+    bool inside=reach==Reach::Local;if(!inside&&!real.empty())for(auto& tree:finalTrees())inside=inside||within(real,tree);
+    if(!inside)for(auto i:holders)inside=inside||linkFreeBelow(absoluteText(trees[i]),text,i>0);
+    if(!inside)return false;
+    auto& denied=denylist();return !denied||!denied(path(real.empty()?text:real));
+}
+#else
 const std::vector<std::wstring>& DependencyScope::finalTrees() const {
     if(resolved)return finals;resolved=true;
     for(size_t i=0;i<trees.size();i++){
@@ -139,4 +223,5 @@ bool DependencyScope::allows(const path& file) const {
     if(!inside)return false;
     auto& denied=denylist();return !denied||!denied(path(real.empty()?longName(text):real));
 }
+#endif
 }

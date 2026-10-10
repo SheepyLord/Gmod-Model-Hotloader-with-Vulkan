@@ -10,3 +10,5 @@ build-log.txt
 shaders/include/
 shaders/shaders/
 *.user
+build-linux/
+build-linux64/

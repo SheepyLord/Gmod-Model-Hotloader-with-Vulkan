@@ -5,7 +5,13 @@
 // renders the game and never uses them itself; work submitted there overlaps
 // rendering inside one GPU context.
 #include <cstdint>
+#ifdef _WIN32
 #include <Windows.h>
+#else
+// Linux games render through ToGL (OpenGL), never DXVK: the types keep the header compiling.
+typedef int32_t HRESULT;
+#define __stdcall
+#endif
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif

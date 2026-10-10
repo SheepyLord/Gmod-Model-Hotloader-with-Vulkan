@@ -49,7 +49,10 @@ mmdhl.materials=mmdhl.materials or {}
 mmdhl.assets=mmdhl.assets or {}
 local white='models/debug/debugwhite'
 local light=Vector(.35,-.5,1):GetNormalized()
-local shadowRT=GetRenderTargetEx('mmdhl_shadow_r32',1024,1024,RT_SIZE_NO_CHANGE,MATERIAL_RT_DEPTH_SEPARATE,bit.bor(2,4,8),0,27) -- R32F is not exported as a Lua enum on this build.
+-- R32F (27) is not exported as a Lua enum on this build. The 32-bit Linux game (the default
+-- branch's OpenGL translation) crashes creating an R32F render target: legacy models draw
+-- there without their projected shadow.
+local shadowRT=not (system.IsLinux() and jit.arch=='x86') and GetRenderTargetEx('mmdhl_shadow_r32',1024,1024,RT_SIZE_NO_CHANGE,MATERIAL_RT_DEPTH_SEPARATE,bit.bor(2,4,8),0,27) or nil
 local shadow={origin=Vector(),angles=(-light):Angle(),span=256,range=768,valid=false}
 local function constant(mat,index,v,w)
  local values=isvector(v) and {v.x,v.y,v.z,w or 0} or {v[1] or 0,v[2] or 0,v[3] or 0,w or v[4] or 0}
@@ -67,7 +70,7 @@ function mmdhl.PrepareMaterials(asset,info)
    local transparent=kind=='surface' and (part.alpha<.999 or part.alphaTexture)
    local mat=CreateMaterial('mmdhl_v4_'..asset..'_'..i..'_'..kind,'screenspace_general',{
     ['$vertexshader']='mmdhl_vs20',['$pixshader']='mmdhl_ps20b',
-    ['$basetexture']=white,['$texture1']=white,['$texture2']=white,['$texture3']=shadowRT:GetName(),
+    ['$basetexture']=white,['$texture1']=white,['$texture2']=white,['$texture3']=shadowRT and shadowRT:GetName() or white,
     ['$vertexnormal']='1',['$vertexcolor']='1',['$vertextransform']='1',['$tcsize0']='2',['$tcsize1']='4',
     -- On the supported build $depthtest=1 also selects DEPTHFUNC_ALWAYS.
     -- OverrideDepthEnable below enables testing while retaining LESS_EQUAL.
@@ -78,7 +81,7 @@ function mmdhl.PrepareMaterials(asset,info)
    mat:SetTexture('$basetexture',texture(part.base))
    mat:SetTexture('$texture1',texture(part.sphere))
    mat:SetTexture('$texture2',texture(part.toon,'mmdhl/toon.png'))
-   mat:SetTexture('$texture3',shadowRT)
+   if shadowRT then mat:SetTexture('$texture3',shadowRT) end
    variants[kind]=mat
   end
   result[i]=variants
@@ -146,7 +149,7 @@ hook.Add('PreRender','MMDHL.Shadows',function()
    maximum=maximum and Vector(math.max(maximum.x,c.x),math.max(maximum.y,c.y),math.max(maximum.z,c.z)) or c
   end
  end
- if #entries==0 then shadow.valid=false shadowSignature=nil return end
+ if #entries==0 or not shadowRT then shadow.valid=false shadowSignature=nil return end
  table.sort(signature) signature=table.concat(signature,'|')
  if shadow.valid and signature==shadowSignature then return end
  local center=(minimum+maximum)*.5

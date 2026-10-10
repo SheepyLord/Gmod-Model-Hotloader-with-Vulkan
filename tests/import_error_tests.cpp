@@ -9,7 +9,15 @@
 #include "rig.hpp"
 #include "spring_bones.hpp"
 #include "vrm.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "posix.hpp"
+#include "win_errors.hpp"
+#include <cerrno>
+#include <csignal>
+#endif
+#include "test_platform.hpp"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -82,21 +90,40 @@ Bytes vrm(const std::function<void(Json&)>& edit={}){
 Bytes bytes(std::string_view s){return Bytes(s.begin(),s.end());}
 
 // ---- the worker ----
-struct Run {DWORD exit=0;Json status;std::string log;};
-DWORD run(const fs::path& worker,const std::wstring& arguments){
- std::wstring command=L"\""+worker.wstring()+L"\" "+arguments;STARTUPINFOW start{};start.cb=sizeof(start);PROCESS_INFORMATION process{};
+struct Run {uint32_t exit=0;Json status;std::string log;};
+#ifdef _WIN32
+uint32_t run(const fs::path& worker,const std::vector<std::wstring>& arguments){
+ std::wstring command=L"\""+worker.wstring()+L"\"";for(auto& a:arguments)command+=L" \""+a+L"\"";STARTUPINFOW start{};start.cb=sizeof(start);PROCESS_INFORMATION process{};
  if(!CreateProcessW(worker.c_str(),command.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&start,&process))throw std::runtime_error("cannot start the worker");
  WaitForSingleObject(process.hProcess,120000);DWORD code=0;GetExitCodeProcess(process.hProcess,&code);CloseHandle(process.hThread);CloseHandle(process.hProcess);return code;
 }
+// What a crash leaves: the exit codes of an access violation and of std::terminate (abort).
+constexpr uint32_t AccessExit=0xC0000005,TerminateExit=3;
+const char* const AccessLog="unhandled exception 0xC0000005";
+constexpr int MissingError=ERROR_FILE_NOT_FOUND,DiskFullError=ERROR_DISK_FULL,DeniedError=ERROR_ACCESS_DENIED;
+#else
+uint32_t run(const fs::path& worker,const std::vector<std::wstring>& arguments){
+ std::vector<std::string> args;for(auto& a:arguments)args.push_back(utf8(a));
+ auto child=posix::spawn(worker,args,fs::current_path());if(!child.pid)throw std::runtime_error("cannot start the worker");
+ if(!child.wait(120000)){child.kill();throw std::runtime_error("the worker did not finish");}
+ return uint32_t(child.exitCode);
+}
+// A signal ends the worker with 128 + its number (posix::Child).
+constexpr uint32_t AccessExit=128+SIGSEGV,TerminateExit=128+SIGABRT;
+const char* const AccessLog="signal 11 at";
+constexpr int MissingError=ENOENT,DiskFullError=ENOSPC,DeniedError=EACCES;
+#endif
 Run request(const fs::path& worker,const fs::path& dir,const fs::path& source,const Json& options=Json::object()){
  fs::create_directories(dir);writeJson(dir/L"request.json",{{"source",utf8(source.wstring())},{"cache",utf8((dir.parent_path()/L"cache").wstring())},{"options",options}});
- Run r;r.exit=run(worker,L"--request \""+(dir/L"request.json").wstring()+L"\"");r.status=readJson(dir/L"status.json");std::cout<<"  "<<r.status.dump()<<"\n";return r;
+ Run r;r.exit=run(worker,{L"--request",(dir/L"request.json").wstring()});r.status=readJson(dir/L"status.json");std::cout<<"  "<<r.status.dump()<<"\n";return r;
 }
 }
 
 int main(int argc,char** argv){try{
+#ifdef _WIN32
  SetConsoleOutputCP(CP_UTF8);
- auto temp=fs::temp_directory_path()/(L"mmdhl-import-errors-"+std::to_wstring(GetCurrentProcessId()));fs::remove_all(temp);fs::create_directories(temp);
+#endif
+ auto temp=fs::temp_directory_path()/(L"mmdhl-import-errors-"+std::to_wstring(processId()));fs::remove_all(temp);fs::create_directories(temp);
 
  // ---- PMX: nanoem's failures name the section, the element, the last good one and the byte ----
  {auto raw=readFile("tests/fixtures/truncated.pmx");auto e=failure([&]{parse(raw);},"truncated PMX");
@@ -177,9 +204,9 @@ int main(int argc,char** argv){try{
   e=failure([&]{SpringSetup::fromManifest(spring,*model);},"spring bone");check(e.code=="spring.data"&&has(e.what(),"bone 99")&&has(e.what(),"it has 3"),"a spring joint on a bone outside the model gives both numbers");}
 
  // ---- library exceptions read as sentences with codes ----
- {auto d=describe([]{throw fs::filesystem_error("open",fs::path(L"C:/missing/a.pmx"),std::error_code(ERROR_FILE_NOT_FOUND,std::system_category()));});
-  check(d["errorCode"]=="io.missing"&&has(d["error"],"a.pmx")&&has(d["error"],"does not exist")&&d["errorDetails"]["systemError"]==ERROR_FILE_NOT_FOUND,"a filesystem error says the file is missing");
-  d=describe([]{throw fs::filesystem_error("write",fs::path(L"C:/cache/x"),std::error_code(ERROR_DISK_FULL,std::system_category()));});check(d["errorCode"]=="io.disk_full"&&has(d["error"],"disk is full"),"a full disk is io.disk_full");
+ {auto d=describe([]{throw fs::filesystem_error("open",fs::path(L"C:/missing/a.pmx"),std::error_code(MissingError,std::system_category()));});
+  check(d["errorCode"]=="io.missing"&&has(d["error"],"a.pmx")&&has(d["error"],"does not exist")&&d["errorDetails"]["systemError"]==MissingError,"a filesystem error says the file is missing");
+  d=describe([]{throw fs::filesystem_error("write",fs::path(L"C:/cache/x"),std::error_code(DiskFullError,std::system_category()));});check(d["errorCode"]=="io.disk_full"&&has(d["error"],"disk is full"),"a full disk is io.disk_full");
   d=describe([]{throw std::bad_alloc();});check(d["errorCode"]=="memory"&&d["exceptionType"]=="memory","bad_alloc is a memory error");
   d=describe([]{throw std::runtime_error("plain text");});check(d["errorCode"]=="unknown"&&d["error"]=="plain text"&&d["context"].empty(),"other exceptions keep their text");
   d=describe([]{(void)Json::parse("{");});check(d["errorCode"]=="json"&&!d.value("error","").starts_with("[json"),"a JSON error outside a file scope is json");
@@ -197,6 +224,8 @@ int main(int argc,char** argv){try{
   check(e.code=="io.missing"&&e.details.value("path","")==utf8(missing.wstring())&&std::string(e.what())=="Cannot read "+utf8(missing.wstring()),"a missing file is io.missing with its path, and what() is 2.2's sentence");
   auto d=describe([&]{readFile(missing);});check(d["error"]=="Cannot read "+utf8(missing.wstring())+": the file does not exist (it may have been moved, renamed or deleted)","the report adds why the file cannot be read");
   e=failure([&]{readFile(temp);},"folder");d=describe([&]{readFile(temp);});check(e.code=="io.missing"&&has(d["error"],"folder"),"a folder picked as a file says so");
+#ifdef _WIN32
+  // Windows: a file another program opened without sharing; a read-only file a write replaces.
   auto locked=temp/L"locked.pmx";writeAtomic(locked,bytes("PMX "));
   HANDLE h=CreateFileW(locked.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
   e=failure([&]{readFile(locked);},"locked file");d=describe([&]{readFile(locked);});CloseHandle(h);check(e.code=="io.locked"&&has(d["error"],"another program is using it"),"a file another program holds open is io.locked");
@@ -204,11 +233,12 @@ int main(int argc,char** argv){try{
   auto target=temp/L"read-only.png";writeAtomic(target,bytes("old"));SetFileAttributesW(target.c_str(),FILE_ATTRIBUTE_READONLY);
   e=failure([&]{writeAtomic(target,bytes("new"));},"read-only target");d=describe([&]{writeAtomic(target,bytes("new"));});SetFileAttributesW(target.c_str(),FILE_ATTRIBUTE_NORMAL);
   check(e.code=="io.write"&&std::string(e.what())=="Cannot commit output file: "+utf8(target.wstring())&&e.details.value("systemError",0)==ERROR_ACCESS_DENIED&&has(d["error"],"Windows denied access"),"a write Windows denies is io.write, with 2.2's sentence and the reason in the report");
+#endif
   auto plain=temp/L"plain.txt";writeAtomic(plain,bytes("x"));d=describe([&]{fs::create_directories(plain/L"sub");});
   check(d["errorCode"]=="io.write"&&d["exceptionType"]=="filesystem"&&has(d["error"],"Cannot write "),"a folder that cannot be created is io.write (the library's message names the operation)");
   d=describe([&]{writeAtomic(plain/L"sub"/L"x.png",bytes("y"));});
   check(d["errorCode"]=="io.write"&&d["errorDetails"]["path"]==utf8((plain/L"sub").wstring())&&has(d["error"],"in the way"),"a cache file whose folder cannot be created is io.write, with the path as the player knows it");
-  d=describe([]{throw fs::filesystem_error("create_directories",fs::path(L"C:/cache/x"),std::error_code(ERROR_ACCESS_DENIED,std::system_category()));});check(d["errorCode"]=="io.write","a denied filesystem write is io.write");}
+  d=describe([]{throw fs::filesystem_error("create_directories",fs::path(L"C:/cache/x"),std::error_code(DeniedError,std::system_category()));});check(d["errorCode"]=="io.write","a denied filesystem write is io.write");}
 
  // ---- a missing texture keeps 2.2's warning text: warnings are part of the asset's identity ----
  {auto folder=temp/L"textured";fs::create_directories(folder);fs::copy_file("tests/fixtures/textured21.pmx",folder/L"model.pmx");
@@ -229,7 +259,11 @@ int main(int argc,char** argv){try{
  // place is never read, with a warning.
  {auto pack=temp/L"pack";auto folder=pack/L"model";for(auto f:{folder/L"tex",pack/L"tex",pack/L"outside"})fs::create_directories(f);
   for(auto f:{folder/L"beside.dds",folder/L"tex"/L"below.dds",pack/L"tex"/L"up.dds",folder/L"denied.dds",pack/L"outside"/L"secret.dds",pack/L"secret.dds"})fs::copy_file("tests/fixtures/checker.dds",f);
+#ifdef _WIN32
   auto link=L"cmd /c mklink /J \""+(folder/L"linked").wstring()+L"\" \""+(pack/L"outside").wstring()+L"\" >nul";check(_wsystem(link.c_str())==0,"the test junction");
+#else
+  {std::error_code e;fs::create_directory_symlink(pack/L"outside",folder/L"linked",e);check(!e,"the test link");}
+#endif
   PmxSpec spec;spec.vertices=72;spec.materials.clear();
   spec.textures={"beside.dds","tex\\below.dds","..\\tex\\up.dds","denied.dds","..\\outside\\secret.dds","../secret.dds","linked\\secret.dds","\\secret.dds"};
   for(size_t i=0;i<spec.textures.size();i++){spec.materials.push_back({"m"+std::to_string(i),9});spec.materialTexture.push_back(int(i));}
@@ -245,13 +279,19 @@ int main(int argc,char** argv){try{
   fs::remove(folder/L"linked");}
 
  // ---- worker exits ----
+#ifdef _WIN32
  {auto x=describeWorkerExit(0xC0000005);check(x["cause"]=="access_violation"&&x["errorCode"]=="worker.crash"&&has(x["error"],"exited before completion")&&has(x["error"],"0xC0000005"),"0xC0000005 is an access violation (and keeps the word exited)");
   check(describeWorkerExit(0xC00000FD)["cause"]=="stack_overflow"&&describeWorkerExit(0xC0000017)["errorCode"]=="memory"&&describeWorkerExit(3)["cause"]=="abort"&&describeWorkerExit(0xDEADBEEF)["cause"]=="unknown","other exit codes: stack overflow, out of memory, abort, unknown");
+#else
+ // A signal ends the Linux worker with 128 + its number; the loader exits with 127 when a library is missing.
+ {auto x=describeWorkerExit(128+SIGSEGV);check(x["cause"]=="access_violation"&&x["errorCode"]=="worker.crash"&&has(x["error"],"exited before completion")&&has(x["error"],"exit code 139"),"signal 11 is an access violation (and keeps the word exited)");
+  check(describeWorkerExit(128+SIGBUS)["cause"]=="access_violation"&&describeWorkerExit(128+SIGKILL)["cause"]=="killed"&&describeWorkerExit(128+SIGABRT)["cause"]=="abort"&&describeWorkerExit(127)["cause"]=="missing_dll"&&describeWorkerExit(0xDEADBEEF)["cause"]=="unknown","other exit codes: bus error, killed, abort, missing library, unknown");
+#endif
   Json running={{"state","running"},{"stage","Preparing textures"},{"stageCode","textures"},{"detail","Material 3 of 9 “Hair”: hair.png"},{"current",3},{"total",9},{"filename","x.pmx"}};
-  auto r=finishedWorkerStatus(running,0xC0000005,"unhandled exception 0xC0000005 at mmdhl_runtime_win64.dll+0x1234 during stage textures\r\n","C:/models/x.pmx","");
-  check(r["state"]=="failed"&&r["errorCode"]=="worker.crash"&&r["stageCode"]=="textures"&&r["detail"]==running["detail"]&&r["source"]=="C:/models/x.pmx"&&r["kind"]=="character"&&r["exitCode"]==0xC0000005u&&has(r["log"],"during stage textures")&&r["errorDetails"]["cause"]=="access_violation"&&r["worker"]["release"]==MMDHL_RELEASE&&r["worker"]["build"]==MMDHL_BUILD_ID,
+  auto r=finishedWorkerStatus(running,AccessExit,std::string(AccessLog)+" mmdhl_runtime+0x1234 during stage textures\r\n","C:/models/x.pmx","");
+  check(r["state"]=="failed"&&r["errorCode"]=="worker.crash"&&r["stageCode"]=="textures"&&r["detail"]==running["detail"]&&r["source"]=="C:/models/x.pmx"&&r["kind"]=="character"&&r["exitCode"]==AccessExit&&has(r["log"],"during stage textures")&&r["errorDetails"]["cause"]=="access_violation"&&r["worker"]["release"]==MMDHL_RELEASE&&r["worker"]["build"]==MMDHL_BUILD_ID,
    "a crashed worker's result keeps the step, file and detail it reached, with the exit code, log and build");
-  r=finishedWorkerStatus({{"state","running"},{"stage","Select model"},{"stageCode","pick"}},0xC0000005,"","","static");
+  r=finishedWorkerStatus({{"state","running"},{"stage","Select model"},{"stageCode","pick"}},AccessExit,"","","static");
   check(r["stageCode"]=="pick"&&r["kind"]=="static"&&!r.contains("source"),"a crash while the file picker is open keeps the picker's step and kind");
   Json final={{"state","failed"},{"error","x"},{"errorCode","pmx.truncated"}};r=finishedWorkerStatus(final,1,"","C:/m.pmx","");
   check(r["errorCode"]=="pmx.truncated"&&r["exitCode"]==1&&!r.contains("log"),"a reported failure keeps its own error and gains the exit code");
@@ -270,10 +310,10 @@ int main(int argc,char** argv){try{
   auto cut=temp/L"download.vrm";auto data=vrm();data.resize(40);writeAtomic(cut,data);r=request(worker,temp/L"job4",cut);
   check(r.status["errorCode"]=="vrm.truncated"&&r.status["stageCode"]=="convert_vrm"&&has(r.status["error"],"incomplete"),"worker: a .vrm cut off by an interrupted download is truncated, not a GLB to rename");
   auto crash=temp/L"crash";fs::create_directories(crash);
-  auto code=run(worker,L"--crash-test \""+crash.wstring()+L"\" access");auto log=readFile(crash/L"worker.log");std::string text(log.begin(),log.end());
-  check(code==0xC0000005&&has(text,"unhandled exception 0xC0000005")&&has(text,"during stage test"),"worker: an access violation ends with its exception code and one log line");
-  code=run(worker,L"--crash-test \""+crash.wstring()+L"\" terminate");log=readFile(crash/L"worker.log");text.assign(log.begin(),log.end());
-  check(code==3&&has(text,"std::terminate during stage test"),"worker: std::terminate exits with 3 and logs");}
+  auto code=run(worker,{L"--crash-test",crash.wstring(),L"access"});auto log=readFile(crash/L"worker.log");std::string text(log.begin(),log.end());
+  check(code==AccessExit&&has(text,AccessLog)&&has(text,"during stage test"),"worker: an access violation ends with its exception code and one log line");
+  code=run(worker,{L"--crash-test",crash.wstring(),L"terminate"});log=readFile(crash/L"worker.log");text.assign(log.begin(),log.end());
+  check(code==TerminateExit&&has(text,"std::terminate during stage test"),"worker: std::terminate exits with 3 and logs");}
  else std::cout<<"SKIP worker checks: pass the path of mmdhl_worker.exe\n";
  std::error_code ec;fs::remove_all(temp,ec);
  std::cout<<checks<<" import error checks passed\n";return 0;

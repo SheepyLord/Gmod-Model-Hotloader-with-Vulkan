@@ -14,12 +14,18 @@
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
 #include "ordered_dispatcher.hpp"
-#ifndef MMDHL_SERVER
+#if !defined(MMDHL_SERVER)&&defined(_WIN32)
 #include "thread_sampler.hpp"
 #endif
 #include <GarrysMod/Lua/Interface.h>
+#ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include "posix.hpp"
+#include "release.hpp"
+#include <unistd.h>
+#endif
 #include <future>
 #include <map>
 #include <stdexcept>
@@ -36,7 +42,14 @@ constexpr bool ServerRealm=true;
 #else
 constexpr bool ServerRealm=false;
 #endif
+#ifdef _WIN32
 struct Job{HANDLE process=nullptr,group=nullptr;fs::path dir;uint64_t started=0;Json result;std::string source,kind;bool picker=false;};
+#else
+// The worker process (posix::Child: its own process group, killed with this thread).
+struct Job{posix::Child child;bool process=false;fs::path dir;uint64_t started=0;Json result;std::string source,kind;bool picker=false;};
+static uint64_t GetTickCount64(){return posix::tickMs();}
+static unsigned long GetCurrentProcessId(){return static_cast<unsigned long>(getpid());}
+#endif
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
@@ -62,7 +75,16 @@ throw std::runtime_error("Server realm owns simulation");
 }
 // A job's folder (request and status) is only needed until its result reaches
 // Lua; the newest results stay in memory for late polls. Never follow a junction.
+#ifdef _WIN32
 bool plainDirectory(const fs::path& path){auto attributes=GetFileAttributesW(path.c_str());return attributes!=INVALID_FILE_ATTRIBUTES&&(attributes&FILE_ATTRIBUTE_DIRECTORY)&&!(attributes&FILE_ATTRIBUTE_REPARSE_POINT);}
+// Whether the job's worker is still running, and whether it has ended.
+bool workerRunning(Job& j){return j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT;}
+bool workerFinished(Job& j){return WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;}
+#else
+bool plainDirectory(const fs::path& path){return posix::plainDirectory(path);}
+bool workerRunning(Job& j){return j.process&&j.child.running();}
+bool workerFinished(Job& j){return j.process&&!j.child.running();}
+#endif
 void retireJob(Job& j){std::error_code error;if(plainDirectory(j.dir))fs::remove_all(j.dir,error);}
 #ifndef MMDHL_SERVER
 void pruneJobs(){std::vector<uint64_t> done;for(auto& [id,j]:context->jobs)if(!j.process&&!j.result.is_null())done.push_back(id);for(size_t i=0;i+16<done.size();i++)context->jobs.erase(done[i]);}
@@ -75,13 +97,21 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
 #ifdef MMDHL_SERVER
     throw std::runtime_error("Imports must be started locally in the client realm");
 #else
-    for(auto& [id,j]:context->jobs)if(j.process&&WaitForSingleObject(j.process,0)==WAIT_TIMEOUT)throw std::runtime_error("An import is already running");
+    for(auto& [id,j]:context->jobs)if(workerRunning(j))throw std::runtime_error("An import is already running");
     pruneJobs();
     // On a server this game does not host only a file the player picked, never a network
     // path; the request and status go into a private folder in %TEMP%\mmdhl-jobs, which
     // Lua cannot rewrite (picked_models.hpp, tested in file_access_tests.cpp).
     Job j;uint64_t id=context->sequence++;j.started=GetTickCount64();j.source=source;j.kind=options.value("kind",std::string());j.picker=picker;
     j.dir=prepareImportJob(picked(),localServerRealm(),picker,source,options);
+#ifndef _WIN32
+    auto exe=context->bin/MMDHL_WORKER_FILE;if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
+    // The cache folder goes on the command line, not in request.json (see below).
+    std::vector<std::string> args{picker?"--pick":"--request",(picker?j.dir:j.dir/"request.json").string()};
+    if(picker){if(options.value("kind",std::string())=="static")args.push_back("static");}else args.push_back(context->cache.string());
+    try{j.child=posix::spawn(exe,args,context->bin);}catch(const std::exception&){throw std::runtime_error("Cannot start import worker");}
+    j.process=true;context->jobs.emplace(id,std::move(j));return id;
+#else
     auto exe=context->bin/L"mmdhl_worker.exe";if(!fs::is_regular_file(exe))throw std::runtime_error("Import worker missing");
     auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)throw std::runtime_error("Invalid path");return L"\""+p.wstring()+L"\"";};
     // The cache folder goes on the command line, not in request.json: any script can rewrite
@@ -92,6 +122,7 @@ uint64_t launch(bool picker,const std::string& source,const Json& options){
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_SUSPENDED,nullptr,context->bin.c_str(),&start,&process)){CloseHandle(j.group);throw std::runtime_error("Cannot start import worker");}
     if(!AssignProcessToJobObject(j.group,process.hProcess)){TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);CloseHandle(process.hProcess);CloseHandle(j.group);throw std::runtime_error("Cannot isolate worker");}
     ResumeThread(process.hThread);CloseHandle(process.hThread);j.process=process.hProcess;context->jobs.emplace(id,std::move(j));return id;
+#endif
 #endif
 }
 static void forgetAssets(const std::vector<std::string>& ids){
@@ -113,7 +144,7 @@ FUNCTION(ForgetAssets) {forgetAssets(json(LUA,1).get<std::vector<std::string>>()
 FUNCTION(DeleteAssets) {
  auto ids=json(LUA,1).get<std::vector<std::string>>();
  pruneSharedWork();if(!ids.empty()&&(!context->exports.empty()||!context->transfers.empty()||!context->commits.empty()))throw std::runtime_error("Finish or cancel the model transfer before deleting models");
- for(auto& [id,job]:context->jobs)if(job.process&&WaitForSingleObject(job.process,0)==WAIT_TIMEOUT)throw std::runtime_error("Finish or cancel the import before deleting models");
+ for(auto& [id,job]:context->jobs)if(workerRunning(job))throw std::runtime_error("Finish or cancel the import before deleting models");
  // UI releases its preview first. Drop any remaining native-only preview owners.
  for(auto& id:ids){if(context->preview)for(auto& [handle,p]:context->preview->instances)if(p->model->id==id){context->preview.reset();break;}
   for(auto it=context->editors.begin();it!=context->editors.end();){bool found=false;for(auto& [handle,p]:it->second->instances)found|=p->model->id==id;if(found)it=context->editors.erase(it);else ++it;}}
@@ -149,7 +180,7 @@ FUNCTION(PollInstallationProbe) {
  if(installationProbe.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"pending",true}});return 1;}
  push(LUA,installationProbe.get());return 1;
 } END_FUNCTION
-FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"rigGeneratorMin",RigGeneratorMinLoadable},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform","win64"},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}},{"characterImport",{{"version",1},{"probeVersion",1},{"requestVersion",1},{"formats",{"fbx","glb","gltf","dae"}}}},{"boneMap",{{"version",1},{"fit",true}}}});return 1;} END_FUNCTION
+FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"rigGeneratorMin",RigGeneratorMinLoadable},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform",MMDHL_PLATFORM},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}},{"characterImport",{{"version",1},{"probeVersion",1},{"requestVersion",1},{"formats",{"fbx","glb","gltf","dae"}}}},{"boneMap",{{"version",1},{"fit",true}}}});return 1;} END_FUNCTION
 FUNCTION(Browse) {auto kind=LUA->IsType(1,GarrysMod::Lua::Type::String)?stringArg(LUA,1):std::string();if(!kind.empty()&&kind!="static")throw std::runtime_error("Unknown import kind");LUA->PushNumber(double(launch(true,"",kind.empty()?Json::object():Json{{"kind",kind}})));return 1;} END_FUNCTION
 // Save a part preset of a cached static prop (materials and/or region cut).
 FUNCTION(PropDerive) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid prop ID");if(!fs::exists(context->cache/L"static"/L"assets"/wide(id+".gmdl")))throw std::runtime_error("The original prop is not in the local cache");auto options=json(LUA,2);options["kind"]="derive";options["parent"]=id;LUA->PushNumber(double(launch(false,"",options)));return 1;} END_FUNCTION
@@ -168,15 +199,23 @@ std::string workerLog(const fs::path& dir){
 // A worker that ended without a final status crashed or was killed: keep the step it
 // had reached and say why from its exit code (import_error.hpp).
 Json finishedJob(Job& j,Json last,const std::string& readError){
+ #ifdef _WIN32
  DWORD code=0;GetExitCodeProcess(j.process,&code);
+ #else
+ j.child.running();auto code=uint32_t(j.child.exitCode<0?1:j.child.exitCode);
+ #endif
  auto result=finishedWorkerStatus(std::move(last),code,workerLog(j.dir),j.source,j.kind,readError);
  if(result.value("state","")=="failed"&&!result.contains("elapsed_ms"))result["elapsed_ms"]=GetTickCount64()-j.started;
  return result;
 }
 FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->jobs.end())throw std::runtime_error("Unknown job");auto& j=it->second;if(!j.result.is_null()){push(LUA,j.result);return 1;}
-    bool finished=WaitForSingleObject(j.process,0)==WAIT_OBJECT_0;Json result;std::string readError;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)readError=e.what();else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
+    bool finished=workerFinished(j);Json result;std::string readError;try{result=readJson(j.dir/L"status.json");}catch(const std::exception& e){if(finished)readError=e.what();else result={{"state","running"},{"stage","Waiting for worker status"},{"progress",0}};}
     if(!finished&&GetTickCount64()-j.started>300000)result["warning"]="Import is taking longer than five minutes. You can keep waiting or cancel.";
+#ifdef _WIN32
     if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;CloseHandle(j.process);CloseHandle(j.group);j.process=j.group=nullptr;retireJob(j);
+#else
+    if(finished){result=finishedJob(j,std::move(result),readError);j.result=result;j.process=false;retireJob(j);
+#endif
 #ifndef MMDHL_SERVER
      // The picker's answer came through the job's private folder: the player chose this file.
      notePickedSource(picked(),j.picker,result);
@@ -184,7 +223,12 @@ FUNCTION(PollJob) {auto it=context->jobs.find(number(LUA,1));if(it==context->job
     }
     else if(result.value("state","")!="running")result={{"state","running"},{"stage","Committing asset"},{"progress",.99}};
     push(LUA,result);return 1;} END_FUNCTION
-FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);j.group=nullptr;}if(j.process){CloseHandle(j.process);j.process=nullptr;}j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION
+#ifdef _WIN32
+FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);j.group=nullptr;}if(j.process){CloseHandle(j.process);j.process=nullptr;}
+#else
+FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->jobs.end()){auto& j=it->second;j.child.kill();j.process=false;
+#endif
+j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(RequestAsset) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid asset ID");if(!fs::exists(context->cache/L"assets"/wide(id)/L"manifest.json"))throw std::runtime_error("Model was deleted; import it again");if(!context->assets.contains(id)&&!context->loading.contains(id)){auto cache=context->cache;context->loading[id]=std::async(std::launch::async,[cache,id]{return loadAsset(cache,id);});}LUA->PushBool(true);return 1;} END_FUNCTION
 std::shared_ptr<Model> asset(const std::string& id){if(context->assets.contains(id))return context->assets.at(id);auto it=context->loading.find(id);if(it!=context->loading.end()&&it->second.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto pending=std::move(it->second);context->loading.erase(it);auto m=pending.get();for(auto old=context->assets.begin();old!=context->assets.end()&&context->assets.size()>=8;)if(old->second.use_count()==1)old=context->assets.erase(old);else ++old;context->assets[id]=m;return m;}return {};}
 FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}push(LUA,m->info());return 1;} END_FUNCTION
@@ -317,8 +361,14 @@ FUNCTION(CancelPackageExport) {auto it=context->packages.find(number(LUA,1));if(
 FUNCTION(RevealPackageExport) {
  auto name=stringArg(LUA,1);if(name.empty()||name.size()>128||name.find_first_of("/\\:*?\"<>|")!=std::string::npos||name.front()=='.'||!name.ends_with(".gma"))throw std::runtime_error("Invalid export name");
  auto path=context->root/L"garrysmod"/L"data"/L"mmd_hotloader"/L"exports"/wide(name);if(!fs::is_regular_file(ioPath(path)))throw std::runtime_error("The exported file no longer exists");
+ #ifdef _WIN32
  auto arguments=L"/select,\""+path.wstring()+L"\"";
  LUA->PushBool(reinterpret_cast<intptr_t>(ShellExecuteW(nullptr,L"open",L"explorer.exe",arguments.c_str(),nullptr,SW_SHOWNORMAL))>32);return 1;
+ #else
+ // The desktop's file manager opens the exports folder (xdg-open cannot select a file).
+ bool opened=false;try{auto child=posix::spawn("/usr/bin/xdg-open",{path.parent_path().string()},path.parent_path());opened=child.wait(5000)&&child.exitCode==0;}catch(...){}
+ LUA->PushBool(opened);return 1;
+ #endif
 } END_FUNCTION
 #endif
 // Which mounted GMAs contain which package manifests (engine.GetAddons() file paths).
@@ -574,13 +624,20 @@ FUNCTION(PrepareFrame) {
 } END_FUNCTION
 FUNCTION(PruneRenderCache) {pruneRenderCache(LUA->GetBool(1));return 0;} END_FUNCTION
 // Diagnostic sampling profiler of the calling (main) thread; see thread_sampler.hpp.
+#ifdef _WIN32
 MainThreadSampler mainThreadSampler;
+#endif
 // File access for other addons (file_access.hpp, docs/FILE_ACCESS.md), created on first
 // use. A refusal returns nil, the English reason and its code for the Lua to localize.
 FileAccess& files(){
  // On another server nothing is even set up: no store read, no known folders opened.
  if(!localServerRealm())throw FileAccessError("unavailable_remote","File access works only in single player and on a server this game hosts");
- if(!context->files){FileAccessConfig c;c.worker=context->bin/L"mmdhl_worker.exe";c.store=fileAccessStore();c.policy=FilePolicy::system(context->root);context->files=std::make_unique<FileAccess>(std::move(c));}
+ #ifdef _WIN32
+ if(!context->files){FileAccessConfig c;c.worker=context->bin/L"mmdhl_worker.exe";
+ #else
+ if(!context->files){FileAccessConfig c;c.worker=context->bin/MMDHL_WORKER_FILE;
+ #endif
+c.store=fileAccessStore();c.policy=FilePolicy::system(context->root);context->files=std::make_unique<FileAccess>(std::move(c));}
  return *context->files;
 }
 #define END_FILE_FUNCTION catch(const FileAccessError& e){LUA->PushNil();LUA->PushString(e.what());LUA->PushString(e.code.c_str());return 3;}catch(const std::exception& e){return failure(LUA,e);} }
@@ -599,12 +656,22 @@ FUNCTION(FileAccessGrants) {push(LUA,files().grants());return 1;} END_FILE_FUNCT
 FUNCTION(FileAccessRevoke) {LUA->PushBool(files().revoke(stringArg(LUA,1)));return 1;} END_FILE_FUNCTION
 // Off at once; on only after the player confirms in a native dialog (arg 2: its language).
 FUNCTION(FileAccessSetEnabled) {if(!LUA->IsType(1,GarrysMod::Lua::Type::Bool))throw std::runtime_error("Expected true or false");push(LUA,files().setEnabled(LUA->GetBool(1),LUA->IsType(2,GarrysMod::Lua::Type::String)?stringArg(LUA,2):std::string("en")));return 1;} END_FILE_FUNCTION
+#ifdef _WIN32
 FUNCTION(StartMainThreadSampling) {double ms=LUA->GetNumber(1);if(!std::isfinite(ms)||ms<100||ms>60000)throw std::runtime_error("Sampling duration must be 100 to 60000 ms");mainThreadSampler.start(ms);LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(ReadMainThreadSamples) {auto report=mainThreadSampler.report(context->bin.wstring());if(report.is_null()){LUA->PushNil();return 1;}push(LUA,report);return 1;} END_FUNCTION
+#else
+FUNCTION(StartMainThreadSampling) {throw std::runtime_error("Main thread sampling is available on Windows only");} END_FUNCTION
+FUNCTION(ReadMainThreadSamples) {LUA->PushNil();return 1;} END_FUNCTION
+#endif
 #endif
 }
 GMOD_MODULE_OPEN(){
+#ifdef _WIN32
     try {context=std::make_unique<Context>();wchar_t exe[32768];GetModuleFileNameW(nullptr,exe,32768);auto path=fs::path(exe).parent_path();auto root=path.filename()==L"win64"?path.parent_path().parent_path():path;
+#else
+    // Garry's Mod loads modules from <game>/garrysmod/lua/bin only: the game folder is three up.
+    try {context=std::make_unique<Context>();auto root=posix::modulePath(reinterpret_cast<const void*>(&GetCapabilities)).parent_path().parent_path().parent_path().parent_path();
+#endif
         context->root=root;context->bin=root/L"garrysmod"/L"lua"/L"bin";context->cache=ioPath(root/L"garrysmod"/L"data"/L"mmd_hotloader");fs::create_directories(context->cache);
 #ifndef MMDHL_SERVER
         sweepJobFolders(context->cache,std::chrono::hours(24));try{sweepPrivateFolders(L"job-",std::chrono::hours(24),importJobsFolder());}catch(...){}
@@ -646,5 +713,10 @@ if(context){
  // goes away (an unscoped world() would create a fresh singleton after shutdown).
  {WorldScope realm(context->runtime.get());clearPhysicsBridge();}
 #endif
- for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();releaseRuntimeRealm(ServerRealm);}
+ #ifdef _WIN32
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();
+ #else
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs)j.child.kill();context.reset();
+ #endif
+releaseRuntimeRealm(ServerRealm);}
 return 0;}

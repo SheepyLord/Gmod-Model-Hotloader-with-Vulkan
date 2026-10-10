@@ -334,7 +334,7 @@ net={Start=function() end,WriteString=function() end,Broadcast=function() end,Se
 hook={Add=function() end,Run=function() end}
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end,Simple=function() end}
 concommand={Add=function() end}
-system={IsWindows=function() return PY_WINDOWS end} jit={arch=PY_ARCH}
+system={IsWindows=function() return PY_WINDOWS end,IsLinux=function() return false end} jit={arch=PY_ARCH}
 game={IsDedicated=function() return false end,SinglePlayer=function() return true end}
 CurTime=function() return 0 end RealTime=function() return 0 end
 MsgN=function(text) EVENTS[#EVENTS+1]='console: '..text end

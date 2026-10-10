@@ -2,8 +2,11 @@
 # offline validation and uploads two GarrysMod folders (scripts/package-dropin.py):
 # -vulkan with the native files and DXVK (bin/win64/d3d9.dll), and -opengl-remix
 # with the native files only, for PCs where DXVK does not work or RTX Remix runs.
+# Two Linux jobs build the Linux native files and upload one GarrysMod folder each:
+# -linux64 for the x86-64 branch and -linux for the default branch, which is 32-bit
+# on Linux (Garry's Mod draws with OpenGL there, so neither has a renderer).
 # The Lua addon is distributed through Workshop; the run's summary shows the
-# native_policy.lua record for these binaries. It runs only when started from the
+# native_policy.lua records for these binaries. It runs only when started from the
 # Actions tab with "Run workflow" (any branch).
 name: Build drop-in package
 
@@ -101,4 +104,47 @@ jobs:
         with:
           name: ${{ steps.package.outputs.name }}-opengl-remix
           path: dist/${{ steps.package.outputs.name }}-opengl-remix/
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.platform }} build and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux64, linux]
+    steps:
+      - uses: actions/checkout@v6
+
+      # Pinned sources, both CoACD wheels and the static ICU build (vendor/icu-<platform>).
+      # bootstrap.py and build-icu.py reuse them only while their pins still match.
+      - name: Restore pinned dependencies
+        uses: actions/cache@v5
+        with:
+          path: vendor
+          key: vendor-${{ matrix.platform }}-${{ hashFiles('dependencies.lock.json', 'scripts/bootstrap.py', 'scripts/patch-bullet-threading.py', 'scripts/shaders.py', 'scripts/build-icu.py') }}
+
+      # In the manylinux_2_28 container (AlmaLinux 8: glibc 2.28, GCC 14), so the files load
+      # in every Steam Linux Runtime: bootstrap, ICU, the build, CTest and the package
+      # (scripts/build-linux.sh). The container's files belong to root; they are handed back
+      # to the runner's user for the cache and the upload.
+      - name: Build, test and stage the GarrysMod folder
+        id: package
+        run: |
+          release=$(sed -n 's/^set(MMDHL_RELEASE "\([^"]*\)".*/\1/p' CMakeLists.txt)
+          name="Model-Hotloader-$release-${GITHUB_SHA::8}-${{ matrix.platform }}"
+          docker run --rm -v "$PWD:/src" -w /src -e GITHUB_STEP_SUMMARY=/src/linux-summary.md \
+            quay.io/pypa/manylinux_2_28_x86_64:2026.10.09-1 scripts/build-linux.sh ${{ matrix.platform }} "$name"
+          sudo chown -R "$(id -u):$(id -g)" .
+          cat linux-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # The artifact zip holds the GarrysMod folder (license notices in
+      # GarrysMod/garrysmod/lua/bin/LICENSES) and INSTALL.txt. Zip downloads drop the
+      # executable bit; the modules restore it on the import worker.
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}/
           if-no-files-found: error

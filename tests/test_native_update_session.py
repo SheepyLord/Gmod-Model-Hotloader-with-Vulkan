@@ -103,7 +103,7 @@ net={Start=function(name) SENT[#SENT+1]={name=name} end,WriteString=function(v) 
 hook={Add=function() end,Run=function() end}
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end,Simple=function() end}
 concommand={Add=function() end}
-system={IsWindows=function() return true end} jit={arch='x64'}
+system={IsWindows=function() return true end,IsLinux=function() return false end} jit={arch='x64'}
 game={IsDedicated=function() return true end,SinglePlayer=function() return false end}
 CurTime=function() return 0 end RealTime=function() return 0 end MsgN=function(text) PRINTED[#PRINTED+1]=text end
 istable=function(v) return type(v)=='table' end isstring=function(v) return type(v)=='string' end

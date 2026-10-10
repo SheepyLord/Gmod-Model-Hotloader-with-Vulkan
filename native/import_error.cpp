@@ -1,8 +1,11 @@
 #include "import_error.hpp"
 #include "release.hpp"
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <cmath>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
@@ -11,7 +14,12 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "win_errors.hpp"
+#include <csignal>
+#endif
 namespace mmd {
 namespace {
 struct Scope { std::string what; Json place; std::string domain; int unwinding; };
@@ -52,13 +60,31 @@ std::string placeText(const Json& p){
 }
 std::string cleanText(std::string_view s){return clean(s);}
 std::string thousands(uint64_t v){auto s=std::to_string(v);for(int at=int(s.size())-3;at>0;at-=3)s.insert(size_t(at),",");return s;}
+#ifdef _WIN32
+static int exceptionsInFlight(){return std::uncaught_exceptions();}
+#else
+namespace {
+struct CounterSlot {std::atomic<int(*)() noexcept> counter{nullptr};int references=0;};
+CounterSlot counterSlots[32];
+std::mutex& counterMutex(){static auto* m=new std::mutex;return *m;}  // never destroyed: used at exit
+}
+// Registrations come and go with source files of binaries being loaded and unloaded.
+void registerExceptionCounter(int(*counter)() noexcept,bool add){
+ std::lock_guard lock(counterMutex());
+ for(auto& slot:counterSlots)if(slot.counter.load()==counter){if(!add&&--slot.references<=0){slot.references=0;slot.counter.store(nullptr);}else if(add)slot.references++;return;}
+ if(add)for(auto& slot:counterSlots)if(!slot.counter.load()){slot.references=1;slot.counter.store(counter,std::memory_order_release);return;}
+}
+// A throw in one binary caught in another counts +1 in the first and -1 in the second.
+int exceptionsInFlight(){int n=0;for(auto& slot:counterSlots)if(auto counter=slot.counter.load(std::memory_order_acquire))n+=counter();return n;}
+#endif
 ImportScope::ImportScope(std::string what):ImportScope(std::move(what),std::string()){}
-ImportScope::ImportScope(std::string what,std::string domain){unwound.clear();scopes.push_back({std::move(what),Json(),std::move(domain),std::uncaught_exceptions()});}
-ImportScope::ImportScope(std::string_view kind,int64_t index,std::string_view name){unwound.clear();auto p=place(kind,index,name);auto what=placeText(p);scopes.push_back({std::move(what),std::move(p),std::string(),std::uncaught_exceptions()});}
+ImportScope::ImportScope(std::string what,std::string domain){unwound.clear();scopes.push_back({std::move(what),Json(),std::move(domain),exceptionsInFlight()});}
+ImportScope::ImportScope(std::string_view kind,int64_t index,std::string_view name){unwound.clear();auto p=place(kind,index,name);auto what=placeText(p);scopes.push_back({std::move(what),std::move(p),std::string(),exceptionsInFlight()});}
 ImportScope::~ImportScope(){
     if(scopes.empty())return;
-    if(std::uncaught_exceptions()>scopes.back().unwinding)unwound.insert(unwound.begin(),std::move(scopes.back()));
-    else if(!std::uncaught_exceptions())unwound.clear(); // the code went on: an exception handled inside is over
+    auto inFlight=exceptionsInFlight();
+    if(inFlight>scopes.back().unwinding)unwound.insert(unwound.begin(),std::move(scopes.back()));
+    else if(!inFlight)unwound.clear(); // the code went on: an exception handled inside is over
     scopes.pop_back();
 }
 std::vector<std::string> importScopes(){return names(scopes);}
@@ -81,14 +107,28 @@ Json describeException(std::exception_ptr error){
         r["errorCode"]=domain.empty()?std::string("json"):domain+".json";r["exceptionType"]="json";r["errorDetails"]={{"id",e.id},{"reason",text}};
     }
     catch(const fs::filesystem_error& e){
+#ifdef _WIN32
         auto value=uint32_t(e.code().value());bool system=e.code().category()==std::system_category();
+#else
+        // libstdc++ reports errno values: explain them as the Windows codes they correspond to.
+        // Every binary has its own (static) libstdc++, so the categories compare by name.
+        auto value=uint32_t(e.code().value());std::string_view category=e.code().category().name();bool system=false;
+        if(category=="system"||category=="generic"){system=true;value=windowsError(e.code().value());}
+#endif
         bool full=e.code()==std::errc::no_space_on_device||(system&&(value==ERROR_DISK_FULL||value==ERROR_HANDLE_DISK_FULL));
         // The cache's long-path form (\\?\C:\…, \\?\UNC\server\…) is shown as the player knows it.
         std::string path=e.path1().empty()?std::string():utf8(e.path1().wstring());
         if(path.starts_with("\\\\?\\UNC\\"))path="\\\\"+path.substr(8);else if(path.starts_with("\\\\?\\"))path=path.substr(4);
-        std::string reason=system?systemErrorText(value):e.code().message();
         // what() starts with the operation; one that changes files works on the cache.
         std::string operation=e.what();bool writing=false;for(auto op:{"create_","rename","copy","remove","resize_file","permissions"})writing|=operation.starts_with(op);
+#ifndef _WIN32
+        // libstdc++ words it "filesystem error: cannot create directories: ...".
+        if(operation.starts_with("filesystem error: "))operation.erase(0,18);
+        for(auto op:{"create_","rename","copy","remove","resize_file","permissions","cannot create","cannot rename","cannot copy","cannot remove","cannot resize","cannot set permissions"})writing|=operation.starts_with(op);
+        // A folder to create where a file has the name: Windows says it already exists.
+        if(writing&&system&&e.code().value()==ENOTDIR)value=ERROR_ALREADY_EXISTS;
+#endif
+        std::string reason=system?systemErrorText(value):e.code().message();
         r["error"]=full?"The disk is full: "+path:(writing?"Cannot write ":"Cannot access ")+(path.empty()?std::string("a file"):path)+": "+reason;
         r["errorCode"]=full?std::string("io.disk_full"):writing?std::string("io.write"):system&&systemErrorCode(value)!="io.read"?systemErrorCode(value):std::string("io.filesystem");r["exceptionType"]="filesystem";
         r["errorDetails"]={{"path",path},{"systemError",e.code().value()},{"systemMessage",e.code().message()}};
@@ -99,7 +139,11 @@ Json describeException(std::exception_ptr error){
     r["context"]=names(trail);if(!where.empty())r["errorDetails"]["where"]=where;
     return r;
 }
+#ifdef _WIN32
 void setImportStage(const char* code){strncpy_s(stage,code?code:"",_TRUNCATE);}
+#else
+void setImportStage(const char* code){std::strncpy(stage,code?code:"",sizeof(stage)-1);stage[sizeof(stage)-1]=0;}
+#endif
 const char* importStage(){return stage;}
 
 FileFormat sniffFormat(std::span<const unsigned char> b,const fs::path& path){
@@ -170,7 +214,11 @@ FileFormat sniffFormat(std::span<const unsigned char> b,const fs::path& path){
 std::string systemErrorText(uint32_t e){
  switch(e){
   case ERROR_FILE_NOT_FOUND:case ERROR_PATH_NOT_FOUND:return "the file does not exist (it may have been moved, renamed or deleted)";
+#ifdef _WIN32
   case ERROR_ACCESS_DENIED:return "Windows denied access to it";
+#else
+  case ERROR_ACCESS_DENIED:return "the system denied access to it (check the file's permissions)";
+#endif
   case ERROR_SHARING_VIOLATION:case ERROR_LOCK_VIOLATION:return "another program is using it";
   case ERROR_DISK_FULL:case ERROR_HANDLE_DISK_FULL:return "the disk is full";
   case ERROR_WRITE_PROTECT:return "the drive is write-protected";
@@ -183,7 +231,11 @@ std::string systemErrorText(uint32_t e){
   case ERROR_ALREADY_EXISTS:case ERROR_FILE_EXISTS:return "a file of that name is in the way";
   case ERROR_VIRUS_INFECTED:case ERROR_VIRUS_DELETED:return "antivirus software blocked it";
  }
+ #ifdef _WIN32
  return "Windows error "+std::to_string(e);
+ #else
+ return "system error "+std::to_string(e);
+ #endif
 }
 std::string systemErrorCode(uint32_t e,bool writing){
  if(writing)return e==ERROR_DISK_FULL||e==ERROR_HANDLE_DISK_FULL?"io.disk_full":"io.write";
@@ -203,6 +255,24 @@ void fileFailure(const std::string& message,const fs::path& path,uint32_t system
 }
 Json describeWorkerExit(uint32_t code){
  struct Cause{uint32_t code;const char* id;const char* text;};
+#ifndef _WIN32
+ // A worker stopped by a signal exits with 128 + its number (posix::Child); the dynamic
+ // loader exits with 127 when a shared library is missing.
+ static const Cause causes[]={
+  {128u+SIGSEGV,"access_violation","an access violation (it used memory it does not own, or its stack overflowed)"},
+  {128u+SIGBUS,"access_violation","a bus error (a file it read changed or its drive failed)"},
+  {128u+SIGABRT,"abort","an abort (an unhandled error or a failed internal check)"},
+  {128u+SIGILL,"illegal_instruction","an illegal instruction (the processor lacks an instruction the importer uses)"},
+  {128u+SIGFPE,"divide_by_zero","an arithmetic fault (an integer division by zero)"},
+  {128u+SIGTRAP,"breakpoint","a breakpoint (an internal check failed)"},
+  {128u+SIGKILL,"killed","being stopped by the system (out of memory) or another program"},
+  {128u+SIGTERM,"killed","being stopped by another program"},
+  {127u,"missing_dll","a missing shared library (part of the native files is missing)"},
+  {126u,"bad_image","a file it cannot run (wrong processor type, or a drive that does not allow programs)"},
+  {1u,"killed","being stopped by another program, or failing to write its result"},
+  {0u,"no_result","finishing without a result"},
+ };
+#else
  static const Cause causes[]={
   {0xC0000005u,"access_violation","an access violation (it used memory it does not own)"},
   {0xC00000FDu,"stack_overflow","a stack overflow (the file's data may nest too deeply)"},
@@ -225,6 +295,7 @@ Json describeWorkerExit(uint32_t code){
   {1u,"killed","being stopped by another program, or failing to write its result"},
   {0u,"no_result","finishing without a result"},
  };
+#endif
  char hex[16];snprintf(hex,sizeof hex,"0x%08X",code);
  Json r={{"exitCode",code},{"exitCodeHex",hex},{"cause","unknown"},{"errorCode","worker.crash"}};std::string text="an unknown error";
  for(auto& c:causes)if(c.code==code){r["cause"]=c.id;text=c.text;break;}

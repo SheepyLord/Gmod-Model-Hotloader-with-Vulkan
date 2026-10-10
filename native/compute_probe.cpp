@@ -1,11 +1,41 @@
 #include "compute_solver.hpp"
 #include "vulkan_solver.hpp"
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include "posix.hpp"
+#include "release.hpp"
+#include <cstdlib>
+#include <unistd.h>
+#endif
 #include <filesystem>
 #include <fstream>
 #include <vector>
 namespace mmd {
 namespace {
+#ifndef _WIN32
+// Driver startup runs first in a disposable worker (beside this runtime in lua/bin), so a
+// driver that hangs or crashes while creating a context cannot take the game down with it.
+nlohmann::json probeWorker(const std::string& label,const char* flag,const char* disable,const std::string& fallback){
+ auto unavailable=[&](const std::string& reason){return nlohmann::json{{"available",false},{"error",reason},{"api",label},{"experimental",true},{"validated",false}};};
+ if(getenv(disable))return unavailable(label+" disabled by environment; using the "+fallback+" backend.");
+ std::filesystem::path worker;
+ try{worker=posix::modulePath(reinterpret_cast<const void*>(&probeWorker)).parent_path()/MMDHL_WORKER_FILE;}catch(...){return unavailable("Cannot locate the "+label+" probe worker.");}
+ if(!std::filesystem::is_regular_file(worker))return unavailable(label+" probe worker is missing; reinstall the matching native binaries.");
+ auto pattern=(posix::tempDirectory()/"mmdXXXXXX").string();int fd=mkstemp(pattern.data());
+ if(fd<0)return unavailable("Cannot create the "+label+" probe report.");
+ close(fd);struct Cleanup{std::string file;posix::Child child;~Cleanup(){child.kill();unlink(file.c_str());}} cleanup{pattern,{}};
+ try{cleanup.child=posix::spawn(worker,{flag,pattern},worker.parent_path());}catch(const std::exception&){return unavailable("Cannot launch the "+label+" probe worker.");}
+ if(!cleanup.child.wait(15000)){cleanup.child.kill();return unavailable(label+" startup probe timed out; "+fallback+" retained.");}
+ int code=cleanup.child.exitCode;
+ try{auto result=nlohmann::json::parse(std::ifstream(std::filesystem::path(pattern)));if(code==0&&result.value("available",false))return result;if(result.contains("error"))return unavailable(result["error"].get<std::string>());}catch(const std::exception&){}
+ return unavailable(label+" startup probe failed or crashed (exit "+std::to_string(code)+").");
+}
+}
+nlohmann::json probeOpenClWorker(){return probeWorker("OpenCL 1.2","--probe-compute","MMDHL_DISABLE_OPENCL","reference CPU");}
+nlohmann::json probeVulkanWorker(){return probeWorker("Vulkan","--probe-vulkan","MMDHL_DISABLE_VULKAN","Claude CPU v2");}
+}
+#else
 // Driver startup runs first in a disposable worker, so a driver that hangs or
 // crashes while creating a context cannot take the game down with it.
 nlohmann::json probeWorker(const std::string& label,const wchar_t* flag,const wchar_t* disable,const std::string& fallback){
@@ -39,3 +69,4 @@ nlohmann::json probeWorker(const std::string& label,const wchar_t* flag,const wc
 nlohmann::json probeOpenClWorker(){return probeWorker("OpenCL 1.2",L"--probe-compute",L"MMDHL_DISABLE_OPENCL","reference CPU");}
 nlohmann::json probeVulkanWorker(){return probeWorker("Vulkan",L"--probe-vulkan",L"MMDHL_DISABLE_VULKAN","Claude CPU v2");}
 }
+#endif

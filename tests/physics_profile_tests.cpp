@@ -33,7 +33,16 @@ std::string legacyPhysicsText(const Rig& rig){
 std::string legacyFitKey(const std::string& id,const Json& options){Json geometry;for(auto key:{"scaleMultiplier","scale","height","mass","collisionOverrides","collisionOverrideScale","excludedMaterials","role","gender","animationSource","animationReference","armsParts"})if(options.contains(key))geometry[key]=options[key];return id+geometry.dump();}
 std::string mdlHash(const Rig& r){auto files=carrierFiles(r);auto& mdl=files.at(r.path);return hash(std::span(mdl.data(),mdl.size()));}
 const char* Fixture="tests/fixtures/native-cloth21.pmx";
+// The fit's floating point follows each platform's compiler and C library, so each platform
+// pins its own carriers, recorded with its release toolchain (MSVC on Windows; on Linux the
+// manylinux_2_28 container's GCC 14, scripts/build-linux.sh).
+#if defined(_WIN32)
 const char* Golden="tests/fixtures/physics/golden.json";
+#elif defined(__x86_64__)
+const char* Golden="tests/fixtures/physics/golden-linux64.json";
+#else
+const char* Golden="tests/fixtures/physics/golden-linux.json";
+#endif
 // Shared with tests/test_physics_editor.py: Lua's P.Canonical and P.CheckPhysics must agree.
 const char* CanonicalCases="tests/fixtures/physics/canonical_cases.json";
 std::shared_ptr<Model> fixture(bool cached){auto m=parse(readFile(Fixture));if(cached)m->fittedRig=std::make_shared<Rig>(fitRig(*m,Json::object()));return m;}

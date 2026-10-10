@@ -1,6 +1,10 @@
 // Symbolized stack trace for unhandled native exceptions in the standalone tools.
 // Release builds carry PDBs next to their binaries (CMake /Zi + /DEBUG:FULL).
 #pragma once
+#ifndef _WIN32
+// Linux: the system's own crash report (core dump, or the shell's signal message).
+namespace mmd::test {inline void installCrashReport(){}}
+#else
 #include <windows.h>
 #include <dbghelp.h>
 #include <cstdio>
@@ -23,3 +27,4 @@ inline LONG WINAPI reportCrash(EXCEPTION_POINTERS* info){
 }
 inline void installCrashReport(){SetUnhandledExceptionFilter(reportCrash);}
 }
+#endif

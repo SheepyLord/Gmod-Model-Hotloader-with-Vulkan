@@ -1,6 +1,12 @@
 #include "humanoid_map.hpp"
 #include "spring_bones.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "codepages.hpp"
+using UINT=unsigned;
+constexpr UINT CP_UTF8=65001;
+#endif
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -92,8 +98,12 @@ std::string sanitizeBoneName(std::string_view raw,std::string* issue){
  std::string out,why;
  auto convert=[&](UINT codepage){
   if(raw.empty()){out.clear();return true;}
+#ifdef _WIN32
   int n=MultiByteToWideChar(codepage,MB_ERR_INVALID_CHARS,raw.data(),int(raw.size()),nullptr,0);if(n<=0)return false;
   std::wstring w(size_t(n),L'\0');MultiByteToWideChar(codepage,MB_ERR_INVALID_CHARS,raw.data(),int(raw.size()),w.data(),n);out=utf8(w);return true;
+#else
+  auto w=decodeCodepageText(std::span(reinterpret_cast<const unsigned char*>(raw.data()),raw.size()),codepage,true);if(w.empty())return false;out=utf8(w);return true;
+#endif
  };
  if(convert(CP_UTF8)){}else if(convert(932))why="cp932";else if(convert(936))why="cp936";
  else{out=encode(decode(raw));why="replaced";}

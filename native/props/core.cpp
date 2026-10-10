@@ -1,6 +1,15 @@
 #include "core.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include "../posix.hpp"
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+#include <thread>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <fstream>
 #include <limits>
@@ -10,6 +19,31 @@
 #include <cstring>
 
 namespace props {
+#ifndef _WIN32
+std::wstring wide(std::string_view s){return mmd::posix::wideFromUtf8(s,true);}
+std::string utf8(std::wstring_view s){return mmd::posix::utf8FromWide(s,true);}
+Bytes readFile(const fs::path& p,uint64_t maximum){
+    // POSIX reads see a file that is replaced (renamed over) after it was opened whole.
+    FILE* f=fopen(p.c_str(),"rb");
+    if(!f)throw std::runtime_error("Cannot open file: "+utf8(p.filename().wstring()));
+    try {
+        if(fseeko(f,0,SEEK_END)!=0)throw std::runtime_error("Cannot read file: "+utf8(p.filename().wstring()));
+        auto size=ftello(f);if(size<0||uint64_t(size)>maximum)throw std::runtime_error("File exceeds the configured byte limit");
+        fseeko(f,0,SEEK_SET);Bytes b(static_cast<size_t>(size));size_t cursor=0;
+        while(cursor<b.size()){auto received=fread(b.data()+cursor,1,b.size()-cursor,f);if(!received)throw std::runtime_error("File was truncated while reading");cursor+=received;}
+        fclose(f);return b;
+    }catch(...){fclose(f);throw;}
+}
+void writeAtomic(const fs::path& p,std::span<const uint8_t> b) {
+    fs::create_directories(p.parent_path());static std::atomic_uint64_t seq{0};
+    auto tmp=p;tmp+=".tmp."+std::to_string(getpid())+"."+std::to_string(++seq);
+    try {
+        {std::ofstream f(tmp,std::ios::binary|std::ios::trunc);if(!f||!f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()))) throw std::runtime_error("Cannot write cache; check disk space and permissions");f.flush();if(!f)throw std::runtime_error("Cache flush failed");}
+        // rename() replaces the destination atomically, even while readers hold it open.
+        if(int error=mmd::posix::replaceFile(tmp,p))throw std::runtime_error("Cannot finalize cache file ("+std::string(std::strerror(error))+")");
+    } catch(...) {std::error_code ec;fs::remove(tmp,ec);throw;}
+}
+#else
 std::wstring wide(std::string_view s) {
     if(s.empty()) return {};
     int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0);
@@ -52,15 +86,20 @@ void writeAtomic(const fs::path& p,std::span<const uint8_t> b) {
         if(!replaced)throw std::runtime_error("Cannot finalize cache file (Windows error "+std::to_string(error)+")");
     } catch(...) {std::error_code ec;fs::remove(tmp,ec);throw;}
 }
+#endif
 void writeJson(const fs::path& p,const Json& j){auto s=j.dump();writeAtomic(p,{reinterpret_cast<const uint8_t*>(s.data()),s.size()});}
 Json readJson(const fs::path& p,uint64_t max){auto b=readFile(p,max);return Json::parse(b);}
 std::string sha256(std::span<const uint8_t> b) {
+#ifndef _WIN32
+    auto digest=mmd::posix::sha256(b);
+#else
     BCRYPT_ALG_HANDLE alg{};BCRYPT_HASH_HANDLE h{};std::array<unsigned char,32> digest{};
     if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("SHA-256 unavailable");
     auto cleanup=[&]{if(h)BCryptDestroyHash(h);BCryptCloseAlgorithmProvider(alg,0);};
     if(BCryptCreateHash(alg,&h,nullptr,0,nullptr,0,0)<0){cleanup();throw std::runtime_error("SHA-256 initialization failed");}
     size_t at=0;while(at<b.size()){auto n=static_cast<ULONG>(std::min<size_t>(b.size()-at,1u<<28));if(BCryptHashData(h,const_cast<PUCHAR>(b.data()+at),n,0)<0){cleanup();throw std::runtime_error("SHA-256 failed");}at+=n;}
     if(BCryptFinishHash(h,digest.data(),ULONG(digest.size()),0)<0){cleanup();throw std::runtime_error("SHA-256 finalization failed");}cleanup();
+#endif
     constexpr char hex[]="0123456789abcdef";std::string s;for(auto x:digest){s+=hex[x>>4];s+=hex[x&15];}return s;
 }
 bool validHash(std::string_view s){return s.size()==64&&std::all_of(s.begin(),s.end(),[](char c){return(c>='0'&&c<='9')||(c>='a'&&c<='f');});}

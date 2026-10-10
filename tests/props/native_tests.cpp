@@ -3,7 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
-#include <windows.h>
+#include "../test_platform.hpp"
 using namespace props;
 static int checks=0;
 void check(bool ok,const char* msg){++checks;if(!ok)throw std::runtime_error(msg);}
@@ -23,7 +23,7 @@ Asset fixture(){
 #include "texture_resolver_tests.hpp"
 #include "blend_tests.hpp"
 int main(){try{
-    auto temporary=fs::temp_directory_path()/fs::path(L"gmodel-atomic-test-"+std::to_wstring(GetCurrentProcessId()));
+    auto temporary=fs::temp_directory_path()/fs::path(L"gmodel-atomic-test-"+std::to_wstring(processId()));
     fs::create_directories(temporary);auto statusPath=temporary/L"status.json";
     writeJson(statusPath,{{"sequence",0},{"payload",std::string(2048,'x')}});
     std::atomic_bool done=false;std::exception_ptr writeError;
@@ -107,7 +107,7 @@ int main(){try{
     // Deletion beside damaged bundles: manifests with the wrong types (materials holding a
     // number, a texture reference that is not a string) block no deletion, their own
     // included, and keep every texture while their references are unknown.
-    {auto root=fs::temp_directory_path()/fs::path(L"gmodel-delete-test-"+std::to_wstring(GetCurrentProcessId()));fs::remove_all(root);
+    {auto root=fs::temp_directory_path()/fs::path(L"gmodel-delete-test-"+std::to_wstring(processId()));fs::remove_all(root);
      fs::create_directories(root/L"assets");fs::create_directories(root/L"textures");
      auto bundle=[&](char c,const Json& manifest){std::string id(64,c);auto text=manifest.dump();std::string bytes("GMLHOT1",8);
       for(int k=0;k<4;k++)bytes.push_back(char(text.size()>>(8*k)));bytes.append(12,'\0');bytes+=text;

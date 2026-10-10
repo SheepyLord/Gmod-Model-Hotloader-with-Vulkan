@@ -1,5 +1,10 @@
 #include "runtime.hpp"
+#ifdef _WIN32
 #include <icu.h>
+#else
+#include "posix.hpp"
+#include <unicode/utrans.h>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
@@ -19,7 +24,12 @@ std::string readableName(std::string_view input,size_t maxBytes){
         ~Transliterator(){utrans_close(value);}
     };
     thread_local Transliterator transliterator;
+#ifdef _WIN32
     auto original=wide(input);
+#else
+    // ICU works on UTF-16, as Windows' wchar_t is: the same prefix and the same result.
+    auto original=posix::utf16FromUtf8(input,true);
+#endif
     // Only a short prefix can contribute to a path; do not truncate a surrogate.
     if(original.size()>256){original.resize(256);if(original.back()>=0xd800&&original.back()<=0xdbff)original.pop_back();}
     std::vector<UChar> buffer;

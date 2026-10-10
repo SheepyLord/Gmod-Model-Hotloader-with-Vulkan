@@ -26,7 +26,7 @@ namespace mmd {
 namespace {
 // The opaque joint input ABI from pinned nanoem/ext/physics_bullet.cc.
 struct JointInput {nanoem_physics_world_t* world; nanoem_physics_rigid_body_t *a,*b; float transformA[16],transformB[16];};
-static_assert(sizeof(JointInput)==152);
+static_assert(sizeof(JointInput)==(sizeof(void*)==8?152:140));
 void set(nanoem_physics_rigid_body_t* body,const btTransform& t){float m[16];t.getOpenGLMatrix(m);nanoemPhysicsRigidBodySetWorldTransform(body,m);}
 btTransform blendPose(const btTransform& a,const btTransform& b,float t){if(t<=1e-6f)return a;if(t>=1-1e-6f)return b;return btTransform(a.getRotation().slerp(b.getRotation(),t),a.getOrigin().lerp(b.getOrigin(),t));}
 double elapsedMs(std::chrono::steady_clock::time_point since){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-since).count();}

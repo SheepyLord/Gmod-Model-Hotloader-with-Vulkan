@@ -1,15 +1,89 @@
 #include "file_access.hpp"
 #include "model_notes.hpp"
 #include "props/network_path.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
 #include <bcrypt.h>
+#else
+#include "posix.hpp"
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <unistd.h>
+#include <cstring>
+#include <fstream>
+#include <thread>
+#endif
 #include <algorithm>
 #include <cwctype>
 namespace mmd {
 FileAccessError::FileAccessError(std::string c,const std::string& message):std::runtime_error(message),code(std::move(c)){}
 namespace {
 [[noreturn]] void refuse(const char* code,const std::string& message){throw FileAccessError(code,message);}
+#ifndef _WIN32
+// The same rules with POSIX paths: names compare exactly, '/' separates, a symbolic link
+// takes the place of a junction, and an open file's real place is /proc/self/fd/<n>.
+struct Handle{int fd=-1;~Handle(){if(fd>=0)close(fd);}};
+using DWORD=uint32_t;
+constexpr DWORD GENERIC_READ=1,FILE_LIST_DIRECTORY=2,FILE_READ_ATTRIBUTES=0,SYNCHRONIZE=0;
+bool sameText(std::wstring_view a,std::wstring_view b){return a==b;}
+std::wstring trimmed(const fs::path& p){auto s=p.wstring();while(s.size()>1&&s.back()==L'/')s.pop_back();return s;}
+std::wstring lower(std::wstring s){for(auto& c:s)c=wchar_t(std::towlower(c));return s;}
+std::string randomHex(size_t bytes){std::vector<unsigned char> b(bytes);posix::randomBytes(b.data(),b.size());std::string s;for(auto c:b){s.push_back("0123456789abcdef"[c>>4]);s.push_back("0123456789abcdef"[c&15]);}return s;}
+fs::path home(){if(auto h=getenv("HOME");h&&*h=='/')return fs::path(h).lexically_normal();return {};}
+// $XDG_<NAME>_HOME (absolute) or its default below the home folder.
+fs::path xdgHome(const char* variable,const char* fallback){if(auto v=getenv(variable);v&&*v=='/')return fs::path(v).lexically_normal();auto h=home();return h.empty()?fs::path():h/fallback;}
+// The XDG user folders (~/.config/user-dirs.dirs: XDG_DESKTOP_DIR="$HOME/Desktop"...).
+std::vector<fs::path> userDirs(){
+ std::vector<fs::path> out;auto h=home();if(h.empty())return out;
+ std::ifstream f(xdgHome("XDG_CONFIG_HOME",".config")/"user-dirs.dirs");std::string line;
+ while(std::getline(f,line)){auto eq=line.find('=');if(line.empty()||line[0]=='#'||eq==std::string::npos)continue;auto v=line.substr(eq+1);
+  if(v.size()>=2&&v.front()=='"'&&v.back()=='"')v=v.substr(1,v.size()-2);if(v.starts_with("$HOME"))v=h.string()+v.substr(5);if(!v.empty()&&v[0]=='/')out.push_back(fs::path(v).lexically_normal());}
+ for(auto name:{"Desktop","Documents","Downloads","Pictures","Videos","Music","Public","Templates"})out.push_back(h/name);
+ return out;
+}
+fs::path finalPath(int fd){
+ std::error_code error;auto real=fs::read_symlink("/proc/self/fd/"+std::to_string(fd),error);
+ if(error||real.is_relative())refuse("unreadable","The system cannot tell where this file is");
+ return real;
+}
+void open(Handle& file,const fs::path& path,DWORD,bool reparse){
+ file.fd=::open(ioPath(path).c_str(),O_RDONLY|O_CLOEXEC|O_NONBLOCK|(reparse?O_NOFOLLOW:0));
+ if(file.fd>=0)return;
+ auto error=errno;
+ if(error==ELOOP&&reparse)refuse("link","Links and junctions are not followed");
+ if(error==ENOENT||error==ENOTDIR||error==ENAMETOOLONG)refuse("not_found","The file or folder does not exist");
+ refuse("unreadable","The system does not allow reading this file or folder");
+}
+// Opens without following a final symbolic link (a link in the middle of the path is
+// followed and shows in the final path instead).
+ResolvedFile openChecked(Handle& file,const fs::path& path,DWORD access){
+ open(file,path,access,true);
+ struct stat st{};if(fstat(file.fd,&st)!=0)refuse("unreadable","Cannot read the file's attributes");
+ if(!S_ISDIR(st.st_mode)&&!S_ISREG(st.st_mode))refuse("device","Devices, sockets and pipes are not files");
+ ResolvedFile r;r.attributes=uint32_t(st.st_mode);r.folder=S_ISDIR(st.st_mode);r.size=r.folder?0:uint64_t(st.st_size);r.path=finalPath(file.fd);return r;
+}
+// The parts of a path below its root, separated by slashes; one trailing separator is fine.
+void checkParts(std::wstring_view rest){
+ size_t depth=0;
+ for(size_t start=0;start<rest.size();){
+  auto end=rest.find(L'/',start);if(end==rest.npos)end=rest.size();auto part=rest.substr(start,end-start);
+  if(part.empty())refuse("invalid_path","The path has an empty part");
+  if(part==L"."||part==L"..")refuse("parent","Paths may not contain . or .. parts");
+  if(++depth>64)refuse("invalid_path","The path is too deep");
+  start=end+1;
+ }
+}
+std::wstring pathText(std::string_view s,size_t limit){
+ if(s.size()>limit)refuse("invalid_path","The path is too long");
+ for(unsigned char c:s)if(c<0x20||c==0x7F)refuse("invalid_path","The path contains control characters");
+ std::wstring w;try{w=wide(s);}catch(...){refuse("invalid_path","The path is not valid UTF-8");}
+ return w;
+}
+#else
 struct Handle{HANDLE h=INVALID_HANDLE_VALUE;~Handle(){if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);}};
 // Windows compares names case-insensitively with its own upper-case table.
 bool sameText(std::wstring_view a,std::wstring_view b){return a.size()==b.size()&&(a.empty()||CompareStringOrdinal(a.data(),int(a.size()),b.data(),int(b.size()),TRUE)==CSTR_EQUAL);}
@@ -73,6 +147,7 @@ std::wstring pathText(std::string_view s,size_t limit){
  for(auto& c:w)if(c==L'/')c=L'\\';
  return w;
 }
+#endif
 std::string language(const Json& options){
  auto code=options.contains("language")&&options["language"].is_string()?options["language"].get<std::string>():"en";
  for(auto known:{"en","fr","ja","ko","ru","zh-cn","zh-tw"})if(code==known)return code;
@@ -111,10 +186,16 @@ Json filters(const Json& o){
 }
 Json failed(const std::string& code,const std::string& message){return {{"state","failed"},{"code",code},{"error",message}};}
 Json denied(const std::string& code,const std::string& message){return {{"state","denied"},{"code",code},{"error",message}};}
+#ifdef _WIN32
 bool plainDirectory(const fs::path& path){auto a=GetFileAttributesW(ioPath(path).c_str());return a!=INVALID_FILE_ATTRIBUTES&&(a&FILE_ATTRIBUTE_DIRECTORY)&&!(a&FILE_ATTRIBUTE_REPARSE_POINT);}
+#else
+bool plainDirectory(const fs::path& path){return posix::plainDirectory(path);}
+#endif
 void removeFolder(const fs::path& dir){std::error_code error;if(!dir.empty()&&plainDirectory(dir))fs::remove_all(ioPath(dir),error);}
 int64_t now(){return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();}
+#ifdef _WIN32
 int64_t unixTime(LARGE_INTEGER t){return t.QuadPart/10000000-11644473600ll;}
+#endif
 bool regularFile(const fs::path& path){std::error_code error;return fs::is_regular_file(path,error);}
 // The dialogs quote addon text with “ ” « » 「 」: a closing mark (or one that looks like it)
 // inside the text would let the addon write sentences that seem to be Model Hotloader's.
@@ -153,6 +234,35 @@ bool FilePolicy::broadFolder(const fs::path& folder) const {
  for(auto& b:broad)if(insideFolder(b,folder))return true;
  return false;
 }
+#ifndef _WIN32
+FilePolicy FilePolicy::system(const fs::path& gameRoot){
+ FilePolicy p;
+ // Folders as their final paths, so a linked Documents or ~/.local still matches.
+ auto canonical=[](const fs::path& path)->fs::path{if(path.empty())return {};std::error_code error;auto real=fs::canonical(path,error);return error?path.lexically_normal():real;};
+ auto deny=[&](const fs::path& path){if(!path.empty())p.denied.push_back(canonical(path));};
+ auto h=home(),config=xdgHome("XDG_CONFIG_HOME",".config"),data=xdgHome("XDG_DATA_HOME",".local/share");
+ // The system: configuration, kernel interfaces, devices and other users' homes.
+ for(auto root:{"/etc","/proc","/sys","/dev","/run","/boot","/root","/var/lib","/var/log","/var/spool","/lost+found"})deny(root);
+ if(!h.empty()){
+  for(auto keys:{".ssh",".gnupg",".aws",".azure",".kube",".docker",".password-store",".pki",".mozilla",".thunderbird",".electrum/wallets",".bitcoin/wallets",".ethereum/keystore",".local/share/keyrings"})deny(h/keys);
+  // Steam's login tokens, wherever its folder is (classic, Flatpak, snap).
+  for(auto steam:{".steam/steam/config",".steam/root/config",".local/share/Steam/config",".var/app/com.valvesoftware.Steam/.local/share/Steam/config",".var/app/com.valvesoftware.Steam/data/Steam/config","snap/steam/common/.local/share/Steam/config"})deny(h/steam);
+ }
+ if(!config.empty()){
+  for(auto app:{"gh","google-chrome","google-chrome-beta","chromium","BraveSoftware","microsoft-edge","vivaldi","yandex-browser","opera","discord/Local Storage","discordcanary/Local Storage","discordptb/Local Storage","Signal","filezilla","Exodus","keepassxc","Bitwarden"})deny(config/app);
+ }
+ if(!data.empty()){for(auto app:{"keyrings","TelegramDesktop/tdata","ModelHotloader"})deny(data/app);}
+ if(!gameRoot.empty())deny(gameRoot/L"garrysmod"/L"cfg");
+ // Plain-text tokens (git, npm, netrc, PyPI), Steam's login files and wallets, anywhere.
+ p.deniedNames={L"ssfn",L"mmdhl-fa-",L".git-credentials",L".npmrc",L".netrc",L"_netrc",L".pypirc",L"wallet.dat",L".bash_history",L".zsh_history"};
+ // Folders too broad to allow for good: the roots, the home folder and the user folders.
+ for(auto root:{"/home","/usr","/opt","/mnt","/media","/run/media","/srv","/tmp","/var"})p.broad.push_back(canonical(root));
+ if(!h.empty())for(auto folder:{"",".local",".config",".cache",".var","snap"})p.broad.push_back(canonical(folder[0]?h/folder:h));
+ if(!data.empty())p.broad.push_back(canonical(data));
+ for(auto& folder:userDirs())p.broad.push_back(canonical(folder));
+ return p;
+}
+#else
 FilePolicy FilePolicy::system(const fs::path& gameRoot){
  FilePolicy p;
  // Known folders as their final paths, so a moved Documents or AppData still matches.
@@ -184,8 +294,38 @@ FilePolicy FilePolicy::system(const fs::path& gameRoot){
   if(auto path=knownFolder(*id);!path.empty())p.broad.push_back(canonical(path));
  return p;
 }
+#endif
 namespace {
 // X:\... only, checked as text.
+#ifndef _WIN32
+// Absolute /... paths only, checked as text.
+fs::path drivePath(std::string_view s){
+ if(s.empty())refuse("invalid_path","The path is empty");
+ auto w=pathText(s,2048);
+ if(props::networkPath(s))refuse("network","Paths to other computers and devices are never read");
+ if(w.empty()||w[0]!=L'/')refuse("relative","Only absolute paths (starting with /) can be requested");
+ checkParts(std::wstring_view(w).substr(1));
+ if(w.size()>1&&w.back()==L'/')w.pop_back();
+ return fs::path(w);
+}
+// The file system holding path as the mount table names it (no access to the path itself:
+// opening a network share contacts its server).
+const char* driveProblem(const fs::path& path,bool requireLocal){
+ if(!requireLocal)return nullptr;
+ std::ifstream mounts("/proc/self/mountinfo");std::string line,best,type;
+ auto text=path.string();
+ while(std::getline(mounts,line)){
+  // id parent major:minor root mountpoint options [tags] - fstype source superoptions
+  std::istringstream in(line);std::string id,parent,dev,root,point;in>>id>>parent>>dev>>root>>point;
+  auto dash=line.find(" - ");if(dash==std::string::npos)continue;std::istringstream rest(line.substr(dash+3));std::string fstype;rest>>fstype;
+  bool covers=point=="/"||text==point||(text.starts_with(point)&&text[point.size()]=='/');
+  if(covers&&point.size()>=best.size()){best=point;type=fstype;}
+ }
+ static const char* remote[]={"nfs","nfs4","cifs","smb3","smbfs","ncpfs","afs","9p","ceph","glusterfs","fuse.sshfs","fuse.rclone","fuse.s3fs","fuse.gvfsd-fuse","davfs","fuse.davfs2"};
+ for(auto r:remote)if(type==r)return "remote_drive";
+ return nullptr;
+}
+#else
 fs::path drivePath(std::string_view s){
  if(s.empty())refuse("invalid_path","The path is empty");
  auto w=pathText(s,2048);
@@ -201,6 +341,7 @@ const char* driveProblem(const fs::path& path,bool requireLocal){
  if(type==DRIVE_NO_ROOT_DIR||type==DRIVE_UNKNOWN)return "not_found";
  return requireLocal&&type==DRIVE_REMOTE?"remote_drive":nullptr;
 }
+#endif
 }
 fs::path checkRequestedPath(std::string_view s,bool requireLocal,const FilePolicy& policy){
  auto path=drivePath(s);
@@ -217,11 +358,29 @@ fs::path checkRelativePath(std::string_view s){
 }
 ResolvedFile resolveFile(const fs::path& path){Handle file;return openChecked(file,path,GENERIC_READ);}
 std::string displayPath(const fs::path& path){
+#ifndef _WIN32
+ static const std::wstring profile=[]{auto p=home();std::error_code error;auto real=fs::canonical(p,error);return trimmed(error?p:real);}();
+#else
  static const std::wstring profile=[]{auto p=knownFolder(FOLDERID_Profile);try{return trimmed(resolveFile(p).path);}catch(...){return trimmed(p);}}();
+#endif
  auto text=trimmed(path);
  if(!profile.empty()&&insideFolder(path,profile))return utf8(L"~"+text.substr(profile.size()));
  return utf8(text);
 }
+#ifndef _WIN32
+// $XDG_DATA_HOME/ModelHotloader/file-access.json (~/.local/share/...): outside the game folders.
+fs::path fileAccessStore(){auto data=xdgHome("XDG_DATA_HOME",".local/share");if(data.empty())throw std::runtime_error("No local application data folder");return data/"ModelHotloader"/"file-access.json";}
+std::optional<std::string> readGrantStore(const fs::path& file){
+ FILE* f=fopen(ioPath(file).c_str(),"rb");
+ if(!f){if(errno==ENOENT||errno==ENOTDIR)return std::nullopt;throw std::runtime_error("The file access store cannot be read now");}
+ struct Closer{FILE* f;~Closer(){fclose(f);}} closer{f};
+ struct stat st{};if(fstat(fileno(f),&st)!=0)throw std::runtime_error("The file access store cannot be read now");
+ if(st.st_size>(1<<20))return std::string();  // far larger than any store: damaged
+ std::string text(size_t(st.st_size),'\0');
+ if(!text.empty()&&fread(text.data(),1,text.size(),f)!=text.size())throw std::runtime_error("The file access store cannot be read now");
+ return text;
+}
+#else
 fs::path fileAccessStore(){auto local=knownFolder(FOLDERID_LocalAppData);if(local.empty())throw std::runtime_error("No local application data folder");return local/L"ModelHotloader"/L"file-access.json";}
 std::optional<std::string> readGrantStore(const fs::path& file){
  Handle h;h.h=CreateFileW(ioPath(file).c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -232,6 +391,7 @@ std::optional<std::string> readGrantStore(const fs::path& file){
  if(!text.empty()&&(!ReadFile(h.h,text.data(),DWORD(text.size()),&received,nullptr)||received!=text.size()))throw std::runtime_error("The file access store cannot be read now");
  return text;
 }
+#endif
 bool FileGrantStore::parse(std::string_view text,const FilePolicy& policy){
  enabled=true;grants.clear();
  auto j=Json::parse(text.begin(),text.end(),nullptr,false);
@@ -265,7 +425,11 @@ struct FileAccess::Item {std::string name,requester,grant;fs::path root;bool fol
 struct FileAccess::Request {
  enum Kind{Pick,Path,Enable} kind=Path;
  std::string requester,script,purpose,title,language;Json filters=Json::array(),result;bool multiple=false,folder=false;
+#ifdef _WIN32
  fs::path path,dir,rememberFolder;HANDLE process=nullptr,group=nullptr;
+#else
+ fs::path path,dir,rememberFolder;posix::Child child;
+#endif
  std::optional<ResolvedFile> target;std::string problem;bool canRemember=false;
 };
 // Why a read or listing was told to stop (0: it runs on).
@@ -276,10 +440,14 @@ struct FileTask {
  std::atomic<int> stop{TaskRunning};
  std::atomic<bool> done{false};         // its thread finished: the fields below are complete
  uint64_t finished=0;                   // GetTickCount64 when it did
+#ifdef _WIN32
  HANDLE thread=nullptr;                 // to cancel the file operation it waits in
+#endif
  FileReadResult read;Json list;std::exception_ptr error;
  FileTask()=default;FileTask(const FileTask&)=delete;FileTask& operator=(const FileTask&)=delete;
+#ifdef _WIN32
  ~FileTask(){if(thread)CloseHandle(thread);}
+#endif
 };
 namespace {
 struct ReadOptions {fs::path relative;uint64_t offset=0,length=FileReadDefault;bool text=false,hidden=false;};
@@ -290,7 +458,12 @@ void checkStop(const std::atomic<int>& stop){if(stop.load())refuse("canceled","T
 ResolvedFile openItem(Handle& file,const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy,DWORD access){
  if(!relative.empty()&&!item.folder)refuse("invalid_options","Only folders have paths inside them");
  auto target=relative.empty()?item.root:item.root/relative;
+#ifdef _WIN32
  if(!hidden&&!relative.empty()){auto at=item.root;for(auto& part:relative){at/=part;auto a=GetFileAttributesW(ioPath(at).c_str());if(a!=INVALID_FILE_ATTRIBUTES&&(a&(FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM)))refuse("hidden","Hidden and system files are read only when asked for");}}
+#else
+ // Hidden on Linux: a name that starts with a dot.
+ if(!hidden&&!relative.empty())for(auto& part:relative){auto name=part.wstring();if(!name.empty()&&name[0]==L'.')refuse("hidden","Hidden and system files are read only when asked for");}
+#endif
  auto r=openChecked(file,target,access);
  if(relative.empty()?!sameText(trimmed(r.path),trimmed(item.root)):!insideFolder(r.path,item.root))refuse("outside","The file now leads outside what the player allowed");
  if(policy.deniedPath(r.path))refuse("denied_location","Model Hotloader never lets addons read this location");
@@ -303,10 +476,16 @@ FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const 
  uint64_t end=std::min({r.size,o.offset+o.length,FileOffsetMaximum});
  if(o.text&&(o.offset||r.size>o.length))refuse("too_large","Text is read whole; this file is larger than the limit");
  if(o.offset<end){
+#ifdef _WIN32
   LARGE_INTEGER at;at.QuadPart=LONGLONG(o.offset);if(!SetFilePointerEx(file.h,at,nullptr,FILE_BEGIN))refuse("unreadable","Cannot seek in the file");
   out.data.resize(size_t(end-o.offset));size_t cursor=0;
   // In 1 MiB steps: a slow drive cannot hold a read the player stopped for long.
   while(cursor<out.data.size()){checkStop(stop);DWORD received=0;if(!ReadFile(file.h,out.data.data()+cursor,DWORD(std::min<size_t>(out.data.size()-cursor,1u<<20)),&received,nullptr))refuse("unreadable","The file could not be read");if(!received)break;cursor+=received;}
+#else
+  out.data.resize(size_t(end-o.offset));size_t cursor=0;
+  // In 1 MiB steps: a slow drive cannot hold a read the player stopped for long.
+  while(cursor<out.data.size()){checkStop(stop);auto received=pread(file.fd,out.data.data()+cursor,std::min<size_t>(out.data.size()-cursor,1u<<20),off_t(o.offset+cursor));if(received<0){if(errno==EINTR)continue;refuse("unreadable","The file could not be read");}if(!received)break;cursor+=size_t(received);}
+#endif
   out.data.resize(cursor);
  }
  out.info["read"]=out.data.size();out.info["eof"]=o.offset+out.data.size()>=r.size;
@@ -315,6 +494,29 @@ FileReadResult readItem(const FileAccess::Item& item,const ReadOptions& o,const 
  return out;
 }
 // One level of a folder, read through the opened handle (no second lookup by name).
+#ifndef _WIN32
+// One level of a folder, read through the opened descriptor (no second lookup by name).
+Json listItem(const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy,const std::atomic<int>& stop){
+ checkStop(stop);Handle folder;auto r=openItem(folder,item,relative,hidden,policy,FILE_LIST_DIRECTORY);
+ if(!r.folder)refuse("not_a_folder","This is a file; read it instead");
+ int fd=dup(folder.fd);DIR* dir=fd>=0?fdopendir(fd):nullptr;if(!dir){if(fd>=0)close(fd);refuse("unreadable","The folder could not be listed");}
+ struct Closer{DIR* d;~Closer(){closedir(d);}} closer{dir};
+ Json entries=Json::array();bool truncated=false;
+ while(auto e=readdir(dir)){
+  checkStop(stop);std::string name=e->d_name;if(name=="."||name=="..")continue;
+  struct stat st{};if(fstatat(dirfd(dir),e->d_name,&st,AT_SYMLINK_NOFOLLOW)!=0)continue;
+  // Links are left out (they are never followed), as are devices, pipes and sockets.
+  if(!S_ISDIR(st.st_mode)&&!S_ISREG(st.st_mode))continue;
+  std::wstring wname;try{wname=wide(name);}catch(...){continue;}
+  if((!hidden&&name[0]=='.')||policy.deniedPath(r.path/wname))continue;
+  if(entries.size()>=FileListMaximum){truncated=true;break;}
+  bool isFolder=S_ISDIR(st.st_mode);Json entry={{"name",name},{"folder",isFolder},{"modified",int64_t(st.st_mtime)}};
+  if(!isFolder)entry["size"]=uint64_t(st.st_size);entries.push_back(entry);
+ }
+ std::sort(entries.begin(),entries.end(),[](const Json& a,const Json& b){if(a["folder"]!=b["folder"])return a["folder"].get<bool>();return lower(wide(a["name"].get<std::string>()))<lower(wide(b["name"].get<std::string>()));});
+ return {{"entries",entries},{"truncated",truncated}};
+}
+#else
 Json listItem(const FileAccess::Item& item,const fs::path& relative,bool hidden,const FilePolicy& policy,const std::atomic<int>& stop){
  checkStop(stop);Handle folder;auto r=openItem(folder,item,relative,hidden,policy,FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES|SYNCHRONIZE);
  if(!r.folder)refuse("not_a_folder","This is a file; read it instead");
@@ -339,13 +541,24 @@ Json listItem(const FileAccess::Item& item,const fs::path& relative,bool hidden,
  std::sort(entries.begin(),entries.end(),[](const Json& a,const Json& b){if(a["folder"]!=b["folder"])return a["folder"].get<bool>();return lower(wide(a["name"].get<std::string>()))<lower(wide(b["name"].get<std::string>()));});
  return {{"entries",entries},{"truncated",truncated}};
 }
+#endif
 // The dialog's request and answer go through a folder only this process creates, in
 // the user's temporary folder: Lua can write anything under garrysmod/data.
 fs::path privateFolder(const fs::path& temp){
  if(temp.empty())refuse("dialog_failed","No temporary folder");
+#ifdef _WIN32
  for(int attempt=0;attempt<8;attempt++){auto dir=temp/wide("mmdhl-fa-"+randomHex(16));if(CreateDirectoryW(ioPath(dir).c_str(),nullptr))return dir;}
+#else
+ for(int attempt=0;attempt<8;attempt++){auto dir=temp/wide("mmdhl-fa-"+randomHex(16));if(mkdir(ioPath(dir).c_str(),0700)==0)return dir;}
+#endif
  refuse("dialog_failed","Cannot create a private folder for the dialog");
 }
+#ifndef _WIN32
+void launchDialog(FileAccess::Request& r,const fs::path& worker,const wchar_t* mode){
+ if(!regularFile(worker))refuse("worker_missing","The Model Hotloader worker is missing");
+ try{r.child=posix::spawn(worker,{utf8(mode),r.dir.string()},worker.parent_path());}catch(const std::exception&){refuse("dialog_failed","Cannot start the dialog");}
+}
+#else
 void launchDialog(FileAccess::Request& r,const fs::path& worker,const wchar_t* mode){
  if(!regularFile(worker))refuse("worker_missing","The Model Hotloader worker is missing");
  auto quote=[](const fs::path& p){if(p.wstring().find(L'"')!=std::wstring::npos)refuse("dialog_failed","Invalid worker path");return L"\""+p.wstring()+L"\"";};
@@ -356,9 +569,23 @@ void launchDialog(FileAccess::Request& r,const fs::path& worker,const wchar_t* m
  if(!AssignProcessToJobObject(r.group,process.hProcess)){TerminateProcess(process.hProcess,1);CloseHandle(process.hThread);CloseHandle(process.hProcess);CloseHandle(r.group);r.group=nullptr;refuse("dialog_failed","Cannot isolate the dialog");}
  ResumeThread(process.hThread);CloseHandle(process.hThread);r.process=process.hProcess;
 }
+#endif
 // Reads and listings run on threads of their own, never joined: the client module goes away
 // at every map change, and a read waiting on a network share that stopped answering would
 // hold the game until Windows gives up. Each thread keeps this library loaded until it ends.
+#ifndef _WIN32
+// The runtime is never unloaded (-z nodelete), so a detached thread may outlive the module.
+std::atomic<size_t> liveTasks{0};
+std::shared_ptr<FileTask> launch(bool listing,std::shared_ptr<const FileAccess::Item> item,std::function<void(FileTask&)> body){
+ auto task=std::make_shared<FileTask>();task->listing=listing;task->item=std::move(item);
+ liveTasks++;
+ try{std::thread([task,body=std::move(body)]{try{body(*task);}catch(...){task->error=std::current_exception();}task->finished=posix::tickMs();task->done=true;liveTasks--;}).detach();}
+ catch(...){liveTasks--;throw std::runtime_error("Cannot start the read");}
+ return task;
+}
+// Tells a read or listing to stop; it gives up at its next step (a blocked read cannot be canceled).
+void halt(FileTask& t,TaskStop why){int running=TaskRunning;t.stop.compare_exchange_strong(running,why);}
+#else
 std::atomic<size_t> liveTasks{0};
 struct TaskStart {std::shared_ptr<FileTask> task;std::function<void(FileTask&)> body;HMODULE library=nullptr;};
 DWORD WINAPI taskThread(void* data){
@@ -379,17 +606,36 @@ std::shared_ptr<FileTask> launch(bool listing,std::shared_ptr<const FileAccess::
 // Tells a read or listing to stop and cancels the file operation its thread waits in (an
 // open or a read of a slow or unreachable drive). Its result is never delivered.
 void halt(FileTask& t,TaskStop why){int running=TaskRunning;t.stop.compare_exchange_strong(running,why);if(!t.done.load())CancelSynchronousIo(t.thread);}
+#endif
 // Game processes that share the store (two installs, -multirun) change it one at a time.
+#ifndef _WIN32
+// An exclusive lock on <store>.lock (flock), held two seconds at most.
+struct StoreLock {
+ int fd=-1;
+ StoreLock(){
+  auto file=fileAccessStore();file+=".lock";std::error_code error;fs::create_directories(file.parent_path(),error);
+  fd=::open(file.c_str(),O_RDWR|O_CREAT|O_CLOEXEC,0600);if(fd<0)throw std::runtime_error("No store lock");
+  for(int attempt=0;flock(fd,LOCK_EX|LOCK_NB)!=0;attempt++){if(attempt>=200){close(fd);throw std::runtime_error("The store is busy");}std::this_thread::sleep_for(std::chrono::milliseconds(10));}
+ }
+ ~StoreLock(){flock(fd,LOCK_UN);close(fd);}
+ StoreLock(const StoreLock&)=delete;StoreLock& operator=(const StoreLock&)=delete;
+};
+#else
 struct StoreLock {
  HANDLE mutex=CreateMutexW(nullptr,FALSE,L"Local\\ModelHotloader.FileAccessStore");
  StoreLock(){if(!mutex)throw std::runtime_error("No store lock");auto w=WaitForSingleObject(mutex,2000);if(w!=WAIT_OBJECT_0&&w!=WAIT_ABANDONED){CloseHandle(mutex);throw std::runtime_error("The store is busy");}}
  ~StoreLock(){ReleaseMutex(mutex);CloseHandle(mutex);}
  StoreLock(const StoreLock&)=delete;StoreLock& operator=(const StoreLock&)=delete;
 };
+#endif
 }
 size_t fileAccessThreads(){return liveTasks.load();}
 FileAccess::FileAccess(FileAccessConfig c):config(std::move(c)),policy(std::make_shared<FilePolicy>(config.policy)){
+#ifdef _WIN32
  if(config.temp.empty()){wchar_t temp[MAX_PATH+1]{};if(GetTempPathW(MAX_PATH+1,temp))config.temp=temp;}
+#else
+ if(config.temp.empty())config.temp=posix::tempDirectory();
+#endif
  // A missing, unreadable or damaged store means nothing remembered.
  store.file=config.store;try{storeText=readGrantStore(store.file);storeRead=true;}catch(...){}
  if(storeText)store.parse(*storeText,*policy);
@@ -454,8 +700,12 @@ void FileAccess::prune(){
 }
 void FileAccess::stop(Request& r){
  // The folder can go once the worker is gone (it may still hold request.json open).
+#ifdef _WIN32
  if(r.group){TerminateJobObject(r.group,1);if(r.process)WaitForSingleObject(r.process,2000);CloseHandle(r.group);r.group=nullptr;}
  if(r.process){CloseHandle(r.process);r.process=nullptr;}
+#else
+ r.child.kill();r.child=posix::Child{};
+#endif
  removeFolder(r.dir);r.dir.clear();
 }
 Json FileAccess::info(){
@@ -516,7 +766,11 @@ uint64_t FileAccess::enqueue(std::unique_ptr<Request> r){
 // profile (and with it the Windows user name), and paths never travel to Lua.
 void FileAccess::pump(){
  if(active){
+#ifdef _WIN32
   auto& r=*requests.at(active);if(WaitForSingleObject(r.process,0)==WAIT_TIMEOUT)return;
+#else
+  auto& r=*requests.at(active);if(r.child.running())return;
+#endif
   Json answer;try{answer=readJson(r.dir/L"result.json");}catch(...){}
   stop(r);active=0;
   try{finish(r,answer);}catch(const FileAccessError& e){r.result=failed(e.code,e.what());}catch(const std::exception&){r.result=failed("dialog_failed","The answer could not be handled");}
@@ -628,7 +882,12 @@ void FileAccess::cancel(uint64_t id){
 // so a script that stops polling (or forgot its ids on a Lua refresh) cannot hold them for good.
 size_t FileAccess::running(){
  std::erase_if(dropped,[](const std::shared_ptr<FileTask>& t){return t->done.load();});
- auto now=GetTickCount64();std::erase_if(tasks,[&](const auto& entry){return entry.second->done.load()&&now-entry.second->finished>=config.keepResultsMs;});
+ #ifdef _WIN32
+ auto now=GetTickCount64();
+ #else
+ auto now=posix::tickMs();
+ #endif
+ std::erase_if(tasks,[&](const auto& entry){return entry.second->done.load()&&now-entry.second->finished>=config.keepResultsMs;});
  return tasks.size()+dropped.size();
 }
 // The finished (or stopped) task a poll asks for; nullptr while it runs.

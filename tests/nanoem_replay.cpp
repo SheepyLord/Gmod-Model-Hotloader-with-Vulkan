@@ -15,6 +15,7 @@
 #include <set>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include "wide_main.hpp"
 using namespace mmd;
 struct Input {nanoem_physics_world_t* world; nanoem_physics_rigid_body_t *a,*b;float aTransform[16],bTransform[16];};
 struct Replay {

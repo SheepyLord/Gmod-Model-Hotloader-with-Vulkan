@@ -1,5 +1,10 @@
 #include "jobs.hpp"
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include <ctime>
+#include <sched.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <immintrin.h>
@@ -128,10 +133,16 @@ void parallelFor(size_t count,size_t grain,const std::function<void(size_t,size_
 unsigned workerCount(){return unsigned(pool().threads.size()+1);}
 unsigned maximumWorkerCount(){return std::min<unsigned>(BT_MAX_THREAD_COUNT-1,availableThreadCount());}
 unsigned availableThreadCount(){
+#ifdef _WIN32
  DWORD_PTR processMask=0,systemMask=0;
  if(GetProcessAffinityMask(GetCurrentProcess(),&processMask,&systemMask)&&processMask){
   unsigned count=0;while(processMask){count+=unsigned(processMask&1);processMask>>=1;}return count;
  }
+#else
+ // The CPUs this process may run on (taskset, cgroups, containers).
+ cpu_set_t set;CPU_ZERO(&set);
+ if(sched_getaffinity(0,sizeof(set),&set)==0){unsigned count=unsigned(CPU_COUNT(&set));if(count)return count;}
+#endif
  return std::max(1u,unsigned(std::thread::hardware_concurrency()));
 }
 unsigned automaticWorkerCount(unsigned logicalThreads){return std::clamp(logicalThreads<=4?logicalThreads:logicalThreads-2,1u,maximumWorkerCount());}
@@ -153,7 +164,11 @@ void parallelForSecondary(size_t count,size_t grain,const std::function<void(siz
  parallelFor(count,std::max(grain,(count+lanes-1)/lanes),f);
 }
 void enqueueBackground(std::function<void()> job){pool().enqueue(std::move(job));}
+#ifdef _WIN32
 double threadCpuMs(){FILETIME creation,exit,kernel,user;if(!GetThreadTimes(GetCurrentThread(),&creation,&exit,&kernel,&user))return 0;auto ticks=[](const FILETIME& t){return (uint64_t(t.dwHighDateTime)<<32)|t.dwLowDateTime;};return double(ticks(kernel)+ticks(user))*1e-4;}
+#else
+double threadCpuMs(){timespec t{};if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)!=0)return 0;return double(t.tv_sec)*1000.+double(t.tv_nsec)/1e6;}
+#endif
 InlinePhysicsScope::InlinePhysicsScope():previous(inlinePhysics){inlinePhysics=true;}
 InlinePhysicsScope::~InlinePhysicsScope(){inlinePhysics=previous;}
 }

@@ -7,12 +7,26 @@
 #include "cutout.hpp"
 #include "import_error.hpp"
 #include "dependency_scope.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#else
+#include "posix.hpp"
+#include "win_errors.hpp"
+#include "dds.hpp"
+#include <climits>
+#include <cstring>
+#include <ctime>
+#include <fcntl.h>
+#include <thread>
+#include <unistd.h>
+#include <sys/syscall.h>
+#endif
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <set>
 #include <map>
@@ -27,6 +41,18 @@
 #include <stb_image_resize2.h>
 
 namespace mmd {
+#ifndef _WIN32
+std::wstring wide(std::string_view s){return posix::wideFromUtf8(s,true);}
+std::string utf8(std::wstring_view s){return posix::utf8FromWide(s,false);}
+fs::path ioPath(const fs::path& path){return fs::absolute(path).lexically_normal();}
+// A stream cannot say why it failed to open: ask the system the same question (missing,
+// denied...) so the code and the report say what to do.
+static uint32_t openError(const fs::path& io,bool writing){
+ std::error_code ec;if(!writing&&fs::is_directory(io,ec))return ERROR_DIRECTORY;
+ int fd=open(io.c_str(),writing?(O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC):(O_RDONLY|O_CLOEXEC),0644);
+ if(fd<0)return windowsError(errno);close(fd);if(writing)unlink(io.c_str());return 0;
+}
+#else
 std::wstring wide(std::string_view s){if(s.empty())return {};int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0);if(!n)throw std::runtime_error("Invalid UTF-8 path");std::wstring out(n,0);MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),out.data(),n);return out;}
 std::string utf8(std::wstring_view s){if(s.empty())return {};int n=WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),nullptr,0,nullptr,nullptr);std::string out(n,0);WideCharToMultiByte(CP_UTF8,0,s.data(),int(s.size()),out.data(),n,nullptr,nullptr);return out;}
 // GMod's host executable need not opt in to Windows long paths. Cache identities
@@ -45,17 +71,27 @@ static DWORD openError(const fs::path& io,bool writing){
  HANDLE h=CreateFileW(io.c_str(),writing?GENERIC_WRITE:GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,writing?CREATE_ALWAYS:OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(h==INVALID_HANDLE_VALUE)return GetLastError();CloseHandle(h);if(writing)DeleteFileW(io.c_str());return 0;
 }
+#endif
 // The sentences stay 2.2's: a missing texture's is a manifest warning, part of the asset's
 // identity. Why it failed travels as the code and details.why, which a failure report adds.
 Bytes readFile(const fs::path& path){
  auto io=ioPath(path);std::ifstream f(io,std::ios::binary|std::ios::ate);auto name=utf8(path.wstring());
  if(!f)fileFailure("Cannot read "+name,path,openError(io,false));
+#ifndef _WIN32
+ // Linux opens a folder like a file (and reports a meaningless size for it).
+ {std::error_code error;if(fs::is_directory(io,error))fileFailure("Cannot read "+name,path,ERROR_DIRECTORY);}
+#endif
  auto size=f.tellg();if(size<0)importFail("io.read","Cannot determine file size",{{"path",name},{"why","its size cannot be determined"}});Bytes b(static_cast<size_t>(size));f.seekg(0);
  if(size&&!f.read(reinterpret_cast<char*>(b.data()),size))importFail("io.device","Incomplete file read",{{"path",name},{"read",int64_t(f.gcount())},{"size",uint64_t(size)},{"why","reading stopped after "+thousands(uint64_t(f.gcount()))+" of "+thousands(uint64_t(size))+" bytes (the drive may have been disconnected)"}});
  return b;
 }
 void writeAtomic(const fs::path& path,const std::function<void(std::ostream&)>& write){
+#ifdef _WIN32
  auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=L".tmp."+std::to_wstring(GetCurrentProcessId())+L"."+std::to_wstring(GetCurrentThreadId());
+#else
+ using DWORD=uint32_t;
+ auto output=ioPath(path);fs::create_directories(output.parent_path());auto tmp=output;tmp+=".tmp."+std::to_string(getpid())+"."+std::to_string(long(syscall(SYS_gettid)));
+#endif
  // Data that stops short on a nearly full drive is a full disk; otherwise the open says why.
  // Writes fail as io.write (or io.disk_full): the cache, not the model file, is at fault.
  auto failed=[&](DWORD error){std::error_code ec;fs::remove(tmp,ec);auto space=fs::space(output.parent_path(),ec);if(!error&&!ec&&space.available<(64ull<<20))error=ERROR_DISK_FULL;
@@ -64,18 +100,27 @@ void writeAtomic(const fs::path& path,const std::function<void(std::ostream&)>& 
   if(!f)failed(openError(tmp,true));
   try{write(f);}catch(...){f.close();std::error_code ec;fs::remove(tmp,ec);throw;}
   if(!f.flush()){f.close();failed(0);}}
+ #ifdef _WIN32
  for(int attempt=0;;attempt++){if(MoveFileExW(tmp.c_str(),output.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))break;auto error=GetLastError();if(attempt>=99||(error!=ERROR_SHARING_VIOLATION&&error!=ERROR_ACCESS_DENIED)){std::error_code ec;fs::remove(tmp,ec);fileFailure("Cannot commit output file: "+utf8(path.wstring()),path,error,true);}Sleep(10);}
+ #else
+ // rename() replaces the target atomically even while it is open elsewhere.
+ if(int error=posix::replaceFile(tmp,output)){std::error_code ec;fs::remove(tmp,ec);fileFailure("Cannot commit output file: "+utf8(path.wstring()),path,windowsError(error),true);}
+ #endif
 }
 void writeAtomic(const fs::path& path,std::span<const unsigned char> b){writeAtomic(path,[&](std::ostream& f){f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));});}
 void writeJson(const fs::path& path,const Json& j){auto s=j.dump(2);writeAtomic(path,std::span(reinterpret_cast<const unsigned char*>(s.data()),s.size()));}
 Json readJson(const fs::path& p){auto b=readFile(p);return Json::parse(b.begin(),b.end());}
 std::string hash(std::span<const unsigned char> b){
+#ifndef _WIN32
+ auto digest=posix::sha256(b);std::string s;for(auto c:digest){s.push_back("0123456789abcdef"[c>>4]);s.push_back("0123456789abcdef"[c&15]);}return s;
+#else
  BCRYPT_ALG_HANDLE alg=nullptr;BCRYPT_HASH_HANDLE state=nullptr;unsigned char digest[32];
  if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("SHA256 unavailable");
  auto status=BCryptCreateHash(alg,&state,nullptr,0,nullptr,0,0);
  for(size_t at=0;status>=0&&at<b.size();){auto count=ULONG(std::min<size_t>(b.size()-at,128ull<<20));status=BCryptHashData(state,const_cast<unsigned char*>(b.data()+at),count,0);at+=count;}
  if(status>=0)status=BCryptFinishHash(state,digest,32,0);if(state)BCryptDestroyHash(state);BCryptCloseAlgorithmProvider(alg,0);
  if(status<0)throw std::runtime_error("SHA256 failed");std::string s;for(auto c:digest){s.push_back("0123456789abcdef"[c>>4]);s.push_back("0123456789abcdef"[c&15]);}return s;
+#endif
 }
 void retainCacheFiles(const fs::path& cache,const std::vector<fs::path>& paths){
  auto queue=cache/L"cleanup.json";if(!fs::exists(queue))return;auto pending=readJson(queue);Json keep=Json::array();
@@ -108,8 +153,21 @@ static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes&
 // denied place (dependency_scope.hpp, Reach::Local). The sentences are part of the
 // asset's identity: an absolute path keeps 2.2's.
 static fs::path resolveTexture(const DependencyScope& scope,std::string path,bool& refused){
-    std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);
+    std::replace(path.begin(),path.end(),'\\','/');auto p=fs::path(wide(path));
+#ifdef _WIN32
+    if(p.is_absolute())throw std::runtime_error("Texture uses an absolute path: "+path);
+#else
+    // Read as Windows reads it (the models come from Windows): a drive with a folder, or a
+    // share, is absolute (2.2's sentence); a leading separator or a bare drive letter is
+    // relative to the current drive or folder, and refused.
+    bool drive=path.size()>=2&&std::isalpha(static_cast<unsigned char>(path[0]))&&path[1]==':';
+    if((drive&&path.size()>=3&&path[2]=='/')||path.starts_with("//"))throw std::runtime_error("Texture uses an absolute path: "+path);
+    if(drive||path.starts_with("/")){refused=true;return (scope.folder()/p.relative_path()).lexically_normal();}
+#endif
     auto file=(scope.folder()/p).lexically_normal();std::error_code error;
+#ifndef _WIN32
+    file=posix::matchCase(file);  // the model's letter case, as Windows ignores it
+#endif
     refused=scope.locate(path).empty()||(fs::is_regular_file(ioPath(file),error)&&!scope.allows(file));
     return file;
 }
@@ -120,11 +178,15 @@ static std::string normalizeTexture(const Bytes& bytes,const std::string& name,c
     Bytes decoded;unsigned char* pixels=nullptr;
     std::unique_ptr<unsigned char,decltype(&stbi_image_free)> guard(nullptr,stbi_image_free);
     if(bytes.size()>4&&!memcmp(bytes.data(),"DDS ",4)){
+#ifndef _WIN32
+        decoded=decodeDds(bytes,width,height);pixels=decoded.data();
+#else
         HRESULT initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);struct Apartment{HRESULT hr;~Apartment(){if(SUCCEEDED(hr))CoUninitialize();}} apartment{initialized};
         using Microsoft::WRL::ComPtr;ComPtr<IWICImagingFactory> factory;ComPtr<IWICStream> stream;ComPtr<IWICBitmapDecoder> decoder;ComPtr<IWICBitmapFrameDecode> frame;ComPtr<IWICFormatConverter> converter;
         auto ok=[](HRESULT hr){if(FAILED(hr))throw std::runtime_error("Unsupported DDS texture (Windows codec supports BC1, BC2 and BC3)");};
         ok(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)));ok(factory->CreateStream(&stream));ok(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()),DWORD(bytes.size())));ok(factory->CreateDecoderFromStream(stream.Get(),nullptr,WICDecodeMetadataCacheOnDemand,&decoder));ok(decoder->GetFrame(0,&frame));UINT w=0,h=0;ok(frame->GetSize(&w,&h));if(!w||!h||uint64_t(w)*h*4>UINT_MAX)throw std::runtime_error("DDS dimensions exceed the Windows decoder format");width=int(w);height=int(h);
         ok(factory->CreateFormatConverter(&converter));ok(converter->Initialize(frame.Get(),GUID_WICPixelFormat32bppRGBA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom));decoded.resize(size_t(w)*h*4);ok(converter->CopyPixels(nullptr,w*4,UINT(decoded.size()),decoded.data()));pixels=decoded.data();
+#endif
     }else{
         if(!stbi_info_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels)||width<1||height<1)throw std::runtime_error("Unsupported texture: "+name);
         guard.reset(stbi_load_from_memory(bytes.data(),int(bytes.size()),&width,&height,&channels,4));pixels=guard.get();if(!pixels)throw std::runtime_error("Cannot decode texture: "+name);
@@ -196,12 +258,21 @@ Json openSourceRegistry(const fs::path& path,std::string& setAside){
     try{registry=readJson(path);damaged=!registry.is_object();}catch(const Json::exception&){damaged=true;}
     if(!damaged)return registry;
     // Every other model's source path is in it: kept for repair, never written over.
+#ifdef _WIN32
     SYSTEMTIME t{};GetSystemTime(&t);wchar_t stamp[32];swprintf_s(stamp,L"%04u%02u%02u-%02u%02u%02u",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
     for(int n=0;;n++){
         auto name=path.filename().wstring()+L".damaged-"+stamp+(n?L"-"+std::to_wstring(n):std::wstring());
         if(MoveFileExW(ioPath(path).c_str(),ioPath(path.parent_path()/name).c_str(),MOVEFILE_WRITE_THROUGH)){setAside=utf8(name);return Json::object();}
         auto error=GetLastError();if((error!=ERROR_ALREADY_EXISTS&&error!=ERROR_FILE_EXISTS)||n>=99)fileFailure("Cannot set aside the damaged source registry "+utf8(path.wstring()),path,error,true);
     }
+#else
+    auto now=std::time(nullptr);std::tm t{};gmtime_r(&now,&t);char stamp[32];std::snprintf(stamp,sizeof(stamp),"%04d%02d%02d-%02d%02d%02d",t.tm_year+1900,t.tm_mon+1,t.tm_mday,t.tm_hour,t.tm_min,t.tm_sec);
+    for(int n=0;;n++){
+        auto name=path.filename().string()+".damaged-"+stamp+(n?"-"+std::to_string(n):std::string());
+        int error=posix::moveFileNoReplace(ioPath(path),ioPath(path.parent_path()/name));if(!error){setAside=name;return Json::object();}
+        if(error!=EEXIST||n>=99)fileFailure("Cannot set aside the damaged source registry "+utf8(path.wstring()),path,windowsError(error),true);
+    }
+#endif
 }
 Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress,CharacterConversion* character){
     // Every step has a code (stageCode) the addon names in the player's language; the
@@ -214,7 +285,13 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     // bones and licence metadata travel in the manifest (and so in its identity).
     // A .vrm is always a GLB: one that does not read as an avatar is converted anyway, so the
     // converter says why (cut off, broken JSON, no VRM extension) instead of "rename it".
-    const bool vrmSource=!character&&(isVrmData(raw)||(!lstrcmpiW(source.extension().c_str(),L".vrm")&&raw.size()>=4&&!std::memcmp(raw.data(),"glTF",4)));
+    const bool vrmSource=!character&&(isVrmData(raw)||(
+#ifdef _WIN32
+    !lstrcmpiW(source.extension().c_str(),L".vrm")
+#else
+    posix::equalsIgnoreCase(source.extension().wstring(),L".vrm")
+#endif
+    &&raw.size()>=4&&!std::memcmp(raw.data(),"glTF",4)));
     std::map<std::string,Bytes> embedded;Json vrm,conversion;std::vector<std::string> converted;
     if(vrmSource){report("Converting VRM avatar","convert_vrm",.05f);auto sourceSha=hash(raw);auto result=convertVrm(raw,utf8(source.stem().wstring()));raw=std::move(result.pmx);embedded=std::move(result.textures);vrm=std::move(result.vrm);vrm["sourceSha256"]=sourceSha;converted=std::move(result.warnings);}
     // Characters in other formats arrive converted by the worker the same way (character_import.cpp).
@@ -238,7 +315,7 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
                 if((refused||!fs::exists(file))&&std::string(entry.first)=="toon"){
                     // MMD's shared ramps normally live beside the executable in Data: only a
                     // file of that name there, never a link out of it or a denied place.
-                    auto data=source.parent_path().parent_path().parent_path()/L"Data";auto candidate=data/fs::path(wide(entry.second)).filename();
+                    auto data=source.parent_path().parent_path().parent_path()/L"Data";auto name=entry.second;std::replace(name.begin(),name.end(),'\\','/');auto candidate=data/fs::path(wide(name)).filename();
                     if(DependencyScope(data,false).allows(candidate)){file=candidate;refused=false;}
                     else if(entry.second.starts_with("toon")){textures[entry.first]="";continue;}
                 }
@@ -334,7 +411,11 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     std::sort(model->uvCutoutTriangles.begin(),model->uvCutoutTriangles.end());
     prepareSourceMaterials(cache,id);prepareModelFit(*model,cache);return model;
 }
+#ifdef _WIN32
 static bool plainDirectory(const fs::path& path){auto attributes=GetFileAttributesW(path.c_str());return attributes!=INVALID_FILE_ATTRIBUTES&&(attributes&FILE_ATTRIBUTE_DIRECTORY)&&!(attributes&FILE_ATTRIBUTE_REPARSE_POINT);}
+#else
+static bool plainDirectory(const fs::path& path){return posix::plainDirectory(path);}
+#endif
 size_t sweepJobFolders(const fs::path& cache,std::chrono::hours age){
  std::error_code error;auto jobs=cache/L"jobs";if(!plainDirectory(jobs))return 0;auto cutoff=fs::file_time_type::clock::now()-age;size_t removed=0;
  for(auto& entry:fs::directory_iterator(jobs,error)){std::error_code e;auto time=entry.last_write_time(e);if(!e&&time<cutoff&&plainDirectory(entry.path())&&fs::remove_all(entry.path(),e)>0&&!e)removed++;}
@@ -353,7 +434,11 @@ Json deleteAssets(const fs::path& cache,const std::vector<std::string>& ids){
   for(auto& part:relative)if(part==L"..")throw std::runtime_error("Cache cleanup cannot traverse parents");
   auto path=root/relative,resolved=fs::weakly_canonical(path);auto rel=resolved.lexically_relative(root);
   if(rel.empty()||rel.is_absolute()||*rel.begin()==L"..")throw std::runtime_error("Cache cleanup escaped its directory");
+#ifdef _WIN32
   auto current=root;for(auto& part:relative){current/=part;auto attr=GetFileAttributesW(current.c_str());if(attr!=INVALID_FILE_ATTRIBUTES&&(attr&FILE_ATTRIBUTE_REPARSE_POINT))throw std::runtime_error("Cache cleanup will not follow a junction or symlink");}
+#else
+  auto current=root;for(auto& part:relative){current/=part;if(posix::isSymlink(current))throw std::runtime_error("Cache cleanup will not follow a junction or symlink");}
+#endif
   return path;
  };
  std::function<void(fs::path)> collect=[&](fs::path relative){auto path=checked(relative);if(!fs::exists(path))return;paths.insert(relative);if(fs::is_directory(path))for(auto& e:fs::directory_iterator(path))collect(relative/e.path().filename());};

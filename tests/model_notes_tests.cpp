@@ -1,18 +1,26 @@
 #include "model_notes.hpp"
-#include <windows.h>
+#include "test_platform.hpp"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 using namespace mmd;
 static void check(bool value,const char* what){if(!value)throw std::runtime_error(std::string("Model terms validation failed: ")+what);}
-static Bytes encode(const std::wstring& w,UINT codepage){int n=WideCharToMultiByte(codepage,0,w.data(),int(w.size()),nullptr,0,nullptr,nullptr);Bytes b;b.resize(size_t(n));WideCharToMultiByte(codepage,0,w.data(),int(w.size()),reinterpret_cast<char*>(b.data()),n,nullptr,nullptr);return b;}
+static Bytes encode(const std::wstring& w,unsigned codepage){return encodeCodepage(w,codepage);}
 static Bytes utf16(const std::wstring& w,bool bom){Bytes b;if(bom){b.push_back(0xFF);b.push_back(0xFE);}for(wchar_t c:w){b.push_back(uint8_t(c&255));b.push_back(uint8_t(c>>8));}return b;}
 static void write(const fs::path& p,const Bytes& b){fs::create_directories(p.parent_path());std::ofstream f(p,std::ios::binary);f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));}
+#ifdef _WIN32
 static bool validUtf8(const std::string& s){return s.empty()||MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0)>0;}
+#else
+static bool validUtf8(const std::string& s){
+ for(size_t i=0;i<s.size();){auto c=uint8_t(s[i]);size_t n=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:(c>>3)==30?4:0;if(!n||i+n>s.size())return false;
+  for(size_t k=1;k<n;k++)if((uint8_t(s[i+k])>>6)!=2)return false;i+=n;}
+ return true;
+}
+#endif
 static Bytes pmx(bool utf8Text,const std::wstring& name,const std::wstring& comment){
  Bytes b={'P','M','X',' '};float version=2.f;auto p=reinterpret_cast<unsigned char*>(&version);b.insert(b.end(),p,p+4);b.push_back(8);
  for(uint8_t g:{uint8_t(utf8Text?1:0),uint8_t(0),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4)})b.push_back(g);
- for(auto& t:{name,std::wstring(L"English"),comment,std::wstring(L"Terms: no redistribution")}){auto e=utf8Text?encode(t,CP_UTF8):utf16(t,false);int32_t n=int32_t(e.size());auto q=reinterpret_cast<unsigned char*>(&n);b.insert(b.end(),q,q+4);b.insert(b.end(),e.begin(),e.end());}
+ for(auto& t:{name,std::wstring(L"English"),comment,std::wstring(L"Terms: no redistribution")}){auto e=utf8Text?encode(t,65001):utf16(t,false);int32_t n=int32_t(e.size());auto q=reinterpret_cast<unsigned char*>(&n);b.insert(b.end(),q,q+4);b.insert(b.end(),e.begin(),e.end());}
  return b;
 }
 static Bytes glb(const std::string& json){
@@ -22,7 +30,7 @@ static Bytes glb(const std::string& json){
 }
 static const Json* readme(const Json& notes,const std::string& name){for(auto& r:notes["readmes"])if(r["name"]==name)return &r;return nullptr;}
 int main(){try{
- auto base=fs::temp_directory_path()/("mmdhl-terms-test-"+std::to_string(GetCurrentProcessId()));
+ auto base=fs::temp_directory_path()/("mmdhl-terms-test-"+std::to_string(processId()));
  struct Clean{fs::path dir;~Clean(){std::error_code ec;fs::remove_all(dir,ec);}} clean{base};
  auto pack=base/L"pack",model=pack/L"model";
  // Encodings found in model downloads.
@@ -34,18 +42,18 @@ int main(){try{
  check(decodeText(encode(L"禁止轉載，禁止用於商業用途。",950),encoding)==utf8(L"禁止轉載，禁止用於商業用途。")&&encoding=="big5","Big5 is not mistaken for GBK");
  check(decodeText(encode(L"재배포 금지. 상업적 이용 금지.",949),encoding)==utf8(L"재배포 금지. 상업적 이용 금지.")&&encoding=="uhc","UHC Korean");
  check(decodeText(utf16(japanese,true),encoding)==utf8(L"このモデルの再配布は禁止です。\nR-18用途での使用を禁止します。")&&encoding=="utf-16le","UTF-16LE with BOM");
- auto bom=encode(L"﻿No redistribution.",CP_UTF8);check(decodeText(bom,encoding)=="No redistribution."&&encoding=="utf-8","UTF-8 BOM removed");
+ auto bom=encode(L"﻿No redistribution.",65001);check(decodeText(bom,encoding)=="No redistribution."&&encoding=="utf-8","UTF-8 BOM removed");
  check(decodeText(Bytes{'a','\0','b','\x07','\r','c'},encoding)=="ab\nc","control characters dropped");
  // A model in a folder of its own: every text file counts, readmes first.
  write(model/L"Tester.pmx",pmx(false,L"テスター",L"改変OK・再配布禁止\r\nR-18禁止"));
  write(model/L"readme.txt",encode(japanese,932));
- write(model/L"利用規約.txt",encode(L"﻿商用利用は禁止です。",CP_UTF8));
- write(model/L"notes.txt",encode(L"Made with love.",CP_UTF8));
+ write(model/L"利用規約.txt",encode(L"﻿商用利用は禁止です。",65001));
+ write(model/L"notes.txt",encode(L"Made with love.",65001));
  write(model/L"说明.txt",encode(chinese,936));
  Bytes binary(4096,0);binary[0]='M';write(model/L"data.txt",binary);
  std::string big(100000,'x');for(size_t i=0;i<big.size();i+=10)big[i]='\n';write(model/L"LICENSE",Bytes(big.begin(),big.end()));
  write(pack/L"README_EN.txt",utf16(L"Do not use this model in games.",true));
- write(pack/L"changelog.txt",encode(L"v1.0",CP_UTF8));
+ write(pack/L"changelog.txt",encode(L"v1.0",65001));
  auto notes=inspectModelNotes(model/L"Tester.pmx");
  check(notes["file"]=="Tester.pmx","file name");
  check(notes["embedded"]["name"]==utf8(L"テスター")&&notes["embedded"]["comment"]==utf8(L"改変OK・再配布禁止\nR-18禁止")&&notes["embedded"]["commentEnglish"]=="Terms: no redistribution","PMX UTF-16 name and comments");
@@ -63,8 +71,8 @@ int main(){try{
  // A crowded download folder: only files named like readmes.
  auto downloads=base/L"downloads";
  for(int i=0;i<5;i++)write(downloads/(L"m"+std::to_wstring(i)+L".pmx"),pmx(true,L"M",L"UTF-8 comment "+std::to_wstring(i)));
- for(int i=0;i<15;i++)write(downloads/(L"todo"+std::to_wstring(i)+L".txt"),encode(L"private",CP_UTF8));
- write(downloads/L"Terms of use.md",encode(L"# Terms\nNo sexual or violent use.",CP_UTF8));
+ for(int i=0;i<15;i++)write(downloads/(L"todo"+std::to_wstring(i)+L".txt"),encode(L"private",65001));
+ write(downloads/L"Terms of use.md",encode(L"# Terms\nNo sexual or violent use.",65001));
  notes=inspectModelNotes(downloads/L"m0.pmx");
  check(notes["embedded"]["comment"]=="UTF-8 comment 0","PMX UTF-8 comment");
  check(notes["readmes"].size()==1&&notes["readmes"][0]["name"]=="Terms of use.md","crowded folder keeps only named documents");
@@ -89,7 +97,7 @@ int main(){try{
  check(!notes.contains("vrm")&&notes["embedded"]["copyright"]=="CC BY 4.0 Someone","plain glTF: copyright only");
  bool rejected=false;try{inspectModelNotes(base/L"missing.pmx");}catch(...){rejected=true;}check(rejected,"missing file reported");
  // The path comes from Lua: only beside a local model file, never on another computer.
- write(base/L"obj"/L"prop.obj",encode(L"v 0 0 0\n",CP_UTF8));write(base/L"obj"/L"readme.txt",encode(L"Terms",CP_UTF8));
+ write(base/L"obj"/L"prop.obj",encode(L"v 0 0 0\n",65001));write(base/L"obj"/L"readme.txt",encode(L"Terms",65001));
  check(inspectModelNotes(base/L"obj"/L"prop.obj")["readmes"].size()==1,"a static prop's readme");
  for(auto path:{base/L"obj"/L"readme.txt",fs::path(L"\\\\127.0.0.1\\mmdhl-test\\a.pmx"),fs::path(L"//127.0.0.1/mmdhl-test/a.pmx"),fs::path(L"\\\\?\\UNC\\127.0.0.1\\s\\a.pmx"),fs::path(L"a.pmx")}){
   rejected=false;try{inspectModelNotes(path);}catch(...){rejected=true;}check(rejected,"notes read beside a text file, a network path or a relative path");

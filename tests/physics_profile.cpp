@@ -29,6 +29,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include "wide_main.hpp"
 using namespace mmd;
 namespace {
 struct Stats {
