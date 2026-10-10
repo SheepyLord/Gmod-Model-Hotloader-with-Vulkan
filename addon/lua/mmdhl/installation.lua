@@ -72,6 +72,22 @@ local function approved(policy,id)
  for _,v in ipairs(policy.approved or {}) do if v==id then return true end end
  return false
 end
+-- Where players unpack the package by mistake (issue #6), relative to the game folder: the
+-- contents of its GarrysMod folder into garrysmod (or addons), or the GarrysMod folder itself
+-- into the game folder, garrysmod or addons; also an unpacked release folder
+-- (Model-Hotloader-<release>-<commit>-win64-<variant>) left where it was unpacked. find(pattern)
+-- lists the folders matching pattern in the game folder.
+local wrongRoots={'garrysmod/','garrysmod/GarrysMod/','GarrysMod/','garrysmod/addons/','garrysmod/addons/GarrysMod/','garrysmod/lua/bin/GarrysMod/'}
+local function misplacedRoots(find)
+ local roots={}
+ for _,root in ipairs(wrongRoots) do roots[#roots+1]=root end
+ if type(find)=='function' then
+  for _,base in ipairs({'','garrysmod/','garrysmod/addons/'}) do
+   for _,dir in ipairs(find(base..'Model-Hotloader-*') or {}) do roots[#roots+1]=base..dir..'/GarrysMod/' roots[#roots+1]=base..dir..'/' end
+  end
+ end
+ return roots
+end
 -- File names when the policy cannot name them (it is missing or broken).
 local defaultFiles={client={name='gmcl_mmdhl_win64.dll'},server={name='gmsv_mmdhl_win64.dll'},runtime={name='mmdhl_runtime_win64.dll'},worker={name='mmdhl_worker.exe'},coacd={name='lib_coacd.dll'}}
 -- Pure policy evaluator: reader returns {size,sha256,path[,build]}, or nil and an error.
@@ -148,6 +164,19 @@ function M.EvaluateInstallation(policy,reader,env)
    local other
    for id,release in pairs(releases) do local f=release.files[key=='workerRuntime' and 'runtime' or key] if f and f.sha256==actual.sha256 and f.size==actual.size then other=id break end end
    warn(s,other and 'mixed_installation' or 'damaged_or_unrecognized',key,other and L('install.error.file_mixed',{path=path,release=other,required=selected.release}) or L('install.error.file_unrecognized',{path=path}),feature,{identity=true,detail=actual.size..':'..actual.sha256})
+  end
+ end
+ -- The package unpacked into the wrong folder: found there while the game folder lacks its
+ -- files, that is why nothing loads, so it comes first (after loading fails it is the problem
+ -- every player sees). A copy left there beside a working installation says nothing.
+ if s.files[role].error=='missing' or s.files.runtime.error=='missing' then
+  for _,root in ipairs(misplacedRoots(env.find)) do
+   local found
+   for _,path in ipairs({root..'garrysmod/lua/bin/'..files[role].name,root..'bin/win64/'..runtime.name}) do if not found and reader(path,'BASE_PATH') then found=path end end
+   if found then
+    table.insert(s.issues,1,{code='misplaced_package',component='installation',feature='core',warning=true,cause=true,detail=found,found=found,message=L('install.warning.misplaced',{found=(found:gsub('/','\\'))})})
+    break
+   end
   end
  end
  -- The module and the runtime it links share C++ types: from two builds they may fail to
@@ -380,11 +409,15 @@ function M.RefreshGameCompatibility()
  end
  local ok,value,err=pcall(rawNative.CheckCompatibility)
  local report=ok and decode(value,err)
- status.features[feature]=report and report.ready==true or false
+ -- Only a library the game has not loaded yet keeps the feature off for now (the binary's
+ -- renderer would keep that absence for the session). A game build the binary's interface,
+ -- slot or class checks reject is a warning: Model Hotloader tries anyway, and the same
+ -- checks still guard every engine call the binary makes (a refused call fails cleanly).
+ status.features[feature]=not (report and report.pending)
  status.compatibility=report
- if not report then issue(status,'game_check_failed','game',tostring(err or value),feature)
+ if not report then warn(status,'game_check_failed','game',L('install.warning.game_incompatible',{message=tostring(err or value)}),feature)
  else
-  for _,v in ipairs(report.issues or {}) do issue(status,v.code,v.component,v.message,feature) end
+  for _,v in ipairs(report.issues or {}) do warn(status,v.code,v.component,L('install.warning.game_incompatible',{message=tostring(v.message)}),feature) end
   -- Game libraries change with Garry's Mod updates. A build no profile describes
   -- ("unverified") still runs; the player gets a warning that disables nothing and
   -- that Dismiss hides. From 2.1.0-native.7 the native module also follows the
@@ -516,7 +549,8 @@ end
 function M.CheckInstallation(recheck)
  if recheck and status and status.probePending then return status end
  local previous=status
- status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),arch=jit.arch,dedicated=SERVER and game.IsDedicated()})
+ local function find(pattern) if not file.Find then return {} end local _,folders=file.Find(pattern,'BASE_PATH') return folders end
+ status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),arch=jit.arch,dedicated=SERVER and game.IsDedicated(),find=find})
  if recheck then
   -- Garry's Mod never loads a DLL twice: what did not load needs a restart.
   if not rawNative then promote(status) issue(status,'restart_required','module',L'install.error.restart_to_load') notifyChanged() return status end
@@ -580,7 +614,11 @@ hook.Add('InitPostEntity','MMDHL.InstallationCompatibility',function()
   timer.Create('MMDHL.InstallationCompatibility',.5,20,function()
    attempts=attempts+1
    if not M.RefreshGameCompatibility() then timer.Remove('MMDHL.InstallationCompatibility')
-   elseif attempts==20 then issue(status,'game_not_ready','game',L'install.error.game_not_ready',SERVER and 'physics' or 'rendering') notifyChanged() end
+   elseif attempts==20 then
+    -- Still not loaded: tried anyway, as any other game check.
+    local feature=SERVER and 'physics' or 'rendering'
+    warn(status,'game_not_ready','game',L'install.error.game_not_ready',feature) status.features[feature]=true notifyChanged()
+   end
   end)
  end
 end)

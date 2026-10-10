@@ -88,6 +88,35 @@ component require a full game restart. Native and game-library checks are
 cached, including failures; render/simulation hooks do not hash files.
 Diagnostics remain local unless the user copies them.
 
+## Installed into the wrong folder
+
+Players unpack the package into the wrong folder ([issue #6](https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/issues/6)):
+the contents of its `GarrysMod` folder belong in the game folder itself (the one
+that contains `bin` and `garrysmod`), but many copy them into `garrysmod`, as most
+mods are installed. When the realm module or the runtime is missing where the game
+loads it, `EvaluateInstallation` looks for them (through `BASE_PATH`) in the places
+this happens: `garrysmod/`, `garrysmod/GarrysMod/`, `GarrysMod/`,
+`garrysmod/addons/`, `garrysmod/addons/GarrysMod/`, `garrysmod/lua/bin/GarrysMod/`,
+and any `Model-Hotloader-*` folder (an unpacked release left where it was unpacked)
+in the game folder, `garrysmod` or `garrysmod/addons`. A file found there adds the
+first issue, `misplaced_package` (warning, cause, `detail` = the path found). When
+nothing loads it becomes the problem every player reads first: in External Models,
+in the banner (in place of the download instruction, because downloading again
+would not help) and in the console ("Model Hotloader is installed in the wrong
+folder: its files are at garrysmod\garrysmod\lua\bin\... Copy the contents of
+the package's GarrysMod folder into the Garry's Mod folder itself ...").
+
+A window says it too, once per game start, in place of the corner notice: where the
+files were found, where they belong, the files that must exist afterwards
+(`bin\win64\mmdhl_runtime_win64.dll`, `garrysmod\lua\bin\gmcl_mmdhl_win64.dll`),
+**Installation guide** (the README's install steps), **Don't show this again** and
+**Close**. Later maps of the same run get the corner notice (`install.notice_misplaced`),
+which opens the window. **Don't show this again** stores the path found in
+`data/mmd_hotloader/misplaced_dismissed.txt`, and then neither the window nor the
+notice comes back for that copy (the banner and External Models still say it);
+`mmdhl_installation_folder` opens the window by hand. A copy left in a wrong folder
+beside a working installation says nothing.
+
 ## Update reminders
 
 The addon never refuses a native release, old or new: the Workshop Lua loads
@@ -244,16 +273,22 @@ other build is `unverified`.
 
 An unverified build still runs: every feature stays on, and the player gets one
 warning ("This Garry's Mod build has not been tested with this native release"),
-which disables nothing and which **Dismiss** hides until the builds change. Our own
-code never stops itself over a game build; only a real failure turns the affected
-feature off: a missing interface, a slot another module replaced or a guard RVA
-that does not match (`game_incompatible`), a check that fails outright
+which disables nothing and which **Dismiss** hides until the builds change. A real
+failure is a warning too: a missing interface, a slot another module replaced or a
+guard RVA that does not match (`game_incompatible`), a check that fails outright
 (`game_check_failed`), or a game library still not loaded some seconds after the
-map started (`game_not_ready`). These stay problems, not warnings, and turn
-rendering off on clients and physics off on servers, whoever built the native
-files: they are about the game build the module calls into, not about which
-native files are installed, and a call into a vtable slot that holds another
-function hangs or crashes the game (below).
+map started (`game_not_ready`). Lua leaves rendering (clients) and physics
+(servers) on and tries: the warning reads "Game check: ... Model Hotloader runs
+anyway". This is safe because the binary does not rely on that verdict. Its
+renderer and its VPhysics bridge run the same library, interface, slot and class
+checks before every engine call they make, keep a failure for the session
+(`ValidationOnce`) and refuse that call cleanly instead of calling a vtable slot
+that holds another function (which hangs or crashes the game, below). The client
+then falls back to Source's own rendering (`CheckRenderer` reports the failure), and
+a failed scene capture on a server turns secondary contacts off once (it is not
+retried every tick). Only a library the game has not loaded yet keeps the feature
+off for the moment, because the binary would keep its absence for the session; the
+map retries for some seconds, then tries anyway with `game_not_ready`.
 
 A `compatibility_policy.lua` newer than the installed binary must not stop it
 either. The binary validates the whole policy before it takes it, once per process,
@@ -269,9 +304,9 @@ known it is not counted as a problem either: the update reminder speaks for it. 
 order is fixed, so every later map of that game finds the same policy. Another ABI
 family is never forced on a binary: the module still loads, with a warning
 (`policy_invalid`, component `compatibility`), and its own checks decide. Releases
-from 2.1.0-native.5 accept no game library without a policy they took, so
-rendering and physics then stay off (`game_incompatible`: "Compatibility policy
-not configured"). Keep new profiles additive anyway, so approved releases take
+from 2.1.0-native.5 accept no game library without a policy they took, so their
+own checks then refuse every engine call (`game_incompatible`: "Compatibility policy
+not configured", a warning). Keep new profiles additive anyway, so approved releases take
 them whole.
 
 Game updates can still change what the compiled modules call. The default branch's

@@ -19,7 +19,7 @@ policy = lua_policy(ROOT / 'addon/lua/mmdhl/native_policy.lua')
 release = policy['releases'][policy['recommended']]
 
 
-def session(server, libraries, loaded_path=None, ready=True, issues=(), check_compatibility=True):
+def session(server, libraries, loaded_path=None, ready=True, issues=(), check_compatibility=True, pending=False):
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(f'unpack=table.unpack; mmdhl={{}}; SERVER={"true" if server else "false"} CLIENT=not SERVER')
     attach(lua); lua.execute('L=mmdhl.L')
@@ -42,7 +42,7 @@ def session(server, libraries, loaded_path=None, ready=True, issues=(), check_co
     runtime = dict(module, size=release['files']['runtime']['size'], sha256=release['files']['runtime']['sha256'],
                    path=loaded_path or game + 'bin\\win64\\mmdhl_runtime_win64.dll', expectedPath=game + 'bin\\win64\\mmdhl_runtime_win64.dll')
     g.PY_INFO = json.dumps(dict(module=module, runtime=runtime))
-    g.PY_REPORT = json.dumps(dict(ready=ready, pending=False, issues=list(issues), libraries=[dict(name=n, sha256='0' * 64, match=m) for n, m in libraries]))
+    g.PY_REPORT = json.dumps(dict(ready=ready, pending=pending, issues=list(issues), libraries=[dict(name=n, sha256='0' * 64, match=m) for n, m in libraries]))
     lua.execute(r'''
 util={JSONToTable=function(s) return PY_DECODE(s) end,TableToJSON=function(t) return PY_ENCODE(t) end,AddNetworkString=function() end}
 file={}
@@ -88,21 +88,40 @@ assert M.FeatureAvailable('rendering') is True
 # The server: an unverified vphysics.dll keeps physics (spawning) on.
 _, M, s = session(True, [('vphysics.dll', 'unverified')])
 assert s.features.core and s.features.physics and len(warnings(s)) == 1 and M.FeatureAvailable('physics') is True
-# A real failure (a missing interface) still names itself, never the warning beside it.
+# A game build the binary's own checks reject (a missing interface) is a warning too: rendering
+# stays on and Model Hotloader tries; the binary still refuses each engine call it cannot make.
 problem = dict(code='game_incompatible', component='client.dll', message='Required game interface unavailable: VClientEntityList003')
-_, M, s = session(False, [(n, 'unverified') for n in client], ready=False, issues=[problem])
+lua, M, s = session(False, [(n, 'unverified') for n in client], ready=False, issues=[problem])
+failed = [v for v in s.issues.values() if v.code == 'game_incompatible']
+assert s.features.core and s.features.rendering and M.FeatureAvailable('rendering') is True and not s.blocked
+assert len(failed) == 1 and failed[0].warning and failed[0].feature == 'rendering' and failed[0].component == 'client.dll'
+assert M.Localize(failed[0].message) == M.Localize(M.L('install.warning.game_incompatible', lua.table_from({'message': problem['message']})))
+assert problem['message'] in M.Localize(failed[0].message)
+# The server's physics library likewise.
+_, M, s = session(True, [('vphysics.dll', 'unverified')], ready=False, issues=[dict(problem, component='vphysics.dll')])
+assert s.features.physics and M.FeatureAvailable('physics') is True and [v.code for v in s.issues.values() if not v.warning] == []
+# Only a library the game has not loaded yet keeps the feature off, for now, with no problem named.
+lua3, M, s = session(False, [(n, 'tested') for n in client[:3]], ready=False, pending=True)
 ok, why = M.FeatureAvailable('rendering')
-assert not s.features.rendering and not ok and why == problem['message'], why
+assert s.features.core and not s.features.rendering and not ok and M.Localize(why) == M.Localize(M.L('install.checking_feature', lua3.table_from({'feature': M.L('install.feature.rendering')}))), why
+# Still not loaded after the map's retries: tried anyway, with the game_not_ready warning.
+lua2, M2, s2 = session(False, [(n, 'tested') for n in client[:3]], ready=False, pending=True)
+lua2.execute("TIMERS={} timer.Create=function(name,delay,reps,f) TIMERS[name]=f end timer.Remove=function(name) TIMERS[name]=nil end")
+lua2.eval('HOOKS.InitPostEntity')['MMDHL.InstallationCompatibility']()
+retry = lua2.eval('TIMERS')['MMDHL.InstallationCompatibility']
+for _ in range(20): retry()
+s2 = M2.GetInstallationStatus()
+late = [v for v in s2.issues.values() if v.code == 'game_not_ready']
+assert len(late) == 1 and late[0].warning and s2.features.rendering and M2.FeatureAvailable('rendering') is True, [v.code for v in s2.issues.values()]
 # Nor is a loaded runtime that is not the checked file (loaded from elsewhere): a warning beside it.
 elsewhere = r'C:\game\mmdhl_runtime_win64.dll'
 _, M, s = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere)
 mismatch = [v for v in s.issues.values() if v.code == 'loaded_mismatch']
 assert s.features.core and s.features.rendering and len(mismatch) == 1 and mismatch[0].warning and M.FeatureAvailable('rendering') is True
 _, M, s = session(False, [(n, 'tested') for n in client], loaded_path=elsewhere, ready=False, issues=[problem])
-assert any(v.code == 'loaded_mismatch' and v.warning for v in s.issues.values()) and s.features.core
-ok, why = M.FeatureAvailable('rendering')
-assert not ok and why == problem['message'], why
-print('PASS: unverified game builds keep running with one dismissible warning; real failures, not warnings, are the reason a feature is off')
+assert any(v.code == 'loaded_mismatch' and v.warning for v in s.issues.values()) and s.features.core and s.features.rendering
+assert M.FeatureAvailable('rendering') is True
+print('PASS: game builds the binary does not know or rejects keep running with warnings; only a library not loaded yet holds a feature back')
 
 # A module from before game build checks (no CheckCompatibility): its own guards decide; rendering
 # (physics on the server) stays on with one game_unchecked warning, also after InitPostEntity.

@@ -46,9 +46,13 @@ local function messages(detailed)
  local status=M.GetInstallationStatus()
  local server=M.serverInstallation
  local ownRefused,serverRefused=refused(status),refused(server)
+ -- The package unpacked into the wrong folder: its own sentence says where and what to do,
+ -- in place of the download instruction (downloading again would not help).
+ local misplaced
  for _,v in ipairs(status and status.issues or {}) do
   if not covered(v,status.update) then pending=pending+1 end
-  if not detailed and ((not v.warning and downloadable[v.code]) or (ownRefused and runsAnyway(v))) then binary=true
+  if v.code=='misplaced_package' and not detailed then misplaced=M.Localize(v.message)
+  elseif not detailed and ((not v.warning and downloadable[v.code]) or (ownRefused and runsAnyway(v))) then binary=true
   -- Files this addon does not know (they run anyway) read as one line too.
   elseif not detailed and v.warning and v.identity then unknown=true
   else result[#result+1]=describe(v) end
@@ -60,8 +64,8 @@ local function messages(detailed)
   elseif detailed or v.code~='outdated_release' then result[#result+1]=L('install.server_issue',{issue=describe(v)}) end
   if not covered(v,server.update) and not serverOnly(v) then pending=pending+1 end
  end
- if binary then table.insert(result,1,L'install.binary_problem') elseif unknown then table.insert(result,1,L'install.binary_unrecognized') end
- return result,pending,binary
+ if misplaced then table.insert(result,1,misplaced) elseif binary then table.insert(result,1,L'install.binary_problem') elseif unknown then table.insert(result,1,L'install.binary_unrecognized') end
+ return result,pending,binary,misplaced~=nil
 end
 -- Dismiss hides the banner and the notice until the problems change; the installation
 -- window still lists them. A warning about files this addon does not know comes back for
@@ -250,10 +254,59 @@ local function updateComing()
  if update.required then return not M.InstallationDismissed() end
  local _,_,binary=messages() return not binary
 end
+-- Installed into the wrong folder (issue #6): a window says so once per game run, until the
+-- files are moved or the player turns it off for this copy. The notice, the banner and the
+-- External Models tab say it too.
+local misplacedPath='mmd_hotloader/misplaced_dismissed.txt'
+local guide='https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan#install-and-use'
+local function misplacedIssue()
+ local status=M.GetInstallationStatus()
+ for _,v in ipairs(status and status.issues or {}) do if v.code=='misplaced_package' then return v end end
+end
+-- Don't show this again: for this misplaced copy, neither the window nor the notice.
+local function misplacedSilenced() local v=misplacedIssue() return v~=nil and file.Read(misplacedPath,'DATA')==tostring(v.detail) end
+local function misplacedDue()
+ local v=misplacedIssue()
+ if not v or misplacedSilenced() then return false end
+ local at=tonumber(updateState().misplaced) return not (at~=nil and at>=os.time()-SysTime()-2)
+end
+function M.OpenMisplaced()
+ local v=misplacedIssue()
+ if not v then return M.OpenInstallation() end
+ if IsValid(M.misplacedWindow) and M.misplacedWindow:IsVisible() then M.misplacedWindow:MakePopup() return M.misplacedWindow end
+ local frame=vgui.Create('DFrame') M.misplacedWindow=frame M.installationNoticeShown=true
+ saveUpdateState({misplaced=os.time()})
+ frame:SetSize(math.min(700*scale,ScrW()-40),math.min(420*scale,ScrH()-40)) frame:Center() frame:MakePopup()
+ local buttons=frame:Add('DPanel') buttons:Dock(BOTTOM) buttons:DockMargin(6,6,6,6) buttons:SetTall(30*scale) buttons:SetPaintBackground(false)
+ local function label(b,text) b:SetText(text) surface.SetFont(b:GetFont()) b:SetWide(math.max(b.minimum,surface.GetTextSize(text)+16*scale)) end
+ local function button(side,click,width) local b=buttons:Add('DButton') b:Dock(side) b:DockMargin(side==RIGHT and 8 or 0,0,side==LEFT and 8 or 0,0) b.DoClick=click b.minimum=width*scale return b end
+ local open=button(LEFT,function() gui.OpenURL(guide) end,170)
+ local close=button(RIGHT,function() frame:Close() end,110)
+ local never=button(RIGHT,function() file.CreateDir('mmd_hotloader') file.Write(misplacedPath,tostring(v.detail)) frame:Close() end,170)
+ local scroll=frame:Add('DScrollPanel') scroll:Dock(FILL) scroll:DockMargin(10,6,10,0)
+ local body=scroll:Add('DLabel') body:Dock(TOP) body:SetWrap(true) body:SetAutoStretchVertical(true)
+ local function refresh()
+  local status=M.GetInstallationStatus() local files=status and status.files or {}
+  local expected={}
+  -- Relative to the Garry's Mod folder: the module's path is in garrysmod (MOD).
+  for _,key in ipairs({'runtime',status and status.realm or 'client'}) do local f=files[key] if f and isstring(f.relative) then expected[#expected+1]=(((f.search=='MOD' and 'garrysmod/' or '')..f.relative):gsub('/','\\')) end end
+  frame:SetTitle(L'install.misplaced.title')
+  body:SetFont(bodyFont()) body:SetText(L('install.misplaced.text',{found=(tostring(v.found or v.detail):gsub('/','\\')),expected=table.concat(expected,'\n')}))
+  label(open,L'install.misplaced.button.guide') label(never,L'install.misplaced.button.never') label(close,L'common.close')
+  buttons:InvalidateLayout()
+ end
+ refresh()
+ hook.Add('MMDHL.LanguageChanged',frame,refresh)
+ return frame
+end
+concommand.Add('mmdhl_installation_folder',function() M.OpenMisplaced() end)
 local function notify()
  -- Warnings the player dismissed do not raise the notice.
- local _,pending,binary=messages()
- if M.installationNoticeShown or pending==0 or M.InstallationDismissed() or not IsValid(LocalPlayer()) then return end
+ local _,pending,binary,misplaced=messages()
+ if M.installationNoticeShown or pending==0 or not IsValid(LocalPlayer()) then return end
+ -- Installed into the wrong folder: the window is this run's notice.
+ if misplacedDue() then M.OpenMisplaced() return end
+ if M.InstallationDismissed() or (misplaced and misplacedSilenced()) then return end
  -- Never beside the update window (its OnClose asks again); a required update's window was this map's notice.
  local update=M.NativeUpdateDue()
  if updateWindowOpen() or updateComing() or (update and update.required and M.updateNoticeShown) then return end
@@ -261,7 +314,8 @@ local function notify()
  local panel=vgui.Create('DPanel') panel:SetSize(math.min(540,ScrW()-40),92) panel:SetPos(ScrW()-panel:GetWide()-20,40)
  panel:SetMouseInputEnabled(true)
  local close=panel:Add('DButton') close:Dock(RIGHT) close:SetWide(28) close:SetText('×') close.DoClick=function() panel:Remove() end
- local details=panel:Add('DButton') details:Dock(FILL) details:SetWrap(true) details:SetFont(bodyFont()) details:SetText(binary and L'install.notice_binary' or L'install.notice') details.DoClick=function() panel:Remove() M.OpenInstallation() end
+ local details=panel:Add('DButton') details:Dock(FILL) details:SetWrap(true) details:SetFont(bodyFont()) details:SetText(misplaced and L'install.notice_misplaced' or binary and L'install.notice_binary' or L'install.notice')
+ details.DoClick=function() panel:Remove() if misplaced then M.OpenMisplaced() else M.OpenInstallation() end end
  timer.Simple(20,function() if IsValid(panel) then panel:Remove() end end)
 end
 -- The update window: Download (the releases page only) or the mirror, then Remind me

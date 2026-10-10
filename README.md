@@ -14,14 +14,14 @@ If any issue appears when using Vulkan version (likely due to limited memory or 
 ## Install and use
 1. Subscribe to the [Model Hotloader Workshop addon](https://steamcommunity.com/sharedfiles/filedetails/?id=3810025467).
 2. Download the most recent binary module package from [Releases](https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases). 在中国大陆请使用[替代链接](https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord).
-3. Close Garry's Mod and copy the package's `GarrysMod` folder onto `steamapps\common\GarrysMod`, replacing files.
+3. Close Garry's Mod and copy the package's `GarrysMod` folder onto `steamapps\common\GarrysMod`, replacing files: its contents belong in the game folder itself (the one with `bin` and `garrysmod`), not in `garrysmod`. Afterwards `steamapps\common\GarrysMod\bin\win64\mmdhl_runtime_win64.dll` exists. A package copied into `garrysmod` (or `addons`) is detected: a window and External Models say where the files are and where they belong.
 
 There are two packages:
 
 - `…-win64-vulkan.zip` (default): the native modules plus DXVK (`bin\win64\d3d9.dll`), which runs Garry's Mod's Direct3D 9 renderer on Vulkan. It lowers GPU load and lets the Vulkan physics processor share the renderer's device.
 - `…-win64-opengl-remix.zip`: the native modules only; the game keeps its own Direct3D 9 renderer. Use it if DXVK does not work on your PC, or if you use RTX Remix, ReShade or another `d3d9.dll`, which the `-vulkan` package would replace. Deleting `bin\win64\d3d9.dll` also returns the game to Direct3D 9.
 
-The installation banner (Q > External Models) shows which renderer is active. When the Workshop addon recommends a newer binary module than the one installed, a window offers the download (it can be skipped for that version or turned off for good); older binary modules keep working, and features that need the update say so. A binary module the Workshop addon does not know yet (a build from GitHub Actions or a local build, a newer release, modified files) runs too, with a warning in External Models that **Dismiss** hides until the files change. The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. 
+The installation banner (Q > External Models) shows which renderer is active. When the Workshop addon recommends a newer binary module than the one installed, a window offers the download (it can be skipped for that version or turned off for good); older binary modules keep working, and features that need the update say so. A binary module the Workshop addon does not know yet (a build from GitHub Actions or a local build, a newer release, modified files) runs too, with a warning in External Models that **Dismiss** hides until the files change; so does a game build whose interfaces the binary's checks reject (the binary still refuses each engine call it cannot make safely). The Multicore CPU Processor is the default physics processor; the Vulkan GPU Processor is an experimental alternative that needs the DXVK renderer. 
 
 If cloned with locally built binary modules, run:
 

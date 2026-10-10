@@ -80,6 +80,9 @@ if SERVER then
   return out
  end
  hook.Add('Tick','MMDHL.SecondaryScene',function()
+  -- A failed capture (the game's physics library refused by the binary's own checks) turned
+  -- contacts off below; asking again every tick would only repeat its error and notice.
+  if mmdhl.sceneError then return end
   if game.SinglePlayer() and not localDemand then
    if active then native.CaptureSecondaryScene() active=false end
    mmdhl.sceneDiagnostics={active=false,captureMs=0,objects=0} return

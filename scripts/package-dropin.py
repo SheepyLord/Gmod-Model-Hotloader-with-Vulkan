@@ -46,12 +46,15 @@ STEPS = '''
    Properties > Betas > x86-64).
 2. Copy the GarrysMod folder in this archive onto your Garry's Mod folder, for
    example C:\\Program Files (x86)\\Steam\\steamapps\\common\\GarrysMod, and
-   replace existing files. It adds:
+   replace existing files. Its contents go into the game folder itself (the one
+   that contains bin and garrysmod), NOT into the garrysmod folder inside it.
+   It adds:
    - garrysmod\\lua\\bin: native modules, import worker, runtime and CoACD
    - garrysmod\\shaders\\fxc: character model shaders
    - bin\\win64\\{runtime}: runtime loaded by the game{renderer_line}
    - bin\\win64\\LICENSES{dxvk_licenses}: license notices of Model Hotloader
      and the libraries built into these files
+   Check: <Garry's Mod folder>\\bin\\win64\\{runtime} must exist afterwards.
 3. Start Garry's Mod and open Q > External Models. Missing or mismatched files
    are reported there with repair instructions.{renderer_check}
    Files the Workshop addon does not know yet (a test build, a release newer

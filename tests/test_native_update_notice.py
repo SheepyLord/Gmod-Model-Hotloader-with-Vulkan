@@ -448,3 +448,47 @@ lua, g = session(status(installed='2.3.0', recommended='2.3.0'))
 g.mmdhl.ShowNativeUpdateNeeded(L(g, 'bonemap.feature'), '2.4.0').query.click()
 assert len(windows(g, L(g, 'install.window_title'))) == 1, 'without a known update the dialog should open the installation window'
 print('PASS: ShowNativeUpdateNeeded shows one dialog per feature that opens the update or installation window')
+
+
+# --- Installed into the wrong folder (issue #6): a window once per game run in place of the
+# notice, the notice on later maps, nothing at all after Don't show this again.
+DATA.clear()
+FOUND = 'garrysmod/garrysmod/lua/bin/gmcl_mmdhl_win64.dll'
+BACKSLASH = chr(92)
+def wrong_folder():
+    s = {'recommended': '2.3.0', 'realm': 'client', 'features': {'core': False},
+         'files': {'runtime': {'relative': 'bin/win64/mmdhl_runtime_win64.dll', 'search': 'BASE_PATH'},
+                   'client': {'relative': 'lua/bin/gmcl_mmdhl_win64.dll', 'search': 'MOD'}},
+         'issues': [dict(code='misplaced_package', component='installation', feature='core', cause=True, detail=FOUND, found=FOUND, message='MISPLACED'),
+                    dict(code='missing', component='client', feature='core', cause=True, message='missing client')],
+         'download': RELEASES, 'downloadAlt': MIRROR}
+    return session(s)
+new_run()
+lua, g = wrong_folder()
+join(lua)
+title = L(g, 'install.misplaced.title')
+shown = windows(g, title)
+assert len(shown) == 1 and not notices(g, 'install.notice_misplaced') and not notices(g, 'install.notice_binary'), 'the wrong-folder window did not stand in for the notice'
+expected = BACKSLASH.join(['bin', 'win64', 'mmdhl_runtime_win64.dll']) + '\n' + BACKSLASH.join(['garrysmod', 'lua', 'bin', 'gmcl_mmdhl_win64.dll'])
+body = L(g, 'install.misplaced.text', found=FOUND.replace('/', BACKSLASH), expected=expected)
+assert find(shown[0], body) is not None, 'the window does not say where the files are and where they belong'
+text = g.mmdhl.InstallationSummary()[0]
+assert text.split('\n')[0] == 'MISPLACED' and L(g, 'install.binary_problem') not in text, text
+# The next map of the same run: the notice, no second window.
+new_map()
+lua, g = wrong_folder()
+join(lua)
+assert not windows(g, title) and len(notices(g, 'install.notice_misplaced')) == 1, 'a later map did not get the wrong-folder notice'
+# The next run: the window again; Don't show this again silences window and notice for this copy.
+new_run()
+lua, g = wrong_folder()
+join(lua)
+shown = windows(g, title)
+assert len(shown) == 1
+find(shown[0], L(g, 'install.misplaced.button.never')).DoClick()
+assert DATA.get('mmd_hotloader/misplaced_dismissed.txt') == FOUND
+new_run()
+lua, g = wrong_folder()
+join(lua)
+assert not windows(g, title) and not notices(g, 'install.notice_misplaced'), 'Don\'t show this again did not last'
+print('PASS: a package unpacked into the wrong folder opens one window per game run (where the files are, where they belong), the notice on later maps, and nothing after Don\'t show this again')

@@ -552,3 +552,44 @@ for p in sorted((ROOT/'addon').rglob('*')):
         found=[word for word in GONE if word in text]
         assert not found,f'{p.relative_to(ROOT)} still mentions {found}'
 print('PASS: no API, data file, console command, button or phrase for accepting unverified native files remains in addon/')
+
+# ---- The package unpacked into the wrong folder (issue #6) ----
+MODULE_FILE,RUNTIME_FILE=NAMES['client'],NAMES['runtime']
+def wrong(files,find=None):
+    def reader(path,search,*_):
+        found=files.get(search+'/'+path)
+        return (convert(found),None) if found else (None,'missing')
+    env=convert(dict(server=False,dedicated=False,windows=True,arch='x64'))
+    # file.Find in the game is a Lua function; a Python callable reaches Lua as userdata.
+    if find: env.find=lua.eval('function(f) return function(p) return f(p) end end')(lambda pattern: lua.table_from(find(pattern)))
+    return lua.globals().mmdhl.EvaluateInstallation(convert(policy),reader,env)
+def stray(): return dict(size=1,sha256='e'*64)
+M=lua.globals().mmdhl
+# The contents of the package's GarrysMod folder copied into garrysmod: found, first, explained.
+s=wrong({'BASE_PATH/garrysmod/garrysmod/lua/bin/'+MODULE_FILE:stray(),'BASE_PATH/garrysmod/bin/win64/'+RUNTIME_FILE:stray()})
+first=listed(s.issues)[0]
+assert first.code=='misplaced_package' and first.warning and first.cause and first.feature=='core' and first.detail=='garrysmod/garrysmod/lua/bin/'+MODULE_FILE,codes(s)
+assert chr(92).join(['garrysmod','garrysmod','lua','bin',MODULE_FILE]) in M.Localize(first.message) and features(s)==CLIENT_ON
+# The zip's GarrysMod folder dropped into garrysmod, or into the game folder.
+for root in ('garrysmod/GarrysMod/','GarrysMod/','garrysmod/addons/'):
+    s=wrong({'BASE_PATH/'+root+'bin/win64/'+RUNTIME_FILE:stray()})
+    assert codes(s)[0]=='misplaced_package' and listed(s.issues)[0].detail==root+'bin/win64/'+RUNTIME_FILE,(root,codes(s))
+# Only the runtime misplaced (the module is where it belongs).
+files=installed();del files[RUNTIME];files['BASE_PATH/garrysmod/bin/win64/'+RUNTIME_FILE]=stray()
+s=wrong(files);assert codes(s)[0]=='misplaced_package',codes(s)
+# An unpacked release folder left where it was unpacked (found by name).
+release_dir='Model-Hotloader-2.3.0-63b581c4-win64-vulkan'
+s=wrong({'BASE_PATH/garrysmod/'+release_dir+'/GarrysMod/garrysmod/lua/bin/'+MODULE_FILE:stray()},find=lambda pattern: [release_dir] if pattern=='garrysmod/Model-Hotloader-*' else [])
+assert codes(s)[0]=='misplaced_package' and listed(s.issues)[0].detail=='garrysmod/'+release_dir+'/GarrysMod/garrysmod/lua/bin/'+MODULE_FILE,codes(s)
+# A copy left in the wrong folder beside a working installation says nothing.
+files=installed();files['BASE_PATH/garrysmod/bin/win64/'+RUNTIME_FILE]=stray()
+s=wrong(files);assert 'misplaced_package' not in codes(s),codes(s)
+# Nothing loads then (no module where the game looks): require is never tried, and the
+# misplaced folder, not the missing file, is the reason every player reads.
+files={k:v for k,v in installed().items() if k not in (CLIENT,RUNTIME)}
+files['BASE_PATH/garrysmod/garrysmod/lua/bin/'+MODULE_FILE]=stray()
+lua_,g,M2,ok=session(files);s=M2.GetInstallationStatus()
+assert ok is False and 'require mmdhl' not in events(g) and not s.features.core,events(g)
+misplaced_issue=issue(s,'misplaced_package')[0]
+assert not misplaced_issue.warning and M2.loadError==misplaced_issue.message,(M2.Localize(M2.loadError),codes(s))
+print('PASS: a package unpacked into garrysmod, the addons folder, a nested GarrysMod folder or a release folder is found and named first; a stray copy beside a working installation is not')
