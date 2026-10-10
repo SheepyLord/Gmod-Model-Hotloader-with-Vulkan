@@ -32,6 +32,7 @@ end
 local function finite(v) return isnumber(v) and v==v and v~=math.huge and v~=-math.huge end
 local function whole(v,low,high) return finite(v) and v%1==0 and v>=low and v<=high end
 local function text(v,bytes) return v==nil or (isstring(v) and #v<=bytes) end
+local MaxIndex=1048576
 -- Data only (text, finite numbers, booleans, vectors, angles and tables of them), bounded.
 local function plainCopy(value,depth,budget)
  local kind=type(value)
@@ -59,8 +60,10 @@ function mmdhl.CleanNativeState(state)
   if not options or not text(options.secondaryBackend,32) or not text(options.role,32) or not text(options.gender,16) or (options.hostile~=nil and not isbool(options.hostile)) then return nil,invalid end
   out.options=options
  end
+ -- Morph and bone counts have no import limit (PMX imports only warn past 16,384): these bounds
+ -- only refuse what no model has.
  if state.morphs~=nil then
-  if not istable(state.morphs) or #state.morphs>8192 then return nil,invalid end
+  if not istable(state.morphs) or #state.morphs>MaxIndex then return nil,invalid end
   local morphs={} for i,v in pairs(state.morphs) do if not whole(i,1,#state.morphs) or not finite(v) then return nil,invalid end morphs[i]=v end
   out.morphs=morphs
  end
@@ -71,7 +74,7 @@ function mmdhl.CleanNativeState(state)
   for i,pose in pairs(state.manual) do
    local index=tonumber(i) count=count+1
    local copy=istable(pose) and plainCopy(pose,1,{n=0})
-   if count>4096 or not whole(index,1,4096) or not copy then return nil,invalid end
+   if count>MaxIndex or not whole(index,1,MaxIndex) or not copy then return nil,invalid end
    manual[index]=copy
   end
   out.manual=manual
@@ -270,15 +273,18 @@ if not mmdhl.PersistenceDuplicator then
  end
  duplicator.DoGeneric=function(ent,data,...)
   if not data or not carrierPath(data.Model) then return generic(ent,data,...) end
-  local rig,err=mmdhl.EnsureModel(data.Model) if not rig then error(mmdhl.Localize(err)) end
+  -- A refused copy leaves nothing behind: the entity the duplicator made for it this tick,
+  -- never spawned once the error ends its paste, goes first.
+  local function refuse(why) if IsValid(ent) and ent:GetCreationTime()>=CurTime() then ent:Remove() end error(mmdhl.Localize(why)) end
+  local rig,err=mmdhl.EnsureModel(data.Model) if not rig then refuse(err) end
   local state=stateFrom(data)
-  if state~=nil then local clean,why=mmdhl.CleanNativeState(state) if not clean then error(mmdhl.Localize(why)) end state=clean end
-  local converted,options=rigForClass(rig,ent:GetClass(),state) if not converted then error(mmdhl.Localize(options)) end
+  if state~=nil then local clean,why=mmdhl.CleanNativeState(state) if not clean then refuse(why) end state=clean end
+  local converted,options=rigForClass(rig,ent:GetClass(),state) if not converted then refuse(options) end
   local values=table.Copy(data) values.Model=converted.model
   if ent:GetModel()~=converted.model then ent:SetModel(converted.model) end
   if ent:GetNW2String('MMDHLRig','')~=converted.key then
    local bound,bindError=mmdhl.AttachNative(ent,converted.asset,options)
-   if not bound then error(mmdhl.Localize(bindError)) end
+   if not bound then refuse(bindError) end
   end
   -- Attach before the normal loader writes bodygroups/submaterials, including
   -- overflow slots. Bone indices and local finger frames remain stable.

@@ -67,7 +67,11 @@ ENTITY.GetNW2Int=ENTITY.GetNW2String
 function ENTITY:SetNW2String(k,v) self.nw[k]=v end ENTITY.SetNW2Int=ENTITY.SetNW2String
 function ENTITY:GetPhysicsObjectCount() return 18 end function ENTITY:IsRagdoll() return self.class=='prop_ragdoll' end
 function ENTITY:GetFlexScale() return 1 end function ENTITY:SetFlexScale() end
-function entity(class) return setmetatable({class=class,nw={},engineModels={}},{__index=ENTITY}) end
+-- The server clock: entities made this tick have CurTime() as their creation time.
+NOW=100 CurTime=function() return NOW end
+function ENTITY:GetCreationTime() return self.created end function ENTITY:Remove() self.removed=true end
+CREATED={}
+function entity(class) local e=setmetatable({class=class,nw={},engineModels={},created=NOW},{__index=ENTITY}) CREATED[#CREATED+1]=e return e end
 
 -- Sandbox's duplicator: a generic entity is created and DoGeneric sets its model.
 MODIFIERS={}
@@ -183,8 +187,20 @@ local e=entity('prop_ragdoll') ENTITY.SetModel(e,OLD.model) e.nw={}
 MODIFIERS.MMDHLNative(p,e,{version=4,asset=A,rigKey=OLD.key,model=OLD.model,options={frozen=true,role='ragdoll'},morphs={},scale=1,manual={},eyeWorld=false,materials={overrides={},groups={['0']=1}},future={1}})
 assert(attachedTo(e).key==OLD.key and e.stored and e.stored.rigKey==OLD.key and APPLIED.groups['0']==1,'a valid state with an unknown key did not bind')
 mmdhl.SetMorphWeights=nil mmdhl.ApplyMaterialState=nil
+-- Imports set no morph or bone limit (PMX only warns past 16,384): a large model's state is kept whole.
+local many={} for i=1,20000 do many[i]=i%2 end
+local big=mmdhl.CleanNativeState({version=4,asset=A,rigKey=OLD.key,model=OLD.model,morphs=many,manual={[9000]={rotation={0,0,0,1}},['12000']={translation={1,2,3}}}})
+assert(big and #big.morphs==20000 and big.morphs[20000]==0 and big.manual[9000].rotation[4]==1 and big.manual[12000].translation[3]==3,'a large model\'s state was refused or cut')
+-- A damaged dupe pasted through the duplicator leaves nothing behind: the entity made for it this
+-- tick goes before the error. One that existed before (DoGeneric on it again) stays.
+local damaged={Class='prop_ragdoll',Model=OLD.model,EntityMods={MMDHLNative={version=4,asset=A,rigKey=OLD.key,model=OLD.model,morphs={1,'a'}}}}
+local made=#CREATED
+local pasted,why=pcall(duplicator.CreateEntityFromTable,p,table.Copy(damaged))
+assert(not pasted and #CREATED==made+1 and CREATED[#CREATED].removed and attachedTo(CREATED[#CREATED])==nil,'a damaged paste left its entity or bound it')
+local existing=entity('prop_ragdoll') existing.created=NOW-5
+assert(not pcall(duplicator.DoGeneric,existing,table.Copy(damaged)) and not existing.removed,'refusing a state removed an entity that existed before')
 ''')
-print('PASS: dupes, saves and model selections of 2.2 ragdolls, NPCs and player models keep their carrier; an NPC made from a 2.2 ragdoll is fitted again; generators 29 and 32 are refused; damaged states are refused before binding')
+print('PASS: dupes, saves and model selections of 2.2 ragdolls, NPCs and player models keep their carrier; an NPC made from a 2.2 ragdoll is fitted again; generators 29 and 32 are refused; damaged states are refused before binding and a refused paste leaves no entity; a large model\'s state is kept whole')
 
 lua.execute(r'''
 -- After a restart: the published 2.2 NPC and player model (with its c_arms) are registered again.
