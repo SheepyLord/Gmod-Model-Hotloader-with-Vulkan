@@ -8,11 +8,15 @@ static void check(bool value,const char* what){if(!value)throw std::runtime_erro
 static Bytes encode(const std::wstring& w,unsigned codepage){return encodeCodepage(w,codepage);}
 static Bytes utf16(const std::wstring& w,bool bom){Bytes b;if(bom){b.push_back(0xFF);b.push_back(0xFE);}for(wchar_t c:w){b.push_back(uint8_t(c&255));b.push_back(uint8_t(c>>8));}return b;}
 static void write(const fs::path& p,const Bytes& b){fs::create_directories(p.parent_path());std::ofstream f(p,std::ios::binary);f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));}
+#ifdef _WIN32
+static bool validUtf8(const std::string& s){return s.empty()||MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),int(s.size()),nullptr,0)>0;}
+#else
 static bool validUtf8(const std::string& s){
  for(size_t i=0;i<s.size();){auto c=uint8_t(s[i]);size_t n=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:(c>>3)==30?4:0;if(!n||i+n>s.size())return false;
   for(size_t k=1;k<n;k++)if((uint8_t(s[i+k])>>6)!=2)return false;i+=n;}
  return true;
 }
+#endif
 static Bytes pmx(bool utf8Text,const std::wstring& name,const std::wstring& comment){
  Bytes b={'P','M','X',' '};float version=2.f;auto p=reinterpret_cast<unsigned char*>(&version);b.insert(b.end(),p,p+4);b.push_back(8);
  for(uint8_t g:{uint8_t(utf8Text?1:0),uint8_t(0),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4),uint8_t(4)})b.push_back(g);
