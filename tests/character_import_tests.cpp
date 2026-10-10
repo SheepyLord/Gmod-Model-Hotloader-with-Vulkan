@@ -600,7 +600,12 @@ void dependencyTests(){
  check(probeCharacter(beside,Json::object(),{})["auto"]["humanoid"]==true,"dependencies: a .gltf with its buffer beside it is read");
  // A buffer out of the model's folder (climbing out, absolute or behind a junction) would become vertex data: never read.
  // (Assimp then tries the file name in the model's folder, so the outside file has a name of its own.)
+#ifdef _WIN32
  auto junction=[](const fs::path& link,const fs::path& target){auto cmd=L"cmd /c mklink /J \""+link.wstring()+L"\" \""+target.wstring()+L"\" >nul";return _wsystem(cmd.c_str())==0;};
+#else
+ // A symbolic link stands in for the junction.
+ auto junction=[](const fs::path& link,const fs::path& target){std::error_code e;fs::create_directory_symlink(target,link,e);return !e;};
+#endif
  check(junction(root/L"model"/L"linked",root/L"outside"),"dependencies: the test junction is made");
  for(auto [name,uri,label]:{std::tuple{L"escape.gltf",std::string("../outside/far.bin"),"that climbs out of the model's folder"},{L"absolute.gltf",utf8((root/L"outside"/L"far.bin").generic_wstring()),"at an absolute path"},{L"linked.gltf",std::string("linked/far.bin"),"behind a junction"}}){
   auto file=gltf(name,uri);fails([&]{probeCharacter(file,Json::object(),{});},"character.parse","",std::string("dependencies: a buffer ")+label+" is never read");}

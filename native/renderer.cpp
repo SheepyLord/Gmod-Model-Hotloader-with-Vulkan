@@ -1,4 +1,10 @@
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "posix.hpp"
+#include <dlfcn.h>
+#include <sys/mman.h>
+#endif
 #include <materialsystem/imaterialsystem.h>
 #include <materialsystem/imaterial.h>
 #include <materialsystem/imaterialvar.h>
@@ -9,6 +15,7 @@
 #include <vphysics_interface.h>
 #include <engine/ivmodelinfo.h>
 #include <studio.h>
+#include "sdk_end.hpp"
 #include "runtime.hpp"
 #include "renderer.hpp"
 #include "validation_once.hpp"
@@ -40,8 +47,12 @@ void GenerateLineLoopIndexBuffer(unsigned short* p,int n,int first){GenerateLine
 namespace mmd {
 std::string modelAnimationDiagnostics(const std::string& path){
     requireGameBinary(L"engine.dll");
+#ifdef _WIN32
     auto engine=GetModuleHandleW(L"engine.dll");
     auto factory=engine?reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(engine,"CreateInterface")):nullptr;
+#else
+    auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"engine.dll"));
+#endif
     auto info=factory?static_cast<IVModelInfo*>(factory(VMODELINFO_CLIENT_INTERFACE_VERSION,nullptr)):nullptr;
     if(!info)throw std::runtime_error("Source model information interface unavailable");
     auto model=info->GetModel(info->GetModelIndex(path.c_str()));
@@ -247,6 +258,7 @@ std::string rendererStats(){
 }
 static void initialize(){
     static ValidationOnce validation;validation.check([]{
+#ifdef _WIN32
     auto module=GetModuleHandleW(L"materialsystem.dll");if(!module)throw std::runtime_error("Material system not loaded");
     // Remix replaces the programmable shader family with its fixed-function
     // stdshader_dx6.dll. It intentionally does not load stdshader_dx9.dll.
@@ -256,6 +268,12 @@ static void initialize(){
         requireGameBinary(library);
     }
     auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));if(!factory)throw std::runtime_error("Material factory unavailable");
+#else
+    // Linux renders through ToGL (OpenGL) with the programmable shaders; there is no RTX Remix.
+    auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"materialsystem.dll"));if(!factory)throw std::runtime_error("Material system not loaded");
+    remixFixedFunction=false;
+    for(auto library:{L"materialsystem.dll",L"shaderapidx9.dll",L"stdshader_dx9.dll"})requireGameBinary(library);
+#endif
     materials=static_cast<IMaterialSystem*>(factory("VMaterialSystem080",nullptr));if(!materials)throw std::runtime_error("VMaterialSystem080 unavailable");materialShift=appSystemShift(materials,L"materialsystem.dll",MaterialSystemVtableLength);status=materialShift?"VMaterialSystem080 (default-branch layout)/native dynamic mesh":"VMaterialSystem080/native dynamic mesh";
     });
 }
@@ -283,25 +301,39 @@ static void* sourceModelRender(){
     // IVModelRender::SetupLighting sets Source's light cache, ambient cube,
     // local light descriptors and local cubemap for this model origin.
     static void* modelRender=nullptr;static ValidationOnce validation;
-    validation.check([]{auto dll=GetModuleHandleW(L"engine.dll");wchar_t path[32768];
+    validation.check([]{
+#ifdef _WIN32
+        auto dll=GetModuleHandleW(L"engine.dll");wchar_t path[32768];
         if(!dll||!GetModuleFileNameW(dll,path,32768))throw std::runtime_error("Source engine library unavailable");
         requireGameBinary(L"engine.dll");
-        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(dll,"CreateInterface"));if(!factory||!(modelRender=factory("VEngineModel016",nullptr)))throw std::runtime_error("Source model renderer unavailable");});
-    requireOwnedSlots(modelRender,L"engine.dll",{21});
+        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(dll,"CreateInterface"));
+#else
+        requireGameBinary(L"engine.dll");
+        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"engine.dll"));
+#endif
+        if(!factory||!(modelRender=factory("VEngineModel016",nullptr)))throw std::runtime_error("Source model renderer unavailable");});
+    requireOwnedSlots(modelRender,L"engine.dll",{abi::ModelRenderSetupLighting});
     return modelRender;
 }
 static IClientEntityList* sourceEntityList(){
     static IClientEntityList* entities=nullptr;static ValidationOnce validation;
-    validation.check([]{auto module=GetModuleHandleW(L"client.dll");wchar_t path[32768];
+    validation.check([]{
+#ifdef _WIN32
+        auto module=GetModuleHandleW(L"client.dll");wchar_t path[32768];
         if(!module||!GetModuleFileNameW(module,path,32768))throw std::runtime_error("Source client library unavailable");
         requireGameBinary(L"client.dll");
-        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));if(!factory||!(entities=static_cast<IClientEntityList*>(factory("VClientEntityList003",nullptr))))throw std::runtime_error("Source entity list unavailable");});
-    requireOwnedSlots(entities,L"client.dll",{3,4});
+        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));
+#else
+        requireGameBinary(L"client.dll");
+        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"client.dll"));
+#endif
+        if(!factory||!(entities=static_cast<IClientEntityList*>(factory("VClientEntityList003",nullptr))))throw std::runtime_error("Source entity list unavailable");});
+    requireOwnedSlots(entities,L"client.dll",{abi::EntityListClientEntity,abi::EntityListClientEntityFromHandle});
     return entities;
 }
 void checkRenderer(){initialize();sourceModelRender();sourceEntityList();}
 void setupSourceLighting(float x,float y,float z){
-    auto modelRender=sourceModelRender();Vector center(x,y,z);auto table=*reinterpret_cast<void***>(modelRender);reinterpret_cast<void(*)(void*,const Vector&)>(table[21])(modelRender,center);
+    auto modelRender=sourceModelRender();Vector center(x,y,z);auto table=*reinterpret_cast<void***>(modelRender);reinterpret_cast<void(*)(void*,const Vector&)>(table[abi::ModelRenderSetupLighting])(modelRender,center);
     // SetupLighting is an old two-light convenience path, even on hardware
     // supporting four model lights. It discards the other lights instead of
     // folding them into ambient. gm_construct's ceiling spotlight is third.
@@ -309,19 +341,25 @@ void setupSourceLighting(float x,float y,float z){
     // as studio models through IEngineTool::GetLightingConditions.
     static void* lightingTools=nullptr;static ValidationOnce validation;
     validation.check([]{
+#ifdef _WIN32
         auto dll=GetModuleHandleW(L"engine.dll");
         auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(dll,"CreateInterface"));
+        auto base=reinterpret_cast<uintptr_t>(dll);
+#else
+        auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"engine.dll"));
+        auto base=gameLibraryBase(L"engine.dll");
+#endif
         lightingTools=factory?factory("VENGINETOOL003",nullptr):nullptr;
         if(!lightingTools)throw std::runtime_error("Source map-lighting interface unavailable");
         auto slots=*reinterpret_cast<void***>(lightingTools);
-        // Source's pinned x64 interface has the inherited destructor at slot 0.
-        requireOwnedSlots(lightingTools,L"engine.dll",{77});
-        requireAbiRva(L"engine.dll","lighting",reinterpret_cast<uintptr_t>(slots[77])-reinterpret_cast<uintptr_t>(dll));
+        // Source's pinned x64 interface has the inherited destructor at slot 0 (slots 0-1 on Linux).
+        requireOwnedSlots(lightingTools,L"engine.dll",{abi::EngineToolLightingConditions});
+        requireAbiRva(L"engine.dll","lighting",reinterpret_cast<uintptr_t>(slots[abi::EngineToolLightingConditions])-base);
     });
-    static_assert(sizeof(LightDesc_t)==88);
+    static_assert(sizeof(LightDesc_t)==88||sizeof(void*)==4);
     Vector ambient[6];LightDesc_t lights[4];std::memset(lights,0,sizeof(lights));
     auto slots=*reinterpret_cast<void***>(lightingTools);
-    int count=reinterpret_cast<int(*)(void*,const Vector&,Vector*,int,LightDesc_t*)>(slots[77])(lightingTools,center,ambient,4,lights);
+    int count=reinterpret_cast<int(*)(void*,const Vector&,Vector*,int,LightDesc_t*)>(slots[abi::EngineToolLightingConditions])(lightingTools,center,ambient,4,lights);
     if(count<0||count>4)throw std::runtime_error("Invalid Source map-light count");
     initialize();CMatRenderContextPtr context(renderContext());
     for(int i=0;i<4;i++)context->SetLight(i,lights[i]);
@@ -340,13 +378,25 @@ matrix3x4_t* shadowSetup(void* self,IClientRenderable* renderable,int body,int s
     return originalShadowSetup(self,renderable,body,skin,info,custom);
 }
 void shadowDraw(void* self,IClientRenderable* renderable,const void* info,matrix3x4_t* custom);
+#ifdef _WIN32
 void writeShadowSlot(size_t slot,void* value){DWORD previous;if(!VirtualProtect(shadowTable+slot,sizeof(void*),PAGE_READWRITE,&previous))throw std::runtime_error("Cannot install Source shadow callback");InterlockedExchangePointer(shadowTable+slot,value);DWORD ignored;VirtualProtect(shadowTable+slot,sizeof(void*),previous,&ignored);}
+#else
+// The vtable lies in read-only relocated data: writable for the store, then as it was.
+void writeShadowSlot(size_t slot,void* value){
+    int previous=posix::protection(shadowTable+slot);if(previous<0||!posix::setProtection(shadowTable+slot,sizeof(void*),previous|PROT_WRITE))throw std::runtime_error("Cannot install Source shadow callback");
+    __atomic_store_n(shadowTable+slot,value,__ATOMIC_SEQ_CST);posix::setProtection(shadowTable+slot,sizeof(void*),previous);
+}
+#endif
 void installSourceShadows(){
     if(shadowTable)return;auto render=sourceModelRender();auto table=*reinterpret_cast<void***>(render);
     // Fail closed if another native module already replaced either callback.
+#ifdef _WIN32
     auto engine=GetModuleHandleW(L"engine.dll");for(int slot:{12,13}){MEMORY_BASIC_INFORMATION memory{};VirtualQuery(table[slot],&memory,sizeof(memory));if(memory.AllocationBase!=engine)throw std::runtime_error("Source shadow interface was replaced by another module");}
-    originalShadowSetup=reinterpret_cast<ShadowSetup>(table[12]);originalShadowDraw=reinterpret_cast<ShadowDraw>(table[13]);shadowTable=table;
-    try{writeShadowSlot(12,reinterpret_cast<void*>(shadowSetup));writeShadowSlot(13,reinterpret_cast<void*>(shadowDraw));}catch(...){shutdownSourceShadows();throw;}
+#else
+    for(auto slot:{abi::ModelRenderShadowSetup,abi::ModelRenderShadow})if(!gameLibraryCode(L"engine.dll",table[slot]))throw std::runtime_error("Source shadow interface was replaced by another module");
+#endif
+    originalShadowSetup=reinterpret_cast<ShadowSetup>(table[abi::ModelRenderShadowSetup]);originalShadowDraw=reinterpret_cast<ShadowDraw>(table[abi::ModelRenderShadow]);shadowTable=table;
+    try{writeShadowSlot(abi::ModelRenderShadowSetup,reinterpret_cast<void*>(shadowSetup));writeShadowSlot(abi::ModelRenderShadow,reinterpret_cast<void*>(shadowDraw));}catch(...){shutdownSourceShadows();throw;}
 }
 }
 void registerSourceShadow(int entity,uint64_t instance,const std::vector<std::string>& names,float alpha,void* corpsePhysics){
@@ -358,8 +408,12 @@ void registerSourceShadow(int entity,uint64_t instance,const std::vector<std::st
     // physics interface, not the undocumented extended Lua-interface vtable.
     auto client=corpsePhysics?static_cast<IClientEntity*>(static_cast<IPhysicsObject*>(corpsePhysics)->GetGameData()):entities->GetClientEntity(entity);
     if(!client)throw std::runtime_error("Source shadow entity not available");
+#ifdef _WIN32
     MEMORY_BASIC_INFORMATION region{};
     if(!VirtualQuery(*reinterpret_cast<void***>(client),&region,sizeof(region))||region.AllocationBase!=GetModuleHandleW(L"client.dll"))throw std::runtime_error("Source shadow physics owner is not a client entity");
+#else
+    if(!posix::readable(client,sizeof(void*))||!gameLibraryImage(L"client.dll",*reinterpret_cast<void***>(client)))throw std::runtime_error("Source shadow physics owner is not a client entity");
+#endif
     auto renderable=client->GetClientRenderable();
     initialize();
     for(auto& name:names){
@@ -376,8 +430,8 @@ void registerSourceShadow(int entity,uint64_t instance,const std::vector<std::st
 void removeSourceShadow(int entity){for(auto i=sourceShadows.begin();i!=sourceShadows.end();)if(i->second.entity==entity)i=sourceShadows.erase(i);else ++i;if(sourceShadows.empty())shutdownSourceShadows();}
 void shutdownSourceShadows(){
     sourceShadows.clear();if(!shadowTable)return;
-    if(shadowTable[12]==reinterpret_cast<void*>(shadowSetup))writeShadowSlot(12,reinterpret_cast<void*>(originalShadowSetup));
-    if(shadowTable[13]==reinterpret_cast<void*>(shadowDraw))writeShadowSlot(13,reinterpret_cast<void*>(originalShadowDraw));shadowTable=nullptr;
+    if(shadowTable[abi::ModelRenderShadowSetup]==reinterpret_cast<void*>(shadowSetup))writeShadowSlot(abi::ModelRenderShadowSetup,reinterpret_cast<void*>(originalShadowSetup));
+    if(shadowTable[abi::ModelRenderShadow]==reinterpret_cast<void*>(shadowDraw))writeShadowSlot(abi::ModelRenderShadow,reinterpret_cast<void*>(originalShadowDraw));shadowTable=nullptr;
 }
 namespace {
 // One native draw, captured on the calling (main) thread. In Source's queued
@@ -400,7 +454,8 @@ std::atomic<int64_t> outstandingCalls{0};std::atomic<uint64_t> queuedCallsTotal{
 // closeRenderQueue): calls of an earlier session no longer run their work.
 std::atomic<uint64_t> callSession{0};
 // ABI mirror of tier1's CFunctor: IRefCounted AddRef/Release, virtual
-// destructor, operator() (vtable slot 3).
+// destructor, operator() (vtable slot 3 under MSVC, 4 under GCC: both compilers lay
+// this out exactly as they laid out the engine's CFunctor).
 struct SourceFunctor {virtual int AddRef()=0;virtual int Release()=0;virtual ~SourceFunctor(){}virtual void operator()()=0;unsigned userId=0;};
 // This module's vtable for RenderThreadCall, which tells its calls apart from
 // Source's in a render queue.
@@ -426,16 +481,16 @@ public:
     void discard(){delete this;}
 };
 // What GMod's IMatRenderContext::GetCallQueue returns on the queued context
-// (this+0x2B0): not tier1's virtual ICallQueue but the context's concrete call
+// (this+0x2B0; this+0x1DC in the 32-bit Linux build): not tier1's virtual ICallQueue but the context's concrete call
 // list, a singly linked list of {next, functor} elements followed by the bump
 // allocator the elements come from (next pointer, 16 MB buffer). Source's own
 // studiorender.dll appends to it inline exactly as appendCall does; the render
 // thread runs each functor's operator() in order, then resets the list.
 struct QueueElement {QueueElement* next;SourceFunctor* functor;};
 struct SourceCallList {QueueElement* head;QueueElement* tail;uint8_t* next;uint8_t buffer[8];};
-static_assert(offsetof(SourceCallList,next)==0x10&&offsetof(SourceCallList,buffer)==0x18);
+static_assert(offsetof(SourceCallList,next)==2*sizeof(void*)&&offsetof(SourceCallList,buffer)==3*sizeof(void*));
 constexpr size_t CallListCapacity=0x1000000;
-constexpr ptrdiff_t CallListOffset=0x2B0;
+constexpr ptrdiff_t CallListOffset=abi::CallListOffset;
 bool insideCallList(const SourceCallList* list,const void* p){auto b=static_cast<const uint8_t*>(p);return b>=list->buffer&&b<list->buffer+CallListCapacity;}
 bool callListValid(const SourceCallList* list){
     return list->next&&list->next>=list->buffer&&list->next<=list->buffer+CallListCapacity&&(list->head==nullptr)==(list->tail==nullptr)
@@ -482,8 +537,13 @@ static void* contextClass(IMatRenderContext* context){
     auto table=*reinterpret_cast<void**>(context);
     if(table==hardwareContextTable.load(std::memory_order_relaxed)||table==queuedContextTable.load(std::memory_order_relaxed))return table;
     auto name=rttiClass(context,L"materialsystem.dll");
+#ifdef _WIN32
     if(name==".?AVCMatRenderContext@@")hardwareContextTable=table;
     else if(name==".?AVCMatQueuedRenderContext@@")queuedContextTable=table;
+#else
+    if(name=="17CMatRenderContext")hardwareContextTable=table;
+    else if(name=="23CMatQueuedRenderContext")queuedContextTable=table;
+#endif
     return table;
 }
 static bool recordsForRenderThread(IMatRenderContext* context){return contextClass(context)==queuedContextTable.load(std::memory_order_relaxed);}
@@ -508,7 +568,11 @@ static bool submit(std::function<void()> work,bool draw){
 static Json queueStats(){
     Json out={{"outstandingCalls",outstandingCalls.load()},{"queuedCallsTotal",queuedCallsTotal.load()}};
     // The calling thread's context, as submit() classifies it.
+#ifdef _WIN32
     if(materials){CMatRenderContextPtr context(renderContext());const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(L"materialsystem.dll"));
+#else
+    if(materials){CMatRenderContextPtr context(renderContext());const auto base=gameLibraryBase(L"materialsystem.dll");
+#endif
         static const size_t threadModeSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetThreadMode();});
         out["threadMode"]=int(callMaterials<MaterialThreadMode_t>(threadModeSlot));out["materialSlotShift"]=materialShift;out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
         auto rva=[&](void* table){return table?reinterpret_cast<uintptr_t>(table)-base:0;};
@@ -550,8 +614,13 @@ void drainRenderQueue(){
 void closeRenderQueue(){
     drainRenderQueue();
     if(outstandingCalls.load()<=0)return;
+#ifdef _WIN32
     callSession++;HMODULE self=nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,reinterpret_cast<LPCWSTR>(&closeRenderQueue),&self);
+#else
+    // RTLD_NODELETE pins this module: the game's dlclose leaves it mapped.
+    callSession++;Dl_info info{};if(dladdr(reinterpret_cast<const void*>(&closeRenderQueue),&info)&&info.dli_fname)dlopen(info.dli_fname,RTLD_NOW|RTLD_NOLOAD|RTLD_NODELETE);
+#endif
 }
 std::string takeAsyncRenderError(){std::lock_guard lock(asyncMutex);std::string error;error.swap(asyncError);return error;}
 // A hardware-path failure reported by an earlier draw returns the instance to

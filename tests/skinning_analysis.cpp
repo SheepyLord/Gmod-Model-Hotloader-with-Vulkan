@@ -6,6 +6,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include "wide_main.hpp"
 using namespace mmd;
 int wmain(int argc,wchar_t** argv){try{
  if(argc<3)throw std::runtime_error("Usage: mmdhl_skinning_analysis <cache root> <asset id> [bone limit] [weight limit]");

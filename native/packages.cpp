@@ -2,8 +2,12 @@
 #include "props/network_path.hpp"
 #include "sharing.hpp"
 #include "release.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include "posix.hpp"
+#endif
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -31,7 +35,11 @@ std::string text(const Json& spec,const char* key,size_t maximum,bool multiline,
  wide(value);return value;
 }
 std::string randomId(){
+#ifdef _WIN32
  unsigned char bytes[16];if(BCryptGenRandom(nullptr,bytes,sizeof bytes,BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)throw std::runtime_error("Cannot create a package identity");
+#else
+ unsigned char bytes[16];try{posix::randomBytes(bytes,sizeof bytes);}catch(const std::exception&){throw std::runtime_error("Cannot create a package identity");}
+#endif
  std::string s;for(auto c:bytes){s.push_back("0123456789abcdef"[c>>4]);s.push_back("0123456789abcdef"[c&15]);}return s;
 }
 std::string readable(const fs::path& path){
@@ -199,11 +207,20 @@ Json exportPackage(const fs::path& cache,const fs::path& gameRoot,const Json& sp
  }
  uint32_t crc=gma.crc;gma.stream.write(reinterpret_cast<const char*>(&crc),sizeof crc);gma.stream.close();
  if(!gma.stream)throw std::runtime_error("Cannot write the package file (is the disk full?)");
+ #ifdef _WIN32
  if(!MoveFileExW(part.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("Cannot replace "+name+".gma; close any program using it and export again");
+ #else
+ if(posix::replaceFile(part,target))throw std::runtime_error("Cannot replace "+name+".gma; close any program using it and export again");
+ #endif
  stage("complete",1);
  std::error_code ec;
  Json result={{"file",name+".gma"},{"path",readable(target)},{"folder",readable(directory)},{"bytes",fs::file_size(target,ec)},{"packageId",id},{"items",items.size()},{"files",packed.size()},{"rawBytes",total},{"title",title}};
+#ifdef _WIN32
  auto publisher=gameRoot/L"bin"/L"gmpublish.exe";if(fs::is_regular_file(publisher,ec))result["gmpublish"]=readable(publisher);
+#else
+ // bin/linux64/gmpublish on the x86-64 branch, bin/gmpublish_linux on the default branch.
+ for(auto publisher:{gameRoot/"bin"/"linux64"/"gmpublish",gameRoot/"bin"/"gmpublish_linux"})if(fs::is_regular_file(publisher,ec)){result["gmpublish"]=readable(publisher);break;}
+#endif
  return result;
 }
 Json readAddonPackages(const fs::path& gameRoot,const Json& files){

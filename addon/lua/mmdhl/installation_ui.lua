@@ -145,9 +145,11 @@ local function serverUpdateLine()
  return L('install.update.server',{installed=tostring(update.installed),recommended=tostring(update.recommended)})
 end
 -- Which d3d9.dll the game renders through (installation.lua reports it; it never blocks a feature).
+-- On Linux the game always renders through OpenGL.
 local function rendererLine(status)
  local r=status and status.renderer
  if not r then return nil end
+ if r.kind=='opengl' then return L'install.renderer.opengl' end
  if r.kind=='dxvk' then return r.current and L'install.renderer.dxvk' or L('install.renderer.dxvk_release',{release=tostring(r.release)}) end
  return r.kind=='d3d9' and L'install.renderer.d3d9' or L'install.renderer.other'
 end
@@ -288,10 +290,12 @@ function M.OpenMisplaced()
  local function refresh()
   local status=M.GetInstallationStatus() local files=status and status.files or {}
   local expected={}
-  -- Relative to the Garry's Mod folder: the module's path is in garrysmod (MOD).
-  for _,key in ipairs({'runtime',status and status.realm or 'client'}) do local f=files[key] if f and isstring(f.relative) then expected[#expected+1]=(((f.search=='MOD' and 'garrysmod/' or '')..f.relative):gsub('/','\\')) end end
+  -- Relative to the Garry's Mod folder: the module's path is in garrysmod (MOD). Windows
+  -- paths are shown with backslashes.
+  local separator=(status and status.platform or 'win64')=='win64' and '\\' or '/'
+  for _,key in ipairs({'runtime',status and status.realm or 'client'}) do local f=files[key] if f and isstring(f.relative) then expected[#expected+1]=(((f.search=='MOD' and 'garrysmod/' or '')..f.relative):gsub('/',separator)) end end
   frame:SetTitle(L'install.misplaced.title')
-  body:SetFont(bodyFont()) body:SetText(L('install.misplaced.text',{found=(tostring(v.found or v.detail):gsub('/','\\')),expected=table.concat(expected,'\n')}))
+  body:SetFont(bodyFont()) body:SetText(L('install.misplaced.text',{found=(tostring(v.found or v.detail):gsub('/',separator)),expected=table.concat(expected,'\n')}))
   label(open,L'install.misplaced.button.guide') label(never,L'install.misplaced.button.never') label(close,L'common.close')
   buttons:InvalidateLayout()
  end

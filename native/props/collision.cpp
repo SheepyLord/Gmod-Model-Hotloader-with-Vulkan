@@ -1,5 +1,11 @@
 #include "core.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "../posix.hpp"
+#include "release.hpp"
+#include <dlfcn.h>
+#endif
 #include <meshoptimizer.h>
 #include <algorithm>
 
@@ -32,8 +38,15 @@ void makeCollision(Asset& a,const std::string& mode,const Progress& progress){
 namespace {
 void detailedCollision(Asset& a,const std::string& mode,const Progress& progress){
     // CoACD owns runtime threads. Keep its DLL loaded until this short-lived worker exits.
+#ifdef _WIN32
     wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);auto dllPath=fs::path(path).parent_path()/L"lib_coacd.dll";HMODULE library=LoadLibraryExW(dllPath.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);if(!library)throw std::runtime_error("Cannot load CoACD: install lib_coacd.dll beside the worker and Microsoft Visual C++ 2015-2022 x64 Redistributable (VCOMP140)");
     auto run=reinterpret_cast<CoRun>(GetProcAddress(library,"CoACD_run"));auto freeMesh=reinterpret_cast<void(*)(CoArray)>(GetProcAddress(library,"CoACD_freeMeshArray"));auto log=reinterpret_cast<void(*)(const char*)>(GetProcAddress(library,"CoACD_setLogLevel"));if(!run||!freeMesh){FreeLibrary(library);throw std::runtime_error("CoACD ABI mismatch");}if(log)log("error");
+#else
+    // lib_coacd.so takes its OpenMP runtime from beside it (RPATH $ORIGIN); there is no 32-bit build.
+    auto soPath=mmd::posix::executablePath().parent_path()/MMDHL_COACD_FILE;void* library=dlopen(soPath.c_str(),RTLD_NOW|RTLD_LOCAL);
+    if(!library){auto why=dlerror();throw std::runtime_error(std::string("Cannot load CoACD: install ")+MMDHL_COACD_FILE+" and its libgomp beside the worker ("+(why?why:"unknown error")+")");}
+    auto run=reinterpret_cast<CoRun>(dlsym(library,"CoACD_run"));auto freeMesh=reinterpret_cast<void(*)(CoArray)>(dlsym(library,"CoACD_freeMeshArray"));auto log=reinterpret_cast<void(*)(const char*)>(dlsym(library,"CoACD_setLogLevel"));if(!run||!freeMesh){dlclose(library);throw std::runtime_error("CoACD ABI mismatch");}if(log)log("error");
+#endif
     // Welding by position is essential: UV/material seams are not holes in the collider.
     progress("Welding collision geometry",.55f,{},0,a.indices.size()/3);
     std::vector<unsigned> remap(a.vertices.size());meshopt_generatePositionRemap(remap.data(),reinterpret_cast<const float*>(&a.vertices[0].pos),a.vertices.size(),sizeof(Vertex));

@@ -1,7 +1,14 @@
 #include "model_notes.hpp"
 #include "vrm.hpp"
 #include "props/network_path.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "codepages.hpp"
+#include <climits>
+using UINT=unsigned;
+constexpr UINT CP_UTF8=65001;
+#endif
 #include <algorithm>
 #include <cstring>
 #include <cwctype>
@@ -15,10 +22,22 @@ constexpr size_t MaxEntries=4000;      // a download folder can hold thousands o
 std::wstring lower(std::wstring s){for(auto& c:s)c=wchar_t(std::towlower(c));return s;}
 std::wstring decodeCodepage(std::span<const unsigned char> b,UINT codepage,bool strict){
  if(b.empty()||b.size()>INT_MAX)return {};
+#ifndef _WIN32
+ return decodeCodepageText(b,codepage,strict);
+#else
  DWORD flags=strict?MB_ERR_INVALID_CHARS:0;auto data=reinterpret_cast<const char*>(b.data());
  int n=MultiByteToWideChar(codepage,flags,data,int(b.size()),nullptr,0);if(n<=0)return {};
  std::wstring out(size_t(n),L'\0');if(MultiByteToWideChar(codepage,flags,data,int(b.size()),out.data(),n)!=n)return {};
  return out;
+#endif
+}
+// UTF-16LE text as wide text (wchar_t is UTF-16 on Windows, UTF-32 elsewhere).
+std::wstring utf16Text(const void* data,size_t bytes){
+#ifdef _WIN32
+ return std::wstring(static_cast<const wchar_t*>(data),bytes/2);
+#else
+ return wideFromUtf16le(static_cast<const unsigned char*>(data),bytes);
+#endif
 }
 // Line ends become \n; control characters other than tab and newline, and BOMs, are dropped.
 std::wstring normalize(const std::wstring& text){
@@ -89,7 +108,7 @@ Json embeddedText(const fs::path& path){
   for(auto key:{"name","nameEnglish","comment","commentEnglish"}){
    int32_t length;std::string raw;if(!r.value(length)||length<0||length>(1<<20)||!r.bytes(raw,size_t(length)))break;
    std::string encoding;
-   if(utf16)put(key,text(std::wstring(reinterpret_cast<const wchar_t*>(raw.data()),raw.size()/2)));
+   if(utf16)put(key,text(utf16Text(raw.data(),raw.size())));
    else put(key,decodeText(std::span(reinterpret_cast<const unsigned char*>(raw.data()),raw.size()),encoding));
   }
   return out;
@@ -129,7 +148,7 @@ Json gltfNotes(const fs::path& path){
 std::string decodeText(std::span<const unsigned char> b,std::string& encoding){
  std::wstring w;
  if(b.size()>=3&&b[0]==0xEF&&b[1]==0xBB&&b[2]==0xBF){encoding="utf-8";w=decodeCodepage(b.subspan(3),CP_UTF8,false);}
- else if(b.size()>=2&&b[0]==0xFF&&b[1]==0xFE){encoding="utf-16le";w.assign(reinterpret_cast<const wchar_t*>(b.data()+2),(b.size()-2)/2);}
+ else if(b.size()>=2&&b[0]==0xFF&&b[1]==0xFE){encoding="utf-16le";w=utf16Text(b.data()+2,b.size()-2);}
  else if(b.size()>=2&&b[0]==0xFE&&b[1]==0xFF){encoding="utf-16be";for(size_t i=2;i+1<b.size();i+=2)w.push_back(wchar_t(b[i]<<8|b[i+1]));}
  else if(auto u=decodeCodepage(b,CP_UTF8,true);!u.empty()||b.empty()){encoding=std::all_of(b.begin(),b.end(),[](unsigned char c){return c<0x80;})?"ascii":"utf-8";w=u;}
  else{

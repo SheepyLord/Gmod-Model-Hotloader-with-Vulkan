@@ -1,6 +1,6 @@
 # Third-party components
 
-Exact source revisions are recorded in `dependencies.lock.json`; bootstrap records each downloaded archive's SHA-256 under `vendor/`. Source archives are fetched from the original GitHub repositories. Release ZIPs carry the applicable notices in `licenses/`; the drop-in packages carry them in `GarrysMod/bin/win64/LICENSES` (DXVK's in `DXVK-LICENSES` beside it). The source of every release is this repository.
+Exact source revisions are recorded in `dependencies.lock.json`; bootstrap records each downloaded archive's SHA-256 under `vendor/`. Source archives are fetched from the original GitHub repositories. Release ZIPs carry the applicable notices in `licenses/`; the drop-in packages carry them in `GarrysMod/bin/win64/LICENSES` (DXVK's in `DXVK-LICENSES` beside it), the Linux packages in `GarrysMod/garrysmod/lua/bin/LICENSES` with those of `licenses/linux`. The source of every release is this repository.
 
 | Component | Use | License |
 |---|---|---|
@@ -14,7 +14,8 @@ Exact source revisions are recorded in `dependencies.lock.json`; bootstrap recor
 | [SCell555/ShaderCompile](https://github.com/SCell555/ShaderCompile) | Build-time shader compiler, not shipped in the runtime ZIP | Upstream tool terms |
 | [assimp/assimp](https://github.com/assimp/assimp) | Static props (OBJ, FBX and glTF) and characters in other formats (FBX, glTF and COLLADA/DAE) parsed in `mmdhl_worker.exe` only (import-only build with its bundled zlib, poly2tri, pugixml, rapidjson, utf8cpp, earcut and openddlparser; the COLLADA importer reads XML through pugixml) | BSD-3-Clause (pugixml: MIT); bundled notices in `licenses/` |
 | [zeux/meshoptimizer](https://github.com/zeux/meshoptimizer) | Static props: position welding and simplification of the collision copy | MIT |
-| [SarahWeiii/CoACD](https://github.com/SarahWeiii/CoACD) 1.0.14 | Static props: optional detailed (multi-hull) collision. `lib_coacd.dll` is the pinned upstream wheel binary (SHA-256 in `dependencies.lock.json`), loaded by the worker only | MIT; its bundled OpenVDB, oneTBB, Boost, spdlog, fmt and CDT notices are in `licenses/` |
+| [SarahWeiii/CoACD](https://github.com/SarahWeiii/CoACD) 1.0.14 | Static props: optional detailed (multi-hull) collision. `lib_coacd.dll` is the pinned upstream wheel binary (SHA-256 in `dependencies.lock.json`), loaded by the worker only; on Linux x86-64, `lib_coacd.so` from the manylinux wheel (its search path set to its own folder by `scripts/bootstrap.py`) with the wheel's OpenMP runtime `libgomp-a34b3233.so.1.0.0` | MIT; its bundled OpenVDB, oneTBB, Boost, spdlog, fmt and CDT notices are in `licenses/`; libgomp is GPL-3.0 with the GCC Runtime Library Exception (`licenses/linux`) |
+| [unicode-org/icu](https://github.com/unicode-org/icu) 74.2 | Linux only: engine-safe path romanization (see System Unicode naming), built by `scripts/build-icu.py` into the runtime library with only its transliteration and normalization data | Unicode License V3 (`licenses/linux/icu.txt`) |
 | [KhronosGroup/Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | Vulkan API declarations for the `gpu_vulkan` solver, which loads `vulkan-1.dll` at run time | Apache-2.0 or MIT |
 | [KhronosGroup/glslang](https://github.com/KhronosGroup/glslang) | Build-time compiler of `shaders/vulkan/solver.comp` to the embedded SPIR-V; not shipped | BSD-3-Clause and others (its `LICENSE.txt`) |
 | [doitsujin/dxvk](https://github.com/doitsujin/dxvk) 3.1.1 | Default drop-in package only: `bin/win64/d3d9.dll`, Garry's Mod's Direct3D 9 on Vulkan, built by `scripts/build-dxvk.ps1` with `patches/dxvk` (shared compute queues for the Vulkan solver, a built-in Garry's Mod profile). Links its dxbc-spirv and libdisplay-info subprojects | zlib (DXVK), MIT (dxbc-spirv, libdisplay-info); notices in the package's `bin/win64/DXVK-LICENSES` folder |
@@ -57,7 +58,7 @@ The three small generic VTF maps in `addon/materials/mmdhl/scmi/` are reused fro
 
 ## System Unicode naming
 
-Engine-safe path romanization calls the [Windows ICU C API](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-), using the system-provided `icu.dll` on Windows 10 1903 or newer. No ICU DLL or Unicode data is redistributed. `native/naming.cpp` contains the project-authored material terminology table; original authored names remain in metadata.
+Engine-safe path romanization calls the [Windows ICU C API](https://learn.microsoft.com/en-us/windows/win32/intl/international-components-for-unicode--icu-), using the system-provided `icu.dll` on Windows 10 1903 or newer. No ICU DLL or Unicode data is redistributed with the Windows files. Linux has no system ICU that the game's runtime provides, so the Linux runtime library carries ICU 74.2 (static, transliteration and normalization data only) and calls the same C API with the same "Any-Latin; Latin-ASCII" transliterator, so both platforms derive the same engine paths (Windows' own ICU version follows the Windows release, so a name whose transliteration rules changed between ICU versions can differ). `native/naming.cpp` contains the project-authored material terminology table; original authored names remain in metadata.
 
 ## Independent-world threading and fixed-step integration (0.7.0)
 

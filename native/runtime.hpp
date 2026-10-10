@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <filesystem>
 #include <map>
@@ -22,6 +23,21 @@ namespace mmd {
 using Json=nlohmann::json;
 using Bytes=std::vector<unsigned char>;
 namespace fs=std::filesystem;
+#ifndef _WIN32
+// Exceptions in flight on this thread. Each Linux binary links libstdc++ statically, and
+// its std::uncaught_exceptions() sees only the throws and catches made in that binary, so
+// every binary registers its own while it is loaded and ImportScope sums them.
+void registerExceptionCounter(int(*counter)() noexcept,bool add);
+int exceptionsInFlight();
+namespace {
+// One per source file (internal linkage: an inline variable would be one per process).
+struct ExceptionCounterRegistration {
+ ExceptionCounterRegistration(){registerExceptionCounter(&std::uncaught_exceptions,true);}
+ ~ExceptionCounterRegistration(){registerExceptionCounter(&std::uncaught_exceptions,false);}
+};
+ExceptionCounterRegistration exceptionCounterRegistration;
+}
+#endif
 fs::path ioPath(const fs::path& path);
 constexpr float Inch=.0254f;
 constexpr float ScmiSourceUnitsPerPmx=.08f*40.457f;

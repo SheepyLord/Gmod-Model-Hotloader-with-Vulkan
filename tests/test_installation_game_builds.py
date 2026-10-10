@@ -55,7 +55,7 @@ net={Start=function() end,WriteString=function() end,Broadcast=function() end,Re
 HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end,Run=function() end}
 timer={Create=function() end,Remove=function() end,Simple=function() end}
 concommand={Add=function() end}
-system={IsWindows=function() return true end} jit={arch='x64'}
+system={IsWindows=function() return true end,IsLinux=function() return false end} jit={arch='x64'}
 game={IsDedicated=function() return false end,SinglePlayer=function() return true end}
 CurTime=function() return 0 end RealTime=function() return 0 end MsgN=function() end
 istable=function(v) return type(v)=='table' end isstring=function(v) return type(v)=='string' end

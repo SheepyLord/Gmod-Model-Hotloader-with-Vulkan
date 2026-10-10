@@ -1,6 +1,6 @@
 #include "packages.hpp"
 #include "sharing.hpp"
-#include <windows.h>
+#include "test_platform.hpp"
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -30,7 +30,7 @@ static std::vector<Entry> readGma(const fs::path& path,Json& description){
  return entries;
 }
 int main(){try{
- auto base=fs::temp_directory_path()/("mmdhl-package-test-"+std::to_string(GetCurrentProcessId()));
+ auto base=fs::temp_directory_path()/("mmdhl-package-test-"+std::to_string(processId()));
  struct Clean{fs::path dir;~Clean(){std::error_code ec;fs::remove_all(dir,ec);}} clean{base};
  auto cache=base/L"garrysmod"/L"data"/L"mmd_hotloader";fs::create_directories(cache);
  // One character (manifest, model, two textures shared with nothing) and one static prop.

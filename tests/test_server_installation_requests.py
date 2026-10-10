@@ -93,7 +93,7 @@ FILES={}
 file={Exists=function(path,search) return FILES[search..'/'..path]~=nil end,
  Open=function(path,_,search) local bytes=FILES[search..'/'..path] return {Size=function() return #bytes end,Read=function() return bytes end,Close=function() end} end,
  Read=function() end,CreateDir=function() end,Write=function() end}
-system={IsWindows=function() return true end} game={IsDedicated=function() return true end}
+system={IsWindows=function() return true end,IsLinux=function() return false end} game={IsDedicated=function() return true end}
 -- As in GMod: net.Start refuses a name util.AddNetworkString never pooled.
 POOLED={}
 util={AddNetworkString=function(name) POOLED[name]=true end,TableToJSON=function() return '{}' end,SHA256=function(bytes) return string.rep('5',64) end,

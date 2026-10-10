@@ -40,7 +40,12 @@ ResolvedTexture TextureResolver::resolve(const std::string& reference){
     // A reference the scope refuses (a share on another computer, a denied place; for a
     // confined resolver also one outside the model's folders) is never opened as written
     // (DependencyScope): only the file name is looked up here.
+#ifdef _WIN32
     auto ref=fs::path(wide(reference));
+#else
+    // References come from Windows: '\\' separates as '/' does (DependencyScope::locate).
+    auto separated=wide(reference);std::replace(separated.begin(),separated.end(),L'\\',L'/');auto ref=fs::path(separated);
+#endif
     if(auto direct=scope.locate(reference);!direct.empty()&&scope.allows(direct))return{direct,false};
     auto name=ref.filename();
     if(name.empty())throw std::runtime_error("Texture reference has no filename");

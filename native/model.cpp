@@ -13,7 +13,13 @@
 #include <cstdio>
 #include <cstring>
 #include <immintrin.h>
+#ifdef _MSC_VER
 #include <intrin.h>
+#define MMDHL_AVX2_TARGET
+#else
+#include <cpuid.h>
+#define MMDHL_AVX2_TARGET __attribute__((target("avx2,fma")))
+#endif
 #include <mutex>
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -21,7 +27,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 namespace mmd {
 btVector3 vec(const float* p) { return p?btVector3(p[0],p[1],p[2]):btVector3(0,0,0); }
@@ -578,8 +586,16 @@ void Instance::drawnVertices(const std::function<void(size_t,const btVector3&)>&
 }
 namespace {
 constexpr size_t Lanes=8;
+#ifdef _MSC_VER
 bool avx2FmaAvailable(){static const bool value=[]{int info[4];__cpuid(info,1);bool osxsave=(info[2]&(1<<27))!=0;
  return simdDeformSupported(IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE)!=0,(info[2]&(1<<12))!=0,osxsave,osxsave?_xgetbv(0):0);}();return value;}
+#else
+// The same test with GCC's builtins: AVX2 (leaf 7 EBX bit 5), FMA, OSXSAVE and the YMM state in XCR0.
+static uint64_t xcr0(){uint32_t lo=0,hi=0;__asm__ volatile("xgetbv":"=a"(lo),"=d"(hi):"c"(0));return uint64_t(hi)<<32|lo;}
+bool avx2FmaAvailable(){static const bool value=[]{unsigned a=0,b=0,c=0,d=0;if(!__get_cpuid(1,&a,&b,&c,&d))return false;bool osxsave=(c&(1u<<27))!=0,fma=(c&(1u<<12))!=0;
+ unsigned a7=0,b7=0,c7=0,d7=0;bool avx2=__get_cpuid_count(7,0,&a7,&b7,&c7,&d7)&&(b7&(1u<<5))!=0;
+ return simdDeformSupported(avx2,fma,osxsave,osxsave?xcr0():0);}();return value;}
+#endif
 // Vertices with the same skinning type and bone set skin with the same
 // matrices, so they are gathered into padded groups that a SIMD block walks
 // eight at a time. SDEF/QDEF vertices keep the scalar reference path.
@@ -824,9 +840,9 @@ void Instance::publish(double t){
     const bool simd=avx2FmaAvailable();
     size_t simdChunks=simd?layout.chunks.size():0,scalarChunks=(layout.scalar.size()+4095)/4096,fallbackChunks=simd?0:(layout.order.size()+4095)/4096;
     size_t chunkCount=simdChunks+scalarChunks+fallbackChunks;std::vector<Bounds> bounds(chunkCount);
-    parallelFor(chunkCount,1,[&](size_t begin,size_t end){for(size_t chunk=begin;chunk<end;chunk++){auto& bound=bounds[chunk];
-        if(chunk<simdChunks){
-#if defined(__AVX2__)||defined(_MSC_VER)
+    // The AVX2/FMA path: MSVC compiles intrinsics anywhere, GCC only in code that targets
+    // them; it runs only where avx2FmaAvailable().
+    auto simdChunk=[&](size_t chunk,Bounds& bound) MMDHL_AVX2_TARGET {
             auto [g0,g1]=layout.chunks[chunk];alignas(32) float outX[Lanes],outY[Lanes],outZ[Lanes],outNx[Lanes],outNy[Lanes],outNz[Lanes],outTx[Lanes],outTy[Lanes],outTz[Lanes];
             const __m256 tiny=_mm256_set1_ps(1e-12f),tinyTangent=_mm256_set1_ps(1e-9f),one=_mm256_set1_ps(1.f),zero=_mm256_setzero_ps();
             const __m256 fbx=_mm256_set1_ps(fallbackAxis.x()),fby=_mm256_set1_ps(fallbackAxis.y()),fbz=_mm256_set1_ps(fallbackAxis.z());
@@ -863,7 +879,10 @@ void Instance::publish(double t){
                     for(unsigned l=0;l<Lanes;l++){int index=layout.order[k+l];if(index<0)continue;store(result->vertices[size_t(index)],outX[l],outY[l],outZ[l],outNx[l],outNy[l],outNz[l],outTx[l],outTy[l],outTz[l],bound);}
                 }
             }
-#endif
+    };
+    parallelFor(chunkCount,1,[&](size_t begin,size_t end){for(size_t chunk=begin;chunk<end;chunk++){auto& bound=bounds[chunk];
+        if(chunk<simdChunks){
+            simdChunk(chunk,bound);
         }else if(chunk<simdChunks+scalarChunks){size_t c=chunk-simdChunks;for(size_t k=c*4096;k<std::min(layout.scalar.size(),(c+1)*4096);k++)deformScalar(layout.scalar[k],bound);}
         else{size_t c=chunk-simdChunks-scalarChunks;for(size_t k=c*4096;k<std::min(layout.order.size(),(c+1)*4096);k++){int index=layout.order[k];if(index>=0)deformScalar(size_t(index),bound);}}
     }});

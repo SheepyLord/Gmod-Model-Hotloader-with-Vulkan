@@ -7,6 +7,7 @@
 #include "jobs.hpp"
 #include "rig.hpp"
 #include <iostream>
+#include "wide_main.hpp"
 using namespace mmd;
 namespace {
 btVector3 apply(const float* m,const btVector3& p,bool translate){btVector3 out;for(int r=0;r<3;r++)out[r]=m[r*4]*p.x()+m[r*4+1]*p.y()+m[r*4+2]*p.z()+(translate?m[r*4+3]:0.f);return out;}

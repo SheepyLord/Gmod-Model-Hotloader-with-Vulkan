@@ -1,7 +1,11 @@
 #define VK_NO_PROTOTYPES
 #include "vulkan_solver.hpp"
 #include <vulkan/vulkan.h>
+#ifdef _WIN32
 #include <Windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include <cstdint>
 #include "vulkan_solver_spv.h"
 #include "vulkan_solver_profile_spv.h"
@@ -34,7 +38,12 @@ void check(VkResult result,const char* operation){if(result!=VK_SUCCESS)throw st
  X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkGetQueryPoolResults) X(vkCreateFence) X(vkDestroyFence) X(vkResetFences) X(vkWaitForFences) X(vkQueueSubmit) X(vkQueueWaitIdle)
 #define MMDHL_VK_STATISTICS_FUNCTIONS(X) X(vkGetPipelineExecutablePropertiesKHR) X(vkGetPipelineExecutableStatisticsKHR) X(vkGetPipelineExecutableInternalRepresentationsKHR)
 struct Api {
- HMODULE library=nullptr;PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr=nullptr;PFN_vkCreateInstance vkCreateInstance=nullptr;PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion=nullptr;
+#ifdef _WIN32
+ HMODULE library=nullptr;
+#else
+ void* library=nullptr;
+#endif
+ PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr=nullptr;PFN_vkCreateInstance vkCreateInstance=nullptr;PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion=nullptr;
 #define MMDHL_VK_DECLARE(name) PFN_##name name=nullptr;
  MMDHL_VK_INSTANCE_FUNCTIONS(MMDHL_VK_DECLARE) MMDHL_VK_DEVICE_FUNCTIONS(MMDHL_VK_DECLARE) MMDHL_VK_STATISTICS_FUNCTIONS(MMDHL_VK_DECLARE)
 #undef MMDHL_VK_DECLARE
@@ -103,8 +112,14 @@ struct Device {
  void loadLibrary(){
   if(api.library)return;
   // The game ships an application-local loader beside gmod.exe; either loader works.
+#ifdef _WIN32
   api.library=LoadLibraryW(L"vulkan-1.dll");if(!api.library)throw std::runtime_error("The Vulkan runtime (vulkan-1.dll) is not installed");
   api.vkGetInstanceProcAddr=reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(api.library,"vkGetInstanceProcAddr"));
+#else
+  // The system's (or the Steam runtime's) loader; Linux has no application-local copy.
+  api.library=dlopen("libvulkan.so.1",RTLD_NOW|RTLD_LOCAL);if(!api.library)throw std::runtime_error("The Vulkan runtime (libvulkan.so.1) is not installed");
+  api.vkGetInstanceProcAddr=reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(api.library,"vkGetInstanceProcAddr"));
+#endif
   if(!api.vkGetInstanceProcAddr)throw std::runtime_error("vulkan-1.dll exports no vkGetInstanceProcAddr");
   api.vkCreateInstance=reinterpret_cast<PFN_vkCreateInstance>(api.vkGetInstanceProcAddr(nullptr,"vkCreateInstance"));
   api.vkEnumerateInstanceVersion=reinterpret_cast<PFN_vkEnumerateInstanceVersion>(api.vkGetInstanceProcAddr(nullptr,"vkEnumerateInstanceVersion"));
@@ -251,6 +266,10 @@ struct Device {
  // second device. MMDHL_VULKAN_STANDALONE=1 keeps a separate device.
  bool attachShared(){
   if(std::getenv("MMDHL_VULKAN_STANDALONE"))return false;
+#ifndef _WIN32
+  // Linux games render through OpenGL (ToGL): there is no DXVK device to share.
+  return false;
+#else
   HMODULE d3d9=GetModuleHandleW(L"d3d9.dll");if(!d3d9)return false;
   auto acquireShared=reinterpret_cast<PFN_DXVK_AcquireSharedComputeQueue>(GetProcAddress(d3d9,"DXVK_AcquireSharedComputeQueue"));
   sharedLock=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(GetProcAddress(d3d9,"DXVK_LockSharedComputeQueue"));
@@ -278,9 +297,14 @@ struct Device {
   if(auto setting=std::getenv("MMDHL_VULKAN_OCCUPANCY");setting&&*setting){if(std::string(setting)=="off")setOccupancy=nullptr;else occupancyPriority=std::clamp(float(std::atof(setting)),0.f,1.f);}
   if(auto setting=std::getenv("MMDHL_VULKAN_THROTTLING");setting&&*setting)occupancyThrottling=std::clamp(float(std::atof(setting)),0.f,1.f);
   return true;
+#endif
  }
  void init(){if(initialized)return;initialized=true;try{
+#ifdef _WIN32
   if(GetEnvironmentVariableW(L"MMDHL_DISABLE_VULKAN",nullptr,0))throw std::runtime_error("Vulkan disabled by MMDHL_DISABLE_VULKAN");
+#else
+  if(std::getenv("MMDHL_DISABLE_VULKAN"))throw std::runtime_error("Vulkan disabled by MMDHL_DISABLE_VULKAN");
+#endif
   if(!attachShared()){loadLibrary();createInstance();choosePhysical();createDevice();}
   createPipeline();available=true;if(!std::getenv("MMDHL_VULKAN_DEBUG_MODE"))selfTest();
  }catch(const std::exception& e){error=e.what();available=false;}}

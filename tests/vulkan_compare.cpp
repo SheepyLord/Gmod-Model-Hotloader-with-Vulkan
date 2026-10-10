@@ -21,6 +21,7 @@
 #include <iostream>
 #include <numeric>
 #include <vector>
+#include "wide_main.hpp"
 using namespace mmd;
 namespace {
 // A D3D9Ex device from the given (patched DXVK) d3d9.dll on a hidden window.

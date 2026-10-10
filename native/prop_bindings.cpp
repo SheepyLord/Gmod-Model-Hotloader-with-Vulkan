@@ -1,6 +1,8 @@
 #include "prop_bindings.hpp"
 #include "props/core.hpp"
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstring>

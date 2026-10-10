@@ -4,6 +4,7 @@
 #include "scene_share.hpp"
 #include <algorithm>
 #include <iostream>
+#include "test_platform.hpp"
 #include <set>
 using namespace mmd;
 template<class T>T read(const Bytes& b,size_t p){if(p+sizeof(T)>b.size())throw std::runtime_error("Generated offset out of range");T v;std::memcpy(&v,b.data()+p,sizeof(v));return v;}
@@ -27,7 +28,7 @@ int main(int argc,char** argv){try{
  }
  // Exercise paths beyond MAX_PATH, including the temporary commit suffix.
  // This runs inside a host without requiring its manifest to enable long paths.
- auto temporary=fs::absolute(fs::temp_directory_path()/wide("mmdhl-sharing-"+std::to_string(GetCurrentProcessId())));
+ auto temporary=fs::absolute(fs::temp_directory_path()/wide("mmdhl-sharing-"+std::to_string(processId())));
  struct Cleanup{fs::path root;~Cleanup(){std::error_code error;fs::remove_all(root,error);}} cleanup{temporary};
  auto deep=temporary;for(int i=0;i<5;i++)deep/=std::string(64,'a'+i);
  auto longFile=deep/"manifest.json";writeJson(longFile,{{"longPath",true}});
@@ -95,7 +96,12 @@ int main(int argc,char** argv){try{
  for(size_t i=0;i<payload.size();++i){random^=random<<13;random^=random>>17;random^=random<<5;payload[i]=i<SharedBlockSize?uint8_t(random):uint8_t(i%17);}
  auto sourceRelative="assets/"+identity+"/model.bin";writeAtomic(sharedPath(cache,sourceRelative),payload);auto digest=hash(payload);
  auto packetPath=packSharedFile(cache,sourceRelative,payload.size(),digest);auto packet=readFile(packetPath);
- if(packet.size()>=payload.size()||unpackSharedFile(packet,payload.size(),digest)!=payload)throw std::runtime_error("Lossless shared packet round trip failed");
+#ifdef _WIN32
+ bool grew=packet.size()>=payload.size();
+#else
+ bool grew=false;  // Linux stores blocks uncompressed (sharing.cpp); every release reads them.
+#endif
+ if(grew||unpackSharedFile(packet,payload.size(),digest)!=payload)throw std::runtime_error("Lossless shared packet round trip failed");
  if(packSharedFile(cache,sourceRelative,payload.size(),digest)!=packetPath)throw std::runtime_error("Shared packet cache was not reused");
  {auto verifiedAt=fs::last_write_time(packetPath);auto damaged=readFile(packetPath);damaged[damaged.size()/2]^=0x5a;writeAtomic(packetPath,damaged);fs::last_write_time(packetPath,verifiedAt);auto repaired=readFile(packSharedFile(cache,sourceRelative,payload.size(),digest));if(unpackSharedFile(repaired,payload.size(),digest)!=payload)throw std::runtime_error("A damaged shared sidecar behind a valid header was reused");}
  auto rejectPacket=[&](Bytes bad,uint64_t size,const std::string& h){bool failed=false;try{unpackSharedFile(bad,size,h);}catch(...){failed=true;}if(!failed)throw std::runtime_error("Malformed shared packet accepted");};

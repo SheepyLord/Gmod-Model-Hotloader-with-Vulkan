@@ -1,7 +1,7 @@
 #include "texture_resolver.hpp"
 #include <cstring>
 void textureResolverTests(){
-    const auto dir=fs::temp_directory_path()/fs::path(L"gmodel-resolver-test-"+std::to_wstring(GetCurrentProcessId()));
+    const auto dir=fs::temp_directory_path()/fs::path(L"gmodel-resolver-test-"+std::to_wstring(processId()));
     fs::create_directories(dir/L"model"/L"tex");fs::create_directories(dir/L"textures");
     const Bytes data{1,2,3};
     writeAtomic(dir/L"model"/L"body.png",data);
@@ -41,9 +41,16 @@ void textureResolverTests(){
         utf8((dir/L"outside"/L"secret.png").wstring()),utf8((dir/L"secret.png").wstring()),utf8((dir/L"outside"/L"secret.png").generic_wstring())})
         rejects([&]{confined.resolve(escape);},"a texture outside the model's folders was read");
     // ...nor a download's Zone.Identifier stream (its source address), nor one a junction leads to.
+#ifdef _WIN32
     {std::ofstream stream(dir/L"model"/L"body.png:Zone.Identifier");stream<<"[ZoneTransfer]\nHostUrl=https://example.invalid/private-link\n";}
     rejects([&]{confined.resolve("body.png:Zone.Identifier");},"an alternate data stream was read as a texture");
     auto junction=[](const fs::path& link,const fs::path& target){auto cmd=L"cmd /c mklink /J \""+link.wstring()+L"\" \""+target.wstring()+L"\" >nul";return _wsystem(cmd.c_str())==0;};
+#else
+    // Linux has no alternate data streams; a symbolic link stands in for the junction.
+    auto junction=[](const fs::path& link,const fs::path& target){std::error_code e;fs::create_directory_symlink(target,link,e);return !e;};
+    // Windows letter case and separators: "Tex\\Normal_Map.PNG" is tex/normal_map.png.
+    {auto mixed=confined.resolve("Tex\\Normal_Map.PNG");check(mixed.path==dir/L"model"/L"tex"/L"normal_map.png"&&!mixed.repaired,"a Windows-style texture reference (case, backslashes) did not resolve as written");}
+#endif
     check(junction(dir/L"model"/L"linked",dir/L"outside"),"cannot create the test junction");
     rejects([&]{confined.resolve("linked/secret.png");},"a junction in the model's folder led a texture outside it");
     // Textures in the tex and textures folders beside and above the model (and below them), and

@@ -1,7 +1,34 @@
 """Fetch pinned sources. Installed users need neither Python nor a compiler."""
-import concurrent.futures, hashlib, io, json, pathlib, tarfile, urllib.request, zipfile
+import concurrent.futures, hashlib, io, json, pathlib, struct, sys, tarfile, urllib.request, zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+def set_rpath(elf, rpath):
+    """Overwrites a 64-bit ELF library's DT_RPATH/DT_RUNPATH in place with a shorter path."""
+    data = bytearray(elf)
+    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+        raise RuntimeError('not a 64-bit little-endian ELF file')
+    phoff, = struct.unpack_from('<Q', data, 0x20)
+    phentsize, phnum = struct.unpack_from('<HH', data, 0x36)
+    headers = [struct.unpack_from('<IIQQQQQQ', data, phoff + i * phentsize) for i in range(phnum)]
+    def offset(vaddr):
+        for kind, _, off, start, _, filesz, _, _ in headers:
+            if kind == 1 and start <= vaddr < start + filesz:
+                return off + vaddr - start
+        raise RuntimeError('address outside the file')
+    dynamic = next(h for h in headers if h[0] == 2)
+    entries = [struct.unpack_from('<qQ', data, dynamic[2] + i) for i in range(0, dynamic[5], 16)]
+    strtab = offset(next(v for t, v in entries if t == 5))
+    paths = [v for t, v in entries if t in (15, 29)]
+    if not paths:
+        raise RuntimeError('no RPATH to replace')
+    for at in paths:
+        start = strtab + at
+        length = data.index(0, start) - start
+        if len(rpath) > length:
+            raise RuntimeError('replacement RPATH is longer than the original')
+        data[start:start + length] = rpath + bytes(length - len(rpath))
+    return bytes(data)
 
 def fetch(item):
     name, (repo, revision) = item
@@ -52,6 +79,33 @@ if __name__ == '__main__':
                     (target / pathlib.PurePosixPath(name).name).write_bytes(archive.read(name))
         marker.write_text(spec['version'])
         print('coacd: fetched ' + spec['version'], flush=True)
+    # The Linux x86-64 wheel (Linux builds only): lib_coacd.so and the OpenMP runtime it
+    # bundles (coacd.libs). Both go beside the worker, so lib_coacd.so's search path becomes
+    # $ORIGIN (set_rpath).
+    if sys.platform.startswith('linux'):
+        spec = lock['coacd_linux64']
+        target = ROOT / 'vendor' / 'coacd' / 'linux64'
+        marker = target / '.mmdhl-revision'
+        if not (marker.is_file() and marker.read_text() == spec['version']):
+            request = urllib.request.Request(spec['url'], headers={'User-Agent': 'ModelHotloader-build'})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                blob = response.read()
+            if hashlib.sha256(blob).hexdigest() != spec['sha256']:
+                raise RuntimeError('CoACD Linux wheel checksum mismatch')
+            target.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+                for name in archive.namelist():
+                    base = pathlib.PurePosixPath(name).name
+                    if base == 'lib_coacd.so' or (name.startswith('coacd.libs/') and '.so' in base) or 'LICENSE' in name.upper():
+                        destination = target / base
+                        data = archive.read(name)
+                        if base == 'lib_coacd.so':
+                            data = set_rpath(data, b'$ORIGIN')
+                        destination.write_bytes(data)
+                        if '.so' in base:
+                            destination.chmod(0o755)
+            marker.write_text(spec['version'])
+            print('coacd linux64: fetched ' + spec['version'], flush=True)
     # Local documented extension: expose the existing soft-solver phase virtually
     # so the bridge observes impulses after both solver stages, without changing
     # Bullet integration or solver behavior.

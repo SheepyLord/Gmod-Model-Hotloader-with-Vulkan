@@ -88,22 +88,50 @@ local function misplacedRoots(find)
  end
  return roots
 end
--- File names when the policy cannot name them (it is missing or broken).
-local defaultFiles={client={name='gmcl_mmdhl_win64.dll'},server={name='gmsv_mmdhl_win64.dll'},runtime={name='mmdhl_runtime_win64.dll'},worker={name='mmdhl_worker.exe'},coacd={name='lib_coacd.dll'}}
+-- File names when the policy cannot name them (it is missing or broken, or records no binaries
+-- of the release for this platform). win64: Windows x64; linux64: Linux, the x86-64 branch;
+-- linux: Linux, the default branch (32-bit). On Linux every file sits in garrysmod/lua/bin
+-- (the modules load the runtime from beside them); CoACD exists for 64-bit Linux only.
+local platformFiles={
+ win64={client={name='gmcl_mmdhl_win64.dll'},server={name='gmsv_mmdhl_win64.dll'},runtime={name='mmdhl_runtime_win64.dll'},worker={name='mmdhl_worker.exe'},coacd={name='lib_coacd.dll'}},
+ linux64={client={name='gmcl_mmdhl_linux64.dll'},server={name='gmsv_mmdhl_linux64.dll'},runtime={name='libmmdhl_runtime_linux64.so'},worker={name='mmdhl_worker_linux64'},coacd={name='lib_coacd.so'}},
+ linux={client={name='gmcl_mmdhl_linux.dll'},server={name='gmsv_mmdhl_linux.dll'},runtime={name='libmmdhl_runtime_linux.so'},worker={name='mmdhl_worker_linux'}},
+}
+-- The platform of this game process, or nil where no binary exists.
+local function platformOf(env)
+ if env.platform~=nil then return env.platform or nil end
+ if env.windows and env.arch=='x64' then return 'win64' end
+ if env.linux and env.arch=='x64' then return 'linux64' end
+ if env.linux and env.arch=='x86' then return 'linux' end
+end
+M.PlatformOf=platformOf
+-- A release's record for this platform: the record itself for Windows (the 2.x records are
+-- Windows ones; a release with only Linux binaries has no files of its own), else
+-- release.platforms[platform]. nil: no binaries of it for this platform.
+local function recordFor(release,platform)
+ if type(release)~='table' then return nil end
+ if platform=='win64' then return type(release.files)=='table' and (release.platform==nil or release.platform=='win64') and release or nil end
+ local other=type(release.platforms)=='table' and release.platforms[platform]
+ return type(other)=='table' and other or nil
+end
 -- Pure policy evaluator: reader returns {size,sha256,path[,build]}, or nil and an error.
 -- It never turns a feature off: it lists what CheckInstallation should know when it loads
 -- the files, as warnings.
 function M.EvaluateInstallation(policy,reader,env)
- local s={schema=1,realm=env.server and 'server' or 'client',issues={},files={},features={core=true,imports=not env.server,detailedCollision=not env.server,rendering=not env.server,physics=env.server},recommended=policy.recommended}
- local releases=type(policy.releases)=='table' and policy.releases or {}
+ local platform=platformOf(env)
+ local s={schema=1,realm=env.server and 'server' or 'client',platform=platform,issues={},files={},features={core=true,imports=not env.server,detailedCollision=not env.server,rendering=not env.server,physics=env.server},recommended=policy.recommended}
+ local releases={}
+ if type(policy.releases)=='table' then for id,release in pairs(policy.releases) do releases[id]=recordFor(release,platform) end end
  local recommended=releases[policy.recommended]
  s.download=recommended and recommended.url
  -- A mirror for players who cannot reach GitHub (set by update-native-policy.ps1 -AltReleaseUrl).
  s.downloadAlt=recommended and recommended.altUrl
  -- No binary exists for another platform: this says why nothing loads.
- if not env.windows or env.arch~='x64' then warn(s,'unsupported_platform','platform',L'install.error.unsupported_platform','core',{cause=true}) return s end
- -- Without the list of releases the files are only read, never compared.
- if policy.schema~=1 or not recommended then warn(s,'policy_invalid','addon',L'install.error.policy_invalid') recommended=nil end
+ if not platform then warn(s,'unsupported_platform','platform',L'install.error.unsupported_platform','core',{cause=true}) return s end
+ local defaultFiles=platformFiles[platform]
+ -- Without the list of releases the files are only read, never compared. A valid policy
+ -- with no binaries of the recommended release for this platform compares them with nothing.
+ if policy.schema~=1 or (platform=='win64' and not recommended) then warn(s,'policy_invalid','addon',L'install.error.policy_invalid') recommended=nil end
  local role=env.server and 'server' or 'client'
  local names=recommended and recommended.files or defaultFiles
  local own=reader('lua/bin/'..names[role].name,'MOD',names[role].size)
@@ -119,17 +147,22 @@ function M.EvaluateInstallation(policy,reader,env)
  local files=selected and selected.files or defaultFiles
  -- The runtime the game loads. Clients load it from bin/win64. srcds_win64.exe
  -- looks beside itself first, then in bin/win64, where the native package puts it.
+ -- On Linux the modules load it from beside themselves, in lua/bin.
  local runtime=files.runtime
- local runtimePath='bin/win64/'..runtime.name
- if env.dedicated then
+ local windows=platform=='win64'
+ local runtimePath,runtimeSearch=windows and 'bin/win64/'..runtime.name or 'lua/bin/'..runtime.name,windows and 'BASE_PATH' or 'MOD'
+ if env.dedicated and windows then
   local function present(path) local found,err=reader(path,'BASE_PATH',runtime.size) return found~=nil or err~='missing' end
   if present(runtime.name) or not present(runtimePath) then runtimePath=runtime.name end
  end
- local checks={{role,'lua/bin/'..files[role].name,'MOD','core'}, {'runtime',runtimePath,'BASE_PATH','core'}}
+ local checks={{role,'lua/bin/'..files[role].name,'MOD','core'}, {'runtime',runtimePath,runtimeSearch,'core'}}
  if not env.server then
   checks[#checks+1]={'worker','lua/bin/'..files.worker.name,'MOD','imports'}
-  checks[#checks+1]={'workerRuntime','lua/bin/'..files.runtime.name,'MOD','imports'}
-  checks[#checks+1]={'coacd','lua/bin/'..files.coacd.name,'MOD','detailedCollision'}
+  -- The worker's own copy of the runtime (Windows; on Linux it is the same file).
+  if windows then checks[#checks+1]={'workerRuntime','lua/bin/'..files.runtime.name,'MOD','imports'} end
+  if files.coacd then checks[#checks+1]={'coacd','lua/bin/'..files.coacd.name,'MOD','detailedCollision'}
+  -- 32-bit Linux has no CoACD build: props get hull collision, and nothing is missing.
+  else s.features.detailedCollision=false end
  end
  -- The exact bytes checked, for diagnostics.
  local parts={}
@@ -172,9 +205,9 @@ function M.EvaluateInstallation(policy,reader,env)
  if s.files[role].error=='missing' or s.files.runtime.error=='missing' then
   for _,root in ipairs(misplacedRoots(env.find)) do
    local found
-   for _,path in ipairs({root..'garrysmod/lua/bin/'..files[role].name,root..'bin/win64/'..runtime.name}) do if not found and reader(path,'BASE_PATH') then found=path end end
+   for _,path in ipairs({root..'garrysmod/lua/bin/'..files[role].name,root..(windows and 'bin/win64/' or 'garrysmod/lua/bin/')..runtime.name}) do if not found and reader(path,'BASE_PATH') then found=path end end
    if found then
-    table.insert(s.issues,1,{code='misplaced_package',component='installation',feature='core',warning=true,cause=true,detail=found,found=found,message=L('install.warning.misplaced',{found=(found:gsub('/','\\'))})})
+    table.insert(s.issues,1,{code='misplaced_package',component='installation',feature='core',warning=true,cause=true,detail=found,found=found,message=L('install.warning.misplaced',{found=windows and (found:gsub('/','\\')) or found})})
     break
    end
   end
@@ -188,8 +221,10 @@ function M.EvaluateInstallation(policy,reader,env)
  end
  -- The renderer (bin/win64/d3d9.dll) is reported, never required: the Vulkan
  -- package ships the patched DXVK there, the no-Vulkan package leaves Source's
- -- Direct3D 9, and RTX Remix or other tools may own the file.
- if not env.server then
+ -- Direct3D 9, and RTX Remix or other tools may own the file. Linux renders
+ -- through OpenGL (ToGL) in every case.
+ if not env.server and not windows then s.renderer={kind='opengl'} end
+ if not env.server and windows then
   local actual,err=reader('bin/win64/d3d9.dll','BASE_PATH',selected and selected.renderer and selected.renderer.size)
   local function same(record) return type(record)=='table' and record.size==actual.size and record.sha256==actual.sha256 end
   if not actual then s.renderer={kind=err=='missing' and 'd3d9' or 'other',error=err~='missing' and err or nil}
@@ -211,7 +246,7 @@ local lastFingerprint
 -- The build ID every Model Hotloader binary carries (<commit>-YYYYMMDDTHHMMSSZ), read
 -- before loading it; nil for other files.
 local function buildOf(path,bytes)
- if not path:find('mmdhl',1,true) or path:sub(-4)~='.dll' then return nil end
+ if not path:find('mmdhl',1,true) or (path:sub(-4)~='.dll' and path:sub(-3)~='.so') then return nil end
  return bytes:match('%x%x%x%x%x%x%x%x%x%x%x%x%-%d%d%d%d%d%d%d%dT%d%d%d%d%d%dZ')
 end
 local function readerForSession()
@@ -372,7 +407,7 @@ local function identitiesMatch(info)
   local record=status.files[key=='module' and status.realm or 'runtime']
   local found=info and info[key]
   local message=key=='module' and L'install.error.loaded_module_mismatch' or L'install.error.loaded_runtime_mismatch'
-  if not (found and found.installApi==1 and found.api==(status.expected and status.expected.api or 1) and found.platform=='win64') then return false,message,false end
+  if not (found and found.installApi==1 and found.api==(status.expected and status.expected.api or 1) and found.platform==(status.platform or 'win64')) then return false,message,false end
   local valid=false
   for _,path in ipairs(expectedPaths(key,info)) do if normalize(found.path)==path then valid=true end end
   -- Files this addon does not know are identified by their bytes on disk, not by a release.
@@ -550,7 +585,7 @@ function M.CheckInstallation(recheck)
  if recheck and status and status.probePending then return status end
  local previous=status
  local function find(pattern) if not file.Find then return {} end local _,folders=file.Find(pattern,'BASE_PATH') return folders end
- status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),arch=jit.arch,dedicated=SERVER and game.IsDedicated(),find=find})
+ status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),linux=system.IsLinux(),arch=jit.arch,dedicated=SERVER and game.IsDedicated(),find=find})
  if recheck then
   -- Garry's Mod never loads a DLL twice: what did not load needs a restart.
   if not rawNative then promote(status) issue(status,'restart_required','module',L'install.error.restart_to_load') notifyChanged() return status end
@@ -596,8 +631,11 @@ function M.CheckInstallation(recheck)
   loadedIdentity=identityOk and decode(info) or nil
  end
  if type(rawNative.ConfigureCompatibility)=='function' then
-  local compat=include('mmdhl/compatibility_policy.lua')
-  local configured,configError,without=configureCompatibility(compat)
+  -- The profiles describe Windows builds of the game; Linux binaries take their own ABI
+  -- family, with no profiles yet: every Linux game build is unverified (a warning).
+  local configured,configError,without
+  if status.platform=='win64' then configured,configError,without=configureCompatibility(include('mmdhl/compatibility_policy.lua'))
+  else configured,configError=decode(rawNative.ConfigureCompatibility('{"schema":1,"family":"source-'..tostring(status.platform)..'-v1","libraries":[]}')) end
   if not configured then configureError=tostring(configError)
   elseif without then compatibilityFallback=L('install.warning.compatibility_fallback',{libraries=without,recommended=tostring(policy.recommended)}) end
  end

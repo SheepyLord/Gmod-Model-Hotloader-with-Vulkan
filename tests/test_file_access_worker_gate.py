@@ -90,7 +90,7 @@ hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][na
  Run=function(event,...) for _,f in pairs(HOOKS[event] or {}) do local r=f(...) if r~=nil then return r end end end}
 TIMERS={} SIMPLE={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end,Simple=function(_,f) SIMPLE[#SIMPLE+1]=f end}
 concommand={Add=function() end}
-system={IsWindows=function() return true end,IsWindowed=function() return true end} jit={arch='x64'}
+system={IsWindows=function() return true end,IsLinux=function() return false end,IsWindowed=function() return true end} jit={arch='x64'}
 game={IsDedicated=function() return false end,SinglePlayer=function() return true end}
 NOW=0 CurTime=function() return NOW end RealTime=function() return NOW end MsgN=function() end
 istable=function(v) return type(v)=='table' end

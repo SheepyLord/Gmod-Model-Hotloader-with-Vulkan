@@ -11,8 +11,15 @@
 #include "vulkan_solver.hpp"
 #include "props/core.hpp"
 #include "props/texture_resolver.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #include <shobjidl.h>
+#else
+#include "dialogs_posix.hpp"
+#include "posix.hpp"
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <atomic>
 #include <condition_variable>
 #include <csignal>
@@ -26,6 +33,32 @@ namespace {
 // A crash leaves no final status: the module reads the exit code, and one line per
 // crash from <job>/worker.log (which exception, in which module, at which step). The
 // handlers only format into the stack and append; the process then ends.
+#ifndef _WIN32
+// A crash (a signal) appends one line to <job>/worker.log, then the process ends by the
+// same signal, so the module reads it from the exit status (128 + signal number).
+char crashLog[1024]{};
+void crashLine(const char* line){
+    if(!crashLog[0])return;int fd=open(crashLog,O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC,0600);if(fd<0)return;
+    auto unused=write(fd,line,strlen(line));(void)unused;close(fd);
+}
+void crashed(int sig,siginfo_t* info,void*){
+    // Formatted by hand: snprintf is not async-signal-safe.
+    char line[256]="signal ";size_t at=strlen(line);auto number=[&](unsigned long long v,int base){char digits[24];int n=0;do{digits[n++]="0123456789abcdef"[v%base];v/=base;}while(v&&n<24);while(n&&at<sizeof line-1)line[at++]=digits[--n];};
+    number(unsigned(sig),10);const char* mid=" at 0x";for(const char* c=mid;*c&&at<sizeof line-1;c++)line[at++]=*c;number(reinterpret_cast<uintptr_t>(info?info->si_addr:nullptr),16);
+    const char* tail=" during stage ";for(const char* c=tail;*c&&at<sizeof line-1;c++)line[at++]=*c;
+    const char* stage=*mmd::importStage()?mmd::importStage():"start";for(const char* c=stage;*c&&at<sizeof line-2;c++)line[at++]=*c;line[at++]='\n';line[at]=0;
+    crashLine(line);signal(sig,SIG_DFL);raise(sig);
+}
+void watchCrashes(const mmd::fs::path& log){
+    std::strncpy(crashLog,log.c_str(),sizeof(crashLog)-1);
+    // An alternate stack leaves room to log a stack overflow.
+    static char alternate[64*1024];stack_t stack{};stack.ss_sp=alternate;stack.ss_size=sizeof alternate;sigaltstack(&stack,nullptr);
+    struct sigaction action{};action.sa_sigaction=crashed;action.sa_flags=SA_SIGINFO|SA_ONSTACK|SA_RESETHAND;sigemptyset(&action.sa_mask);
+    for(int sig:{SIGSEGV,SIGBUS,SIGILL,SIGFPE,SIGABRT})sigaction(sig,&action,nullptr);
+    std::set_terminate([]{char line[160];snprintf(line,sizeof line,"std::terminate during stage %s\n",*mmd::importStage()?mmd::importStage():"start");crashLine(line);signal(SIGABRT,SIG_DFL);std::abort();});
+}
+uint64_t GetTickCount64(){return mmd::posix::tickMs();}
+#else
 wchar_t crashLog[1024]{};
 void crashLine(const char* line){
     if(!crashLog[0])return;HANDLE h=CreateFileW(crashLog,FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
@@ -48,13 +81,19 @@ void watchCrashes(const mmd::fs::path& log){
     SetUnhandledExceptionFilter(crashed);signal(SIGABRT,aborted);
     std::set_terminate([]{char line[160];snprintf(line,sizeof line,"std::terminate during stage %s\r\n",*mmd::importStage()?mmd::importStage():"start");crashLine(line);std::abort();});
 }
+#endif
 // A model file names its own buffers and textures; those are read only from its folders
 // (props::DependencyScope) and never from a place file access never lets addons read
 // (FilePolicy: credential stores, browser profiles, keys, Windows, the game's cfg...).
 // The worker runs from <game>/garrysmod/lua/bin.
 void guardDependencies(){
+#ifdef _WIN32
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);auto bin=mmd::fs::path(exe).parent_path();mmd::fs::path game;
     if(!lstrcmpiW(bin.filename().c_str(),L"bin")&&!lstrcmpiW(bin.parent_path().filename().c_str(),L"lua")&&!lstrcmpiW(bin.parent_path().parent_path().filename().c_str(),L"garrysmod"))game=bin.parent_path().parent_path().parent_path();
+#else
+    auto bin=mmd::posix::executablePath().parent_path();mmd::fs::path game;
+    if(bin.filename()=="bin"&&bin.parent_path().filename()=="lua"&&bin.parent_path().parent_path().filename()=="garrysmod")game=bin.parent_path().parent_path().parent_path();
+#endif
     auto policy=std::make_shared<const mmd::FilePolicy>(mmd::FilePolicy::system(game));
     props::setDependencyDenylist([policy](const mmd::fs::path& path){return policy->deniedPath(path);});
 }
@@ -184,8 +223,8 @@ props::Json deriveProp(const mmd::fs::path& cache,const props::Json& request,con
 int wmain(int argc,wchar_t** argv){
     using namespace mmd;fs::path status;std::string requestSource,requestKind;const uint64_t started=GetTickCount64();
     try {
-        if(argc==2&&std::wstring(argv[1])==L"--version"){std::cout<<Json({{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"}}).dump()<<std::endl;return 0;}
-        if((argc==3||argc==4)&&std::wstring(argv[1])==L"--installation-test"){auto result=workerSelfTest(argc==4&&std::wstring(argv[3])==L"coacd");result["identity"]={{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform","win64"}};writeJson(argv[2],result);return 0;}
+        if(argc==2&&std::wstring(argv[1])==L"--version"){std::cout<<Json({{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform",MMDHL_PLATFORM}}).dump()<<std::endl;return 0;}
+        if((argc==3||argc==4)&&std::wstring(argv[1])==L"--installation-test"){auto result=workerSelfTest(argc==4&&std::wstring(argv[3])==L"coacd");result["identity"]={{"release",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"api",ApiVersion},{"platform",MMDHL_PLATFORM}};writeJson(argv[2],result);return 0;}
         if(argc==3&&std::wstring(argv[1])==L"--probe-compute"){auto result=openclCapabilities(false);writeJson(argv[2],result);return result.value("available",false)?0:1;}
         if(argc==3&&std::wstring(argv[1])==L"--probe-vulkan"){auto result=vulkanCapabilities(false);shutdownVulkan();writeJson(argv[2],result);return result.value("available",false)?0:1;}
         // Every mode that reads a model file.
@@ -216,6 +255,12 @@ int wmain(int argc,wchar_t** argv){
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--pick"){
             // Shell extensions run inside the file dialog: a crash there is logged as the picker's.
             fs::path dir=argv[2];status=dir/L"status.json";bool prop=argc==4&&std::wstring(argv[3])==L"static";watchCrashes(dir/L"worker.log");setImportStage("pick");
+#ifndef _WIN32
+            std::vector<dialogs::Filter> filters=prop?std::vector<dialogs::Filter>{{"3D models (OBJ, FBX, glTF, PMX, Blender)",{"*.obj","*.fbx","*.glb","*.gltf","*.pmx","*.blend","*.OBJ","*.FBX","*.GLB","*.GLTF","*.PMX","*.BLEND"}},{"All files",{"*"}}}
+                :std::vector<dialogs::Filter>{{"Character models (PMX, PMD, VRM, FBX, glTF, DAE)",{"*.pmx","*.pmd","*.vrm","*.fbx","*.glb","*.gltf","*.dae","*.PMX","*.PMD","*.VRM","*.FBX","*.GLB","*.GLTF","*.DAE"}},{"All files",{"*"}}};
+            auto chosen=dialogs::pickFiles(prop?"Import static prop":"Import character",filters,false,false);
+            Json result={{"state","cancelled"}};if(chosen&&!chosen->empty()){result={{"state","selected"},{"source",chosen->front()}};if(prop)result["kind"]="static";}writeJson(status,result);return 0;
+#else
             const wchar_t* title=prop?L"Import static prop":L"Import character";
             CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);IFileOpenDialog* dialog=nullptr;
             if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog))))throw std::runtime_error("Cannot open file picker");
@@ -231,10 +276,17 @@ int wmain(int argc,wchar_t** argv){
             std::thread raise([&]{for(int i=0;i<60&&!shown.load();i++){if(HWND h=FindWindowExW(nullptr,nullptr,L"#32770",title)){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId()){ShowWindow(h,SW_SHOW);SetForegroundWindow(h);return;}}Sleep(50);}});
             auto hr=dialog->Show(nullptr);shown=true;raise.join();
             Json result={{"state","cancelled"}};if(SUCCEEDED(hr)){IShellItem* item=nullptr;dialog->GetResult(&item);PWSTR p=nullptr;item->GetDisplayName(SIGDN_FILESYSPATH,&p);result={{"state","selected"},{"source",utf8(p)}};if(prop)result["kind"]="static";CoTaskMemFree(p);item->Release();}dialog->Release();CoUninitialize();writeJson(status,result);return 0;
+#endif
         }
         // Test aid: the crash handlers on a deliberate crash (access, abort or terminate).
         if(argc==4&&std::wstring(argv[1])==L"--crash-test"){watchCrashes(fs::path(argv[2])/L"worker.log");setImportStage("test");std::wstring how=argv[3];
-            if(how==L"abort")std::abort();if(how==L"terminate")std::terminate();RaiseException(EXCEPTION_ACCESS_VIOLATION,0,0,nullptr);return 0;}
+            if(how==L"abort")std::abort();if(how==L"terminate")std::terminate();
+#ifdef _WIN32
+            RaiseException(EXCEPTION_ACCESS_VIOLATION,0,0,nullptr);
+#else
+            raise(SIGSEGV);
+#endif
+            return 0;}
         // File access for other addons: a picker or a consent window, answered into a private folder.
         if(argc==3&&(std::wstring(argv[1])==L"--fa-pick"||std::wstring(argv[1])==L"--fa-consent"))return fileAccessDialog(std::wstring(argv[1])==L"--fa-pick",argv[2]);
         if((argc==3||argc==4)&&std::wstring(argv[1])==L"--request"){fs::path request=argv[2];status=request.parent_path()/L"status.json";watchCrashes(request.parent_path()/L"worker.log");auto j=readJson(request);auto options=j.value("options",Json::object());
@@ -284,3 +336,11 @@ int wmain(int argc,wchar_t** argv){
         }
         std::cerr<<j.dump(-1,' ',false,Json::error_handler_t::replace)<<std::endl;return 1;}
 }
+#ifndef _WIN32
+// The arguments as wide strings, as wmain receives them on Windows (UTF-8 on Linux).
+int main(int argc,char** argv){
+    std::vector<std::wstring> args;for(int i=0;i<argc;i++)args.push_back(mmd::posix::wideFromUtf8(argv[i],false));
+    std::vector<wchar_t*> pointers;for(auto& a:args)pointers.push_back(a.data());pointers.push_back(nullptr);
+    return wmain(argc,pointers.data());
+}
+#endif

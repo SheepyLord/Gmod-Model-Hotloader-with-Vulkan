@@ -17,5 +17,16 @@
     "url": "https://files.pythonhosted.org/packages/5f/28/edbc4d6766fb3504bf15dabe7340e5686c72b9e3be030b3c8c40469e7af6/coacd-1.0.14-cp39-abi3-win_amd64.whl",
     "sha256": "6b548f44d9a4694cde594dc8cc8fefa678fb7c88153583be4e8b2c707de8fbbd",
     "source_commit": "1401ce2a7ae1ed89c65ab958b48d489350c233c7"
+  },
+  "coacd_linux64": {
+    "version": "1.0.14",
+    "url": "https://files.pythonhosted.org/packages/88/7c/ec7edfc77c48fe97434ae813eca7614103289105bb546952ed9a0a266ce8/coacd-1.0.14-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "6c135b717af096523bbebf1fd8d326e8950c024237fe9806ad46dedd8b4c31f0",
+    "source_commit": "1401ce2a7ae1ed89c65ab958b48d489350c233c7"
+  },
+  "icu": {
+    "version": "74.2",
+    "source": {"url": "https://github.com/unicode-org/icu/releases/download/release-74-2/icu4c-74_2-src.tgz", "sha256": "68db082212a96d6f53e35d60f47d38b962e9f9d207a74cfac78029ae8ff5e08c"},
+    "data": {"url": "https://github.com/unicode-org/icu/releases/download/release-74-2/icu4c-74_2-data.zip", "sha256": "c28c3ca5f4ba3384781797138a294ca360988d4322674ad4d51e52f5d9b0a2b6"}
   }
 }

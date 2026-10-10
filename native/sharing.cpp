@@ -2,7 +2,12 @@
 #include <regex>
 #include <set>
 #include <cstring>
+#ifdef _WIN32
 #include <compressapi.h>
+#else
+#include "xpress_huffman.hpp"
+#include <sys/stat.h>
+#endif
 #include <fstream>
 #include <mutex>
 #include <map>
@@ -10,6 +15,7 @@ namespace mmd {
 namespace {
 constexpr char PackedMagic[]="MMDPACK2";
 constexpr size_t PackedHeader=80;
+#ifdef _WIN32
 struct Codec {
  COMPRESSOR_HANDLE handle=nullptr;bool decode=false;
  explicit Codec(bool decoding):decode(decoding){
@@ -17,6 +23,12 @@ struct Codec {
  }
  ~Codec(){if(decode)CloseDecompressor(handle);else CloseCompressor(handle);}
 };
+#else
+// Windows' Compress() output (XPRESS Huffman in buffer mode) is decoded natively. This
+// build stores blocks uncompressed, which every release reads (the stored-block flag).
+struct Codec {explicit Codec(bool){}};
+using SIZE_T=size_t;
+#endif
 template<class T>void append(Bytes& out,T value){auto p=reinterpret_cast<const unsigned char*>(&value);out.insert(out.end(),p,p+sizeof(value));}
 template<class T>T take(std::span<const unsigned char> bytes,size_t& at){if(at>bytes.size()||sizeof(T)>bytes.size()-at)throw std::runtime_error("Truncated model transfer");T out;std::memcpy(&out,bytes.data()+at,sizeof(out));at+=sizeof(out);return out;}
 bool headerMatches(std::span<const unsigned char> bytes,uint64_t size,const std::string& digest){
@@ -32,7 +44,11 @@ Bytes packSharedBytes(std::span<const unsigned char> raw,const std::string& dige
  Codec codec(false);Bytes compressed(SharedBlockSize+65536);
  for(size_t at=0;at<raw.size();){
   auto count=uint32_t(std::min<size_t>(SharedBlockSize,raw.size()-at));SIZE_T written=0;
+#ifdef _WIN32
   bool encoded=compress&&Compress(codec.handle,raw.data()+at,count,compressed.data(),compressed.size(),&written)&&written<count;
+#else
+  (void)compress;bool encoded=false;
+#endif
   append(output,count);append(output,encoded?uint32_t(written):(count|0x80000000u));
   auto data=encoded?compressed.data():raw.data()+at;output.insert(output.end(),data,data+(encoded?written:count));at+=count;
  }
@@ -42,9 +58,13 @@ Bytes packSharedBytes(std::span<const unsigned char> raw,const std::string& dige
 // The file's NTFS index: an atomic replace (writeAtomic) always installs a new
 // file, even within one tick of the write-time clock. 0 when unavailable.
 static uint64_t fileIndex(const fs::path& path){
+#ifndef _WIN32
+ struct stat s{};if(stat(path.c_str(),&s)!=0)return 0;return uint64_t(s.st_ino)^uint64_t(s.st_dev)<<48;
+#else
  HANDLE file=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
  if(file==INVALID_HANDLE_VALUE)return 0;BY_HANDLE_FILE_INFORMATION info{};bool ok=GetFileInformationByHandle(file,&info)!=0;CloseHandle(file);
  return ok?uint64_t(info.nFileIndexHigh)<<32|info.nFileIndexLow:0;
+#endif
 }
 fs::path packSharedFile(const fs::path& cache,const std::string& relative,uint64_t size,const std::string& digest){
  if(!validId(digest)||size>UINT32_MAX)throw std::runtime_error("Invalid model transfer metadata");
@@ -57,7 +77,7 @@ fs::path packSharedFile(const fs::path& cache,const std::string& relative,uint64
  // damaged one behind a valid header would otherwise fail every retry. Its
  // write time alone cannot tell a replacement written in the same clock tick.
  struct Verified {fs::file_time_type stamp;uint64_t file;uint64_t size;std::string digest;};
- static std::map<std::wstring,Verified> verified;
+ static std::map<fs::path::string_type,Verified> verified;
  {std::error_code error;auto stamp=fs::last_write_time(packed,error);
   if(!error){auto it=verified.find(packed.native());auto file=fileIndex(packed);if(it!=verified.end()&&file&&it->second.file==file&&it->second.stamp==stamp&&it->second.size==size&&it->second.digest==digest)return packed;
    try{auto previous=readFile(packed);if(headerMatches(previous,size,digest)){unpackSharedFile(previous,size,digest);verified[packed.native()]={stamp,file,size,digest};return packed;}}catch(const std::exception&){}}}
@@ -74,7 +94,11 @@ Bytes unpackSharedFile(std::span<const unsigned char> packet,uint64_t size,const
   if(!count||count>SharedBlockSize||count>size-raw.size()||!stored||stored>count||stored>packet.size()-at||(uncompressed&&stored!=count))throw std::runtime_error("Invalid compressed model transfer block");
   auto begin=raw.size();raw.resize(begin+count);
   if(uncompressed)std::memcpy(raw.data()+begin,packet.data()+at,count);
+#ifdef _WIN32
   else{SIZE_T written=0;if(!Decompress(codec.handle,packet.data()+at,stored,raw.data()+begin,count,&written)||written!=count)throw std::runtime_error("Corrupt compressed model transfer");}
+#else
+  else{(void)codec;try{auto block=decodeCompressionApiBuffer(packet.subspan(at,stored),count);std::memcpy(raw.data()+begin,block.data(),count);}catch(const std::exception&){throw std::runtime_error("Corrupt compressed model transfer");}}
+#endif
   at+=stored;
  }
  if(at!=packet.size()||hash(raw)!=digest)throw std::runtime_error("Shared file failed SHA256 verification");

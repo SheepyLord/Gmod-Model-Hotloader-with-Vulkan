@@ -3,11 +3,18 @@
 // requester, script, purpose and title fields come from the addon, shown in quotes or
 // marked as not verified (cleanLabel turned their own quotation marks into apostrophes).
 #include "file_access.hpp"
+#ifdef _WIN32
 #include "file_access_picker.hpp"
 #include <windows.h>
 #include <commctrl.h>
 #include <shobjidl.h>
 #include <shlobj.h>
+#else
+#include "dialogs_posix.hpp"
+#include "posix.hpp"
+#include <cwchar>
+#include <fstream>
+#endif
 #include <atomic>
 #include <functional>
 #include <thread>
@@ -120,8 +127,33 @@ std::wstring field(const Json& request,const char* key){auto it=request.find(key
 std::wstring size(uint64_t bytes,const Text& t){
  if(bytes<1024)return std::to_wstring(bytes)+L" "+t.units[0];
  double value=double(bytes);int unit=0;while(value>=1024&&unit<3){value/=1024;unit++;}
- wchar_t buffer[32];swprintf_s(buffer,L"%.1f ",value);return buffer+std::wstring(t.units[unit]);
+ wchar_t buffer[32];
+#ifdef _WIN32
+ swprintf_s(buffer,L"%.1f ",value);
+#else
+ std::swprintf(buffer,32,L"%.1f ",value);
+#endif
+ return buffer+std::wstring(t.units[unit]);
 }
+#ifndef _WIN32
+constexpr int AllowOnce=1001,AllowAlways=1002,Deny=1003;
+// The texts are compiled in as wide strings: windows on Linux take UTF-8.
+std::string text(const std::wstring& w){return utf8(w);}
+// The question with its choices as buttons (each label's first line; the notes join the
+// text). Deny is the default: Enter or closing the window refuses.
+int ask(const std::wstring& instruction,const std::wstring& content,const std::wstring& footer,const std::vector<std::pair<int,std::wstring>>& choices,const Text& t){
+ std::wstring body=instruction+L"\n\n"+content;
+ std::vector<std::string> buttons;int deny=-1;std::wstring notes;
+ for(auto& [id,label]:choices){auto cut=label.find(L'\n');buttons.push_back(text(label.substr(0,cut)));if(id==Deny)deny=int(buttons.size())-1;
+  if(cut!=std::wstring::npos)notes+=L"\n\u2022 "+label.substr(0,cut)+L": "+label.substr(cut+1);}
+ if(!notes.empty())body+=L"\n"+notes;
+ body+=L"\n\n"+footer;
+ if(choices.empty()){dialogs::inform(text(t.title),text(body));return Deny;}
+ if(deny<0){buttons.push_back(text(t.deny));deny=int(buttons.size())-1;}
+ int pressed=dialogs::choose(text(t.title),text(body),buttons,deny);
+ return pressed>=0&&pressed<int(choices.size())?choices[size_t(pressed)].first:Deny;
+}
+#else
 // No owner window: an owned dialog would disable the game window and leave it disabled
 // if this process is killed. The game started this process, so it may take the foreground.
 void raise(const std::wstring& title,std::atomic<bool>& shown,const std::function<void()>& raised){
@@ -156,6 +188,7 @@ int ask(const std::wstring& instruction,const std::wstring& content,const std::w
  int pressed=Deny;if(FAILED(function(&config,&pressed,nullptr,nullptr)))return Deny;
  return pressed;
 }
+#endif
 Json consent(const Json& request,const Text& t){
  if(request.value("kind",std::string())=="enable"){
   int pressed=ask(t.enableAsk,t.enableText,t.warning,{{AllowOnce,t.enableYes},{Deny,t.enableNo}},t);
@@ -183,6 +216,30 @@ Json consent(const Json& request,const Text& t){
  int pressed=ask(folder?t.askFolder:t.askFile,content,footer,choices,t);
  return {{"answer",problem.empty()&&pressed==AllowOnce?"once":problem.empty()&&pressed==AllowAlways&&choices.size()==3?"always":"deny"}};
 }
+#ifndef _WIN32
+// The notice the Windows picker shows inside it (the addon's words, then Model Hotloader's)
+// comes first; the file window opens only after "Allow reading".
+Json pick(const Json& request,const Text& t){
+ bool folder=request.value("folder",false),multiple=request.value("multiple",false);auto requester=field(request,"requester");
+ auto title=fill(folder?t.pickFolder:multiple?t.pickFiles:t.pickFile,{{L"requester",requester}})+L" — Model Hotloader";
+ auto purpose=field(request,"purpose");if(purpose.empty())purpose=field(request,"title");
+ std::wstring said;if(!purpose.empty())said=fill(t.purpose,{{L"purpose",purpose}});
+ if(auto script=field(request,"script");!script.empty())said+=(said.empty()?L"":L"\n")+fill(t.script,{{L"script",script}});
+ auto notice=(said.empty()?std::wstring():said+L"\n\n")+t.pickNote;
+ if(dialogs::choose(text(title),text(notice),{text(t.deny),text(t.pickOk)},0)!=1)return {{"answer","cancelled"}};
+ // Patterns were checked natively before they got here (*.ext lists).
+ std::vector<dialogs::Filter> filters;
+ for(auto& f:request.value("filters",Json::array()))if(f.is_array()&&f.size()==2&&f[0].is_string()&&f[1].is_string()){
+  dialogs::Filter filter{f[0].get<std::string>(),{}};auto list=f[1].get<std::string>();
+  for(size_t start=0;start<=list.size();){auto end=list.find(';',start);if(end==std::string::npos)end=list.size();auto pattern=list.substr(start,end-start);start=end+1;if(!pattern.empty())filter.patterns.push_back(pattern=="*.*"?"*":pattern);}
+  filters.push_back(filter);}
+ filters.push_back({text(t.allFiles),{"*"}});
+ auto paths=dialogs::pickFiles(text(title),filters,multiple,folder);
+ if(!paths)return {{"answer","cancelled"}};
+ Json list=Json::array();for(size_t i=0;i<paths->size()&&i<64;i++)list.push_back((*paths)[i]);
+ return {{"answer","selected"},{"paths",list}};
+}
+#else
 Json pick(const Json& request,const Text& t){
  bool folder=request.value("folder",false),multiple=request.value("multiple",false);auto requester=field(request,"requester");
  auto title=fill(folder?t.pickFolder:multiple?t.pickFiles:t.pickFile,{{L"requester",requester}})+L" — Model Hotloader";
@@ -231,14 +288,21 @@ Json pick(const Json& request,const Text& t){
  results->Release();
  return {{"answer","selected"},{"paths",paths}};
 }
+#endif
 #ifdef MMDHL_FILE_ACCESS_TESTING
 // Test worker only (tests/file_access_worker.cpp, never packaged): the answer comes from
 // MMDHL_FA_TEST_ANSWER instead of a window, so CTest runs without a desktop ("ui-pick"
 // shows the real picker; tests ask for it only when MMDHL_FA_UI_TESTS is set).
+#ifdef _WIN32
 std::wstring environment(const wchar_t* name){wchar_t buffer[4096]{};auto n=GetEnvironmentVariableW(name,buffer,4096);return n&&n<4096?std::wstring(buffer,n):std::wstring();}
 void testLog(const Json& entry){
  if(auto log=environment(L"MMDHL_FA_TEST_LOG");!log.empty()){auto line=entry.dump()+"\n";if(HANDLE f=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);f!=INVALID_HANDLE_VALUE){DWORD n=0;WriteFile(f,line.data(),DWORD(line.size()),&n,nullptr);CloseHandle(f);}}
 }
+#else
+std::wstring environment(const wchar_t* name){auto value=getenv(utf8(name).c_str());return value?wide(value):std::wstring();}
+void testLog(const Json& entry){if(auto log=environment(L"MMDHL_FA_TEST_LOG");!log.empty()){std::ofstream f(fs::path(log),std::ios::app|std::ios::binary);f<<entry.dump()<<"\n";}}
+void Sleep(unsigned ms){std::this_thread::sleep_for(std::chrono::milliseconds(ms));}
+#endif
 int testAnswer(bool picker,const fs::path& folder,const Json& request){
  testLog(request);
  auto answer=environment(L"MMDHL_FA_TEST_ANSWER");
@@ -247,6 +311,7 @@ int testAnswer(bool picker,const fs::path& folder,const Json& request){
  // The real picker in MMDHL_FA_TEST_FOLDER, answered by posted OK clicks: one at once, like a
  // stray Enter meant for the game, and one after its button woke up. The log notes whether
  // the window was still open after the first.
+ #ifdef _WIN32
  if(picker&&answer==L"ui-pick"){
   auto shown=[]{HWND found=nullptr;EnumWindows([](HWND h,LPARAM out)->BOOL{DWORD pid=0;GetWindowThreadProcessId(h,&pid);wchar_t name[16]{};GetClassNameW(h,name,16);
    if(pid!=GetCurrentProcessId()||!IsWindowVisible(h)||std::wstring(name)!=L"#32770")return TRUE;*reinterpret_cast<HWND*>(out)=h;return FALSE;},reinterpret_cast<LPARAM>(&found));return found;};
@@ -263,6 +328,7 @@ int testAnswer(bool picker,const fs::path& folder,const Json& request){
   testLog({{"uiPick",{{"refusedAtOnce",refusedAtOnce}}}});
   writeJson(folder/L"result.json",result);return 0;
  }
+ #endif
  Json result={{"answer",utf8(answer)}};
  if(picker&&answer.starts_with(L"pick:")){Json paths=Json::array();auto list=answer.substr(5);for(size_t start=0;start<=list.size();){auto end=list.find(L'|',start);if(end==list.npos)end=list.size();paths.push_back(utf8(list.substr(start,end-start)));start=end+1;}result={{"answer","selected"},{"paths",paths}};}
  writeJson(folder/L"result.json",result);return 0;

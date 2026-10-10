@@ -10,6 +10,7 @@
 #include "jobs.hpp"
 #include <iostream>
 #include <string>
+#include "wide_main.hpp"
 using namespace mmd;
 int wmain(int argc,wchar_t** argv){try{
  if(argc<2)throw std::runtime_error("Pass native-heavy-chain.pmx (or any PMX) and an optional drift limit");

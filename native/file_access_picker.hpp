@@ -1,4 +1,5 @@
 #pragma once
+#ifdef _WIN32
 // The file access picker's arming (file_access_dialog.cpp, in the worker): its Allow reading
 // button wakes up a moment after the window appears and after it takes the foreground, so a
 // stray Enter or click meant for the game cannot choose anything, such as the folder the picker
@@ -48,3 +49,4 @@ template<class Dialog> DWORD armPicker(Dialog& dialog,PickerArming& arming){
  return cookie;
 }
 }
+#endif

@@ -3,3 +3,10 @@
 #define MMDHL_RELEASE "@MMDHL_RELEASE@"
 #define MMDHL_BUILD_ID "@MMDHL_BUILD_ID@"
 #define MMDHL_INSTALL_API 1
+// The platform these binaries are for (win64, linux64 or linux) and their file names.
+#define MMDHL_PLATFORM "@MMDHL_PLATFORM@"
+#define MMDHL_WORKER_FILE "@MMDHL_WORKER_FILE@"
+#define MMDHL_RUNTIME_FILE "@MMDHL_RUNTIME_FILE@"
+#define MMDHL_CLIENT_FILE "@MMDHL_CLIENT_FILE@"
+#define MMDHL_SERVER_FILE "@MMDHL_SERVER_FILE@"
+#define MMDHL_COACD_FILE "@MMDHL_COACD_FILE@"

@@ -52,8 +52,10 @@ local function captureIcon(assets,name,done)
 end
 local function publishCommand(result,icon)
  local gma=result.path
- local jpg=icon and (result.folder..'\\'..result.file:gsub('%.gma$','.jpg')) or L'export.icon_placeholder'
- return string.format('"%s" create -addon "%s" -icon "%s"',result.gmpublish or 'gmpublish.exe',gma,jpg)
+ -- The export folder as the native module reported it (backslashes on Windows, slashes on Linux).
+ local separator=tostring(result.folder):find('\\',1,true) and '\\' or '/'
+ local jpg=icon and (result.folder..separator..result.file:gsub('%.gma$','.jpg')) or L'export.icon_placeholder'
+ return string.format('"%s" create -addon "%s" -icon "%s"',result.gmpublish or (system.IsWindows() and 'gmpublish.exe' or 'gmpublish'),gma,jpg)
 end
 function mmdhl.OpenPackageExport(kind,ids)
  if not native.StartPackageExport then Derma_Message(L'export.needs_native',L'export.title',L'common.ok') return end
