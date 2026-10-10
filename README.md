@@ -39,7 +39,7 @@ If cloned with locally built binary modules, run:
 ## Characters, physics and other formats
 
 - **Import Character Models** reads PMX, PMD and VRM, and FBX, glTF/GLB and DAE characters with a skeleton. For those, and for any character whose bones the importer cannot match, the bone assignment window shows what was found and lets you assign the rest. [Guide](docs/CHARACTER_IMPORT.md).
-- **Ragdoll physics…** (right-click a character ragdoll) edits its Source physics model: presets, collision shapes, joint limits, masses, damping, self-collision and every other `$collisionjoints` value, or copies them from an installed model. [Guide](docs/PHYSICS_EDITOR.md).
+- **Ragdoll physics…** (right-click a character ragdoll) edits its Source physics model: presets, collision shapes, joint limits, masses, damping, self-collision and every other `$collisionjoints` value, or copies them from an installed model. **Ragdoll physics for all spawns…** in the spawn menu's Character Models tab edits the physics every new spawn of a model gets. [Guide](docs/PHYSICS_EDITOR.md).
 - Addon authors can let players hand files to their addon through `hook.Run('MMDHL.RequestUserFile', …)`, with the player's consent each time. [File access for other addons](docs/FILE_ACCESS.md).
 
 ## Model terms of use

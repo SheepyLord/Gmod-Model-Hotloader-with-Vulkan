@@ -231,7 +231,9 @@ if SERVER then
   if rig.materialGma and not mmdhl.MountPackage(rig.materialGma) then if done then done(nil,L'carrier.error.mount_materials') end return end
   if not mmdhl.MountPackage(rig.gma) then if done then done(nil,L'carrier.error.mount_carrier') end return end
   if options.role and options.role~='ragdoll' then return mmdhl.SpawnActorNative(p,id,options,rig,done) end
-  local ent=ents.Create('prop_ragdoll') ent:SetModel(rig.model) ent:SetPos(Vector(unpack(options.position or {0,0,0}))) ent:SetAngles(Angle(unpack(options.angles or {0,0,0}))) ent:Spawn()
+  -- NULL near the networked-edict limit.
+  local ent=ents.Create('prop_ragdoll') if not IsValid(ent) then if done then done(nil,L'server.error.native_ragdoll_failed') end return end
+  ent:SetModel(rig.model) ent:SetPos(Vector(unpack(options.position or {0,0,0}))) ent:SetAngles(Angle(unpack(options.angles or {0,0,0}))) ent:Spawn()
   if ent:GetPhysicsObjectCount()~=18 then ent:Remove() if done then done(nil,L'carrier.error.physics_objects') end return end
   local attached,e=mmdhl.AttachNative(ent,id,options) if not attached then ent:Remove() if done then done(nil,e) end return end
   for i=0,17 do local body=ent:GetPhysicsObjectNum(i) body:EnableMotion(not options.frozen) if not options.frozen then body:Wake() end end

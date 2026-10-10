@@ -94,6 +94,14 @@ not touched, and a model's existing name and settings are never overwritten.
 A model counts as installed only with every file its package lists: an install
 that stopped part way (a texture that failed, a game closed mid-install) has no
 completion record, so the next scan or start transfers just the missing files.
+Files whose hashes all match can still make up another model than the one the
+package names (a manifest of another identity, a model that does not parse).
+With natives after 2.3.0 the assembled model is loaded off the main thread as
+using it would load it (`StartAssetCheck`): only when that passes is it recorded
+as installed, and a server approves it only then. A model that fails is reported
+like a failed file, its manifest (a prop: its bundle) is removed so that the
+library does not list it, and shared textures stay. Older natives install as
+before.
 
 Installed models repair themselves. Every scan compares the sizes of their
 files with the package; a missing or resized file clears the completion record
@@ -144,7 +152,9 @@ mounted content is scanned, not only Workshop items.
 
 - A **dedicated server** installs the packages it mounts into its own cache,
   repairs it the same way, and approves those models for its players
-  (`approvedBy = "workshop"` in `approved.json`); the approval is withdrawn when
+  (`approvedBy = "workshop"` in `approved.json`) once their assembled files pass
+  the check above (one model at a time; a model approved before needs none); the
+  approval is withdrawn when
   the package is gone, and connected clients drop the withdrawn models and props
   from their libraries (`mmdhl_catalog_forget`).
 - A **listen server** shares its host's cache: the host's game installs the

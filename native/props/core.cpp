@@ -106,7 +106,7 @@ bool validHash(std::string_view s){return s.size()==64&&std::all_of(s.begin(),s.
 Json bundleManifest(const fs::path& path){
     std::ifstream f(path,std::ios::binary);unsigned char header[24]{};
     if(!f.read(reinterpret_cast<char*>(header),24)||std::memcmp(header,"GMLHOT1\0",8))return Json();
-    uint32_t length=uint32_t(header[8])|uint32_t(header[9])<<8|uint32_t(header[10])<<16|uint32_t(header[11])<<24;if(length>4u<<20)return Json();
+    uint32_t length=uint32_t(header[8])|uint32_t(header[9])<<8|uint32_t(header[10])<<16|uint32_t(header[11])<<24;if(length>ManifestBytes)return Json();
     std::string text(length,'\0');if(!f.read(text.data(),length))return Json();
     auto manifest=Json::parse(text,nullptr,false);return manifest.is_object()?manifest:Json();
 }
@@ -195,6 +195,8 @@ void validate(const Asset& a,const Limits& l){
     for(auto& v:a.vertices){if(!finite(v.pos)||!finite(v.normal)||!std::isfinite(v.u)||!std::isfinite(v.v))throw std::runtime_error("Non-finite vertex data");for(float t:v.tangent)if(!std::isfinite(t))throw std::runtime_error("Non-finite tangent");}
     for(auto i:a.indices)if(i>=a.vertices.size())throw std::runtime_error("Vertex index is out of bounds");
     uint64_t cursor=0;for(auto& p:parts){auto first=p.at("first").get<uint64_t>(),count=p.at("count").get<uint64_t>();if(first!=cursor||!count||count%3||count>60000||first+count>a.indices.size()||p.at("material").get<uint32_t>()>=mats.size())throw std::runtime_error("Invalid mesh range");cursor+=count;}if(cursor!=a.indices.size())throw std::runtime_error("Mesh ranges do not cover geometry");
+    // As many as the reader takes (decode).
+    if(a.textures.size()>uint64_t(l.materials)*2)throw std::runtime_error("Too many textures");
     std::set<std::string> hashes;
     for(auto& t:a.textures){if(!validHash(t.hash)||!hashes.insert(t.hash).second||!t.width||!t.height||t.width>l.textureDimension||t.height>l.textureDimension||t.png.size()<33)throw std::runtime_error("Invalid texture metadata");
         static const uint8_t sig[]={137,80,78,71,13,10,26,10};if(std::memcmp(t.png.data(),sig,8)||std::memcmp(t.png.data()+12,"IHDR",4))throw std::runtime_error("Only normalized PNG textures are allowed");
@@ -218,23 +220,26 @@ void validate(const Asset& a,const Limits& l){
 struct Writer{Bytes b;void u32(uint32_t v){for(int i=0;i<4;i++)b.push_back(uint8_t(v>>(8*i)));}void raw(std::span<const uint8_t> v){b.insert(b.end(),v.begin(),v.end());}};
 struct Reader{std::span<const uint8_t> b;size_t p=0;std::span<const uint8_t> raw(size_t n){if(n>b.size()-p)throw std::runtime_error("Truncated asset package");auto s=b.subspan(p,n);p+=n;return s;}uint32_t u32(){auto s=raw(4);return uint32_t(s[0])|uint32_t(s[1])<<8|uint32_t(s[2])<<16|uint32_t(s[3])<<24;}};
 Bytes encode(const Asset& a){
-    Json j=a.manifest;j["hulls"]=hullJson(a.hulls);auto s=j.dump();Writer w;w.raw({reinterpret_cast<const uint8_t*>("GMLHOT1\0"),8});w.u32(uint32_t(s.size()));w.u32(uint32_t(a.vertices.size()));w.u32(uint32_t(a.indices.size()));w.u32(uint32_t(a.textures.size()));w.raw({reinterpret_cast<const uint8_t*>(s.data()),s.size()});
+    Json j=a.manifest;j["hulls"]=hullJson(a.hulls);auto s=j.dump();
+    if(s.size()>ManifestBytes)throw std::runtime_error("The prop's description is larger than 4 MiB (many mesh parts or long names); merge parts, shorten their names or split the model");
+    Writer w;w.raw({reinterpret_cast<const uint8_t*>("GMLHOT1\0"),8});w.u32(uint32_t(s.size()));w.u32(uint32_t(a.vertices.size()));w.u32(uint32_t(a.indices.size()));w.u32(uint32_t(a.textures.size()));w.raw({reinterpret_cast<const uint8_t*>(s.data()),s.size()});
     w.raw({reinterpret_cast<const uint8_t*>(a.vertices.data()),a.vertices.size()*sizeof(Vertex)});w.raw({reinterpret_cast<const uint8_t*>(a.indices.data()),a.indices.size()*4});
     for(auto& t:a.textures){w.raw({reinterpret_cast<const uint8_t*>(t.hash.data()),64});w.u32(t.width);w.u32(t.height);w.u32(uint32_t(t.png.size()));w.raw(t.png);}return std::move(w.b);
 }
 Asset decode(std::span<const uint8_t> bytes,const Limits& limits){
     if(bytes.size()>limits.packageBytes)throw std::runtime_error("Asset exceeds package limit");Reader r{bytes};auto magic=r.raw(8);if(std::memcmp(magic.data(),"GMLHOT1\0",8))throw std::runtime_error("Not a GModel asset");
-    auto jn=r.u32(),nv=r.u32(),ni=r.u32(),nt=r.u32();if(jn>4u<<20||nt>uint64_t(limits.materials)*2)throw std::runtime_error("Asset header exceeds limits");
+    auto jn=r.u32(),nv=r.u32(),ni=r.u32(),nt=r.u32();if(jn>ManifestBytes||nt>uint64_t(limits.materials)*2)throw std::runtime_error("Asset header exceeds limits");
     checkGeometryStorage(nv,ni,limits);
     Asset a;auto jb=r.raw(jn);a.manifest=Json::parse(jb);a.hulls=parseHulls(a.manifest.at("hulls"));auto vb=r.raw(uint64_t(nv)*sizeof(Vertex)),ib=r.raw(uint64_t(ni)*4);a.vertices.resize(nv);a.indices.resize(ni);std::memcpy(a.vertices.data(),vb.data(),vb.size());std::memcpy(a.indices.data(),ib.data(),ib.size());
     for(uint32_t i=0;i<nt;i++){Texture t;auto h=r.raw(64);t.hash.assign(reinterpret_cast<const char*>(h.data()),64);t.width=r.u32();t.height=r.u32();auto data=r.raw(r.u32());t.png.assign(data.begin(),data.end());a.textures.push_back(std::move(t));}
     if(r.p!=bytes.size())throw std::runtime_error("Trailing data in asset package");validate(a,limits);a.id=sha256(bytes);return a;
 }
-std::string saveAsset(const fs::path& cache,Asset& a,const Progress& progress,const Limits& limits){
+std::string saveAsset(const fs::path& cache,Asset& a,const Progress& progress,const Limits& limits,bool* created){
     progress("Validating asset",.90f);validate(a,limits);progress("Encoding asset",.94f);auto b=encode(a);
     if(b.size()>limits.packageBytes)throw std::runtime_error("Asset package exceeds the configured byte limit");
     progress("Hashing asset",.96f,{},0,b.size(),true);a.id=sha256(b);
-    progress("Writing cache",.98f,{},0,b.size(),true);writeAtomic(cache/L"assets"/wide(a.id+".gmdl"),b);return a.id;
+    auto path=cache/L"assets"/wide(a.id+".gmdl");if(created){std::error_code ec;*created=!fs::exists(path,ec);}
+    progress("Writing cache",.98f,{},0,b.size(),true);writeAtomic(path,b);return a.id;
 }
 Asset loadAsset(const fs::path& cache,const std::string& id,const Limits& limits){if(!validHash(id))throw std::runtime_error("Invalid asset identifier");auto bytes=readFile(cache/L"assets"/wide(id+".gmdl"),limits.packageBytes);auto a=decode(bytes,limits);if(a.id!=id)throw std::runtime_error("Asset SHA-256 mismatch");for(auto& t:a.textures)writeAtomic(cache/L"textures"/wide(t.hash+".png"),t.png);return a;}
 Options parseOptions(const Json& j){Options o;if(j.contains("rotation"))o.rotation=j.at("rotation").get<std::array<float,3>>();for(float n:o.rotation)if(!std::isfinite(n)||std::abs(n)>360)throw std::runtime_error("Rotation must be between -360 and 360 degrees");o.scale=j.value("scale",1.f);o.axis=j.value("axis",std::string("auto"));o.collision=j.value("collision",std::string("hull"));o.autoUnits=j.value("auto_units",true);if(j.contains("objects")){const auto& list=j.at("objects");if(!list.is_array()||list.size()>4096)throw std::runtime_error("Invalid object selection");for(auto& n:list){if(!n.is_string()||n.get<std::string>().size()>1024)throw std::runtime_error("Invalid object name");o.objects.push_back(n.get<std::string>());}}if(!std::isfinite(o.scale)||o.scale<=0||o.scale>10000)throw std::runtime_error("Scale must be positive and at most 10000");if(o.axis!="auto"&&o.axis!="y_up"&&o.axis!="z_up")throw std::runtime_error("Unknown axis setting");if(o.collision!="balanced"&&o.collision!="hull")throw std::runtime_error("Unknown collision mode");return o;}

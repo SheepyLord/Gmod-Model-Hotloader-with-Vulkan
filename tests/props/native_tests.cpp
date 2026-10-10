@@ -71,6 +71,18 @@ int main(){try{
     rejects([&]{validate(bad);},"truncated PNG accepted");
     auto header=encode(a);for(int i=12;i<16;i++)header[i]=255;
     rejects([&]{decode(header);},"oversized allocation header accepted");
+    // What saveAsset writes always loads again: a manifest beyond what the reader takes (many
+    // mesh parts with long names) is refused before anything is written, and a large one within it loads.
+    {auto root=fs::temp_directory_path()/fs::path(L"gmodel-manifest-test-"+std::to_wstring(processId()));fs::remove_all(root);fs::create_directories(root/L"assets");
+     auto big=a;big.manifest["parts"][0]["name"]=std::string(ManifestBytes,'n');
+     bool refused=false;try{saveAsset(root,big);}catch(const std::exception& e){refused=std::string(e.what()).find("4 MiB")!=std::string::npos;}
+     check(refused&&fs::is_empty(root/L"assets"),"a bundle whose manifest the reader refuses was saved");
+     auto fits=a;auto room=ManifestBytes-encode(a).size();fits.manifest["parts"][0]["name"]=std::string(room/2,'n');
+     auto id=saveAsset(root,fits);check(loadAsset(root,id).indices.size()==36,"a saved bundle does not load again");
+     auto many=a;Limits one;one.materials=1;
+     for(int i=0;i<3;i++){Texture t;t.hash=std::string(63,'0')+char('1'+i);many.textures.push_back(t);}
+     rejects([&]{validate(many,one);},"more textures than the reader takes were accepted");
+     fs::remove_all(root);}
     check(wide(utf8(L"模型 folder"))==L"模型 folder","Unicode roundtrip");
     rejects([]{parseOptions({{"scale",0}});},"zero scale accepted");
     rejects([]{parseOptions({{"axis","invalid"}});},"unknown axis accepted");

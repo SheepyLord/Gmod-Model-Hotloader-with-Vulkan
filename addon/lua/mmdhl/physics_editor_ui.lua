@@ -132,6 +132,9 @@ end
 -- Reopens with the server's state; edits made meanwhile stay in the draft.
 function Editor:Load(state)
  self.state=state self.level=tonumber(state.level) or 0 self.stale=false
+ -- The spawn menu's preview ragdoll: each build is saved for every new spawn of the model.
+ self.modelPreview=state.modelPreview==true
+ if IsValid(self.frame) then self.frame:SetTitle(L(self.modelPreview and 'physics_editor.model.title' or 'physics_editor.title',{name=self.name})) end
  self.rig=mmdhl.GetRig(self.ent) or self.rig
  self.applied=P.DraftFromState(state,self.rig) self.appliedRequest=P.Resolve(self.applied,self.rig)
  -- Dirty against the state just loaded, not the one before it.
@@ -143,12 +146,13 @@ end
 
 -- Server operations ----------------------------------------------------------------
 -- i18n-keys: physics_editor.status.unchanged physics_editor.status.unsaved physics_editor.status.building physics_editor.status.applied physics_editor.status.problem physics_editor.status.readonly
+-- i18n-keys: physics_editor.status.saved_all physics_editor.title physics_editor.model.title physics_editor.apply physics_editor.apply_count physics_editor.model.apply physics_editor.model.apply_count
 function Editor:Status()
  if self.building then return L'physics_editor.status.building',colors.note end
  if not self:CanEdit() then return L'physics_editor.status.readonly',muted end
  if self:HasErrors() then return L'physics_editor.status.problem',colors.error end
  if self:Dirty() then return L'physics_editor.status.unsaved',colors.warning end
- if self.appliedAt then return L('physics_editor.status.applied',{time=os.date('%H:%M',self.appliedAt)}),colors.success end
+ if self.appliedAt then return L(self.modelPreview and 'physics_editor.status.saved_all' or 'physics_editor.status.applied',{time=os.date('%H:%M',self.appliedAt)}),colors.success end
  return L'physics_editor.status.unchanged',muted
 end
 function Editor:Send(op,payload,after)
@@ -186,6 +190,8 @@ function Editor:Rebind(op,index,state,message,after)
     -- Apply keeps the draft, with edits made while it built; Previous version, Reset and Restore show what the ragdoll has now.
     local draft,undo,redo=self.draft,self.undo,self.redo if op~='apply' then self.draft=nil end
     self:Load(state) if op=='apply' then self.draft,self.undo,self.redo=draft,undo,redo self:Changed() end
+    -- The server knows the model by its hash only: on the preview, say what was saved by name.
+    if self.modelPreview then message=L(op=='reset' and 'physics_editor.notice.forgotten' or 'physics_editor.notice.saved',{name=self.name}) end
     self:Toast(message,NOTIFY_GENERIC) for _,w in ipairs(state.warnings or {}) do self:Toast(mmdhl.Localize(w),NOTIFY_HINT) end
     if after then after(true) end
    else self.removed=true self:Sync() end
@@ -974,7 +980,7 @@ end
 
 -- The window -----------------------------------------------------------------------
 -- i18n-keys: physics_editor.tab.feel physics_editor.tab.parts physics_editor.tab.collisions physics_editor.tab.numbers physics_editor.tab.model
--- i18n-keys: physics_editor.banner.server_core physics_editor.banner.disabled physics_editor.banner.readonly physics_editor.banner.server_shapes_only physics_editor.banner.client_approximate physics_editor.banner.stale physics_editor.banner.removed
+-- i18n-keys: physics_editor.banner.server_core physics_editor.banner.disabled physics_editor.banner.readonly physics_editor.banner.server_shapes_only physics_editor.banner.client_approximate physics_editor.banner.stale physics_editor.banner.removed physics_editor.banner.model
 function Editor:Banner()
  if self.serverCore then return 'server_core' end
  if not self.state then return nil end
@@ -983,6 +989,7 @@ function Editor:Banner()
  if not self.state.canEdit then return (GetConVar('mmdhl_physics_editor') and GetConVar('mmdhl_physics_editor'):GetInt()==0) and 'disabled' or 'readonly' end
  if self.level<1 then return 'server_shapes_only' end
  if not P.ClientPreview() then return 'client_approximate' end
+ if self.modelPreview then return 'model' end
 end
 function Editor:ShowTab(id)
  local adv=advanced()
@@ -1041,8 +1048,13 @@ function Editor:BuildFooter(parent)
  local reset=UI.button(r2,L'physics_editor.reset'..' ▾',function(button)
   local menu=DermaMenu()
   local function confirm(choice,op) Derma_Query(L('physics_editor.confirm.reset',{choice=choice}),L'physics_editor.title_short',L'physics_editor.reset',function() self:Send(op,{}) end,L'physics_editor.button.cancel',function() end) end
-  menu:AddOption(L'physics_editor.reset.automatic',function() confirm(L'physics_editor.reset.automatic','reset') end)
-  if self.state.savedDefault and self.state.savedDefault.exists then menu:AddOption(L'physics_editor.reset.saved',function() confirm(L'physics_editor.reset.saved','restore_saved') end) end
+  -- On the spawn menu's preview, automatic settings also forget the model's saved physics; what
+  -- the preview has is the saved version already.
+  if self.modelPreview then menu:AddOption(L'physics_editor.reset.automatic',function() Derma_Query(L('physics_editor.model.confirm_reset',{name=self.name}),L'physics_editor.title_short',L'physics_editor.reset',function() self:Send('reset',{}) end,L'physics_editor.button.cancel',function() end) end)
+  else
+   menu:AddOption(L'physics_editor.reset.automatic',function() confirm(L'physics_editor.reset.automatic','reset') end)
+   if self.state.savedDefault and self.state.savedDefault.exists then menu:AddOption(L'physics_editor.reset.saved',function() confirm(L'physics_editor.reset.saved','restore_saved') end) end
+  end
   menu:AddOption(L'physics_editor.reset.part',function() self:ResetPart() end)
   menu:Open()
  end,s(32),f.Small) reset:Dock(FILL) reset:DockMargin(s(6),0,0,0)
@@ -1052,9 +1064,10 @@ function Editor:BuildFooter(parent)
  self:OnSync(function()
   local edit=self:CanEdit() local errors=self:HasErrors()
   test:SetEnabled(edit and not errors and not self.pending) apply:SetEnabled(edit and self:Dirty() and not errors and not self.pending)
-  apply:SetText(self.building and L'physics_editor.status.building' or (self:Dirty() and L('physics_editor.apply_count',{count=#self.diff}) or L'physics_editor.apply'))
+  local model=self.modelPreview
+  apply:SetText(self.building and L'physics_editor.status.building' or (self:Dirty() and L(model and 'physics_editor.model.apply_count' or 'physics_editor.apply_count',{count=#self.diff}) or L(model and 'physics_editor.model.apply' or 'physics_editor.apply')))
   previous:SetEnabled(edit and self.state.hasPrevious==true) discard:SetEnabled(not self.building and self:Dirty()) reset:SetEnabled(edit)
-  save:SetVisible(self.state.canSave==true) save:SetEnabled(not self.building)
+  save:SetVisible(self.state.canSave==true and not model) save:SetEnabled(not self.building)
   local text,color=self:Status() status:SetText(text) status:SetTextColor(color)
  end)
 end

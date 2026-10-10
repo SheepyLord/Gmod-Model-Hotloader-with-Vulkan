@@ -91,9 +91,13 @@ void validatePNG(const Texture&);
 void validate(const Asset&,const Limits& limits={});
 void checkGeometryStorage(uint64_t vertices,uint64_t indices,const Limits& limits={});
 void warnLargeGeometry(Json& metadata,uint64_t vertices,uint64_t indices,const Limits& limits={});
+// The largest manifest (JSON) a bundle holds: decode and bundleManifest read no more, so
+// encode refuses a larger one before anything is saved.
+constexpr uint32_t ManifestBytes=4u<<20;
 Bytes encode(const Asset&);
 Asset decode(std::span<const uint8_t>,const Limits& limits={});
-std::string saveAsset(const fs::path& cache,Asset&,const Progress& progress={},const Limits& limits={});
+// created (optional) tells whether this call wrote the bundle (an identical one may exist already).
+std::string saveAsset(const fs::path& cache,Asset&,const Progress& progress={},const Limits& limits={},bool* created=nullptr);
 Asset loadAsset(const fs::path& cache,const std::string& id,const Limits& limits={});
 Json hullJson(const std::vector<Hull>&);
 std::vector<Hull> parseHulls(const Json&);

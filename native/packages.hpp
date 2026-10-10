@@ -19,7 +19,8 @@ struct PackageProgress{std::atomic<float> fraction{0};std::atomic_bool cancel{fa
 // Writes <cache>/exports/<name>.gma and describes the result.
 Json exportPackage(const fs::path& cache,const fs::path& gameRoot,const Json& spec,PackageProgress& progress);
 // Package ids listed in each GMA (engine.GetAddons() file paths), in order; empty when unreadable.
-Json readAddonPackages(const fs::path& gameRoot,const Json& files);
+// cancel (optional) ends the scan early: what it found so far comes back.
+Json readAddonPackages(const fs::path& gameRoot,const Json& files,const std::atomic_bool* cancel=nullptr);
 std::string packageFileName(const std::string& proposed);
 uint32_t crc32(std::span<const unsigned char> bytes,uint32_t crc=0);
 }

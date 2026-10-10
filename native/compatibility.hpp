@@ -2,6 +2,7 @@
 #include "runtime.hpp"
 #include "engine_abi.hpp"
 #include <array>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -25,21 +26,27 @@ std::string rttiClass(const void* object, const wchar_t* library);
 // so every later method sits four slots lower under the same version string.
 // Returns how many slots lower the running game has them (0 or 4), from the length
 // of the object's vtable; compiledLength is that length in the compiled-for build.
+// Any length but those two layouts, or a longer table (methods appended), throws: the
+// slots of a table this code does not know hold other functions.
 size_t appSystemShift(void* object, const wchar_t* library, size_t compiledLength);
+// The shift a measured length means (appSystemShift's rule), or nothing for an unknown layout.
+std::optional<size_t> knownAppSystemShift(size_t length, size_t compiledLength);
 // Vtable lengths in the x86-64 build: CMaterialSystem (VMaterialSystem080) and the
 // VPhysics031 object; the default branch's build of 2026-09-17 has 147 and 13.
 // On Linux the lengths of the same tables as GCC lays them out (engine_abi.hpp).
 constexpr size_t MaterialSystemVtableLength = abi::MaterialSystemVtableLength, PhysicsVtableLength = abi::PhysicsVtableLength;
 // Slot shifts found so far, per library, for the compatibility report.
 Json appSystemShifts();
-// Entries of object's vtable: consecutive pointers to code of library.
+// Entries of object's vtable: consecutive pointers to code, up to the last one in library
+// (an entry another module hooked counts; see compatibility.cpp).
 size_t vtableLength(void* object, const wchar_t* library);
 // The default branch's vphysics.dll of 2026-09-17 also lacks
 // IPhysicsCollision::VPhysicsKeyParserCreate(vcollide_t*) (slot 38) and six trailing
 // methods (52 slots instead of 59), and IPhysicsObject::SetSphereRadius (slot 43):
 // the later methods of those two interfaces sit one slot lower.
 constexpr size_t CollisionVtableLength = abi::CollisionVtableLength;
-// True when physics (VPhysics031) and collision (VPhysicsCollision007) have that layout.
+// True when physics (VPhysics031) and collision (VPhysicsCollision007) have that layout,
+// false for the x86-64 one; any other pair of lengths throws.
 bool olderPhysicsLayout(void* physics, void* collision);
 inline size_t collisionSlot(size_t compiled, bool older) { return older && compiled > abi::CollisionMissingInOlder ? compiled - 1 : compiled; }
 inline size_t physicsObjectSlot(size_t compiled, bool older) { return older && compiled > abi::ObjectMissingInOlder ? compiled - 1 : compiled; }

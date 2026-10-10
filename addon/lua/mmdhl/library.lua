@@ -735,7 +735,8 @@ hook.Add('Think','MMDHL.LibraryImport',function()
   local previous=isstring(status.source) and library.reloadOf[status.source] or nil
   if previous then library.reloadOf[status.source]=nil end
   if mmdhl.terms then mmdhl.terms.Imported('character',status.asset,status.source,previous) end
-  if mmdhl.names then mmdhl.names.Imported(status.asset,status.source) end
+  -- A reload's new revision keeps the translation choice of the model it replaces.
+  if mmdhl.names then mmdhl.names.Imported(status.asset,status.source,previous) end
   library.Refresh()
   local name=(status.info or {}).name
   library.progress=1 library.lastImportedKind=nil library.lastImported=status.asset library.status=name and L('library.import.imported',{name=name}) or L'library.import.imported_unnamed'

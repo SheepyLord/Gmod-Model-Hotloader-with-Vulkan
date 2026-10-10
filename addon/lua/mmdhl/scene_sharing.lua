@@ -65,6 +65,29 @@ if SERVER then
  hook.Add('PlayerDisconnected','MMDHL.SharedScene',function(p) subscribers[p]=nil end)
 else
  local latest,previous,assembling,transfer local known,pending={},{} local queue={} local active=false
+ -- A frame's objects are checked into clean records before anything uses them: one malformed
+ -- object (a mismatched or modified server) drops the frame instead of erroring here. A shape
+ -- is at most what the server's capture writes (12,000,000 vertices).
+ local MaxShapeBytes=160*1048576
+ local function whole(v,low,high) return isnumber(v) and v%1==0 and v>=low and v<=high end
+ local function numbers(t,n)
+  if not istable(t) or #t~=n then return nil end local out={}
+  for i=1,n do local v=t[i] if not isnumber(v) or v~=v or math.abs(v)==math.huge then return nil end out[i]=v end
+  return out
+ end
+ local function cleanObjects(list)
+  local out={}
+  for i=1,#list do
+   local o=list[i]
+   if not istable(o) or not whole(o.id,0,2^53) or not isstring(o.shape) or #o.shape~=64 or o.shape:find('[^0-9a-f]') or not whole(o.bytes,48,MaxShapeBytes) then return nil end
+   local c={id=o.id,shape=o.shape,bytes=o.bytes,static=o.static==true,owner=whole(o.owner,0,2^32) and o.owner or 0,bone=whole(o.bone,0,65535) and o.bone or 0,actor=whole(o.actor,0,2) and o.actor or 0,
+    position=numbers(o.position,3),rotation=numbers(o.rotation,4),velocity=numbers(o.velocity,3) or {0,0,0},angular=numbers(o.angular,3) or {0,0,0},center=o.center~=nil and numbers(o.center,3) or nil}
+   local q=c.rotation local length=q and q[1]^2+q[2]^2+q[3]^2+q[4]^2
+   if not c.position or not length or length<.5 or length>1.5 or (o.center~=nil and not c.center) then return nil end
+   out[i]=c
+  end
+  return out
+ end
  local function request()
   if transfer or #queue==0 or not active then return end
   transfer=table.remove(queue,1) transfer.bytes={} transfer.offset=0 transfer.time=RealTime()
@@ -82,13 +105,14 @@ else
    if assembling.received==count then
     -- A frame larger than 32 MB of JSON or 20000 objects is dropped.
     local decoded=util.Decompress(table.concat(assembling.parts),32*1048576) local frame=decoded and util.JSONToTable(decoded)
-    if frame and istable(frame.objects) and #frame.objects<=20000 then
-     frame.networkSequence=sequence frame.received=RealTime() frame.byId={}
-     for _,o in ipairs(frame.objects) do
-      frame.byId[o.id]=o
+    local objects=istable(frame) and istable(frame.objects) and #frame.objects<=20000 and cleanObjects(frame.objects)
+    if objects and isnumber(frame.timestamp) and frame.timestamp==frame.timestamp and math.abs(frame.timestamp)<math.huge then
+     local clean={objects=objects,timestamp=frame.timestamp,sequence=frame.sequence,networkSequence=sequence,received=RealTime(),byId={}}
+     for _,o in ipairs(objects) do
+      clean.byId[o.id]=o
       if not known[o.shape] and not pending[o.shape] and #queue<2048 then pending[o.shape]=true queue[#queue+1]={id=o.shape,size=o.bytes} end
      end
-     previous=latest latest=frame request()
+     previous=latest latest=clean request()
     end assembling=nil
    end return
   end
@@ -97,7 +121,8 @@ else
    if not transfer or transfer.id~=id then return end
    if not ok then mmdhl.sceneError=net.ReadString() pending[id]=nil transfer=nil request() return end
    local size=net.ReadUInt(16) local bytes=net.ReadData(size)
-   if offset~=transfer.offset or size>32768 or offset+size>transfer.size then mmdhl.sceneError='Invalid collision shape transfer' pending[id]=nil transfer=nil request() return end
+   -- An empty chunk short of the end would ask for the same bytes forever.
+   if offset~=transfer.offset or size>32768 or offset+size>transfer.size or (size==0 and offset<transfer.size) then mmdhl.sceneError='Invalid collision shape transfer' pending[id]=nil transfer=nil request() return end
    transfer.bytes[#transfer.bytes+1]=bytes transfer.offset=offset+size transfer.time=RealTime()
    if transfer.offset==transfer.size then
     local accepted,err=native.AcceptSceneGeometry(id,table.concat(transfer.bytes)) known[id]=accepted or nil mmdhl.sceneError=err pending[id]=nil transfer=nil request()

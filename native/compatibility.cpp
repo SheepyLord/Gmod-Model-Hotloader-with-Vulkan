@@ -6,6 +6,7 @@
 #include "posix.hpp"
 #include "release.hpp"
 #include <elf.h>
+#include <sys/mman.h>
 #endif
 #include <algorithm>
 #include <cstring>
@@ -222,39 +223,52 @@ namespace {
 std::mutex shiftMutex;
 Json shifts=Json::object();
 }
+// The vtable ends at its last entry that is code of library before the first entry that is
+// not code at all: the next table's RTTI locator or offset-to-top, or other data. An entry
+// another module replaced (a hook: code outside library) inside the table does not end it,
+// so a hooked table keeps its length; requireOwnedSlots refuses the slots actually called
+// when they are the hooked ones.
 size_t vtableLength(void* object,const wchar_t* library){
 #ifndef _WIN32
  auto lib=gameLibrary(library);if(!lib||!object||!posix::readable(object,sizeof(void*)))return 0;
- // The vtable ends at the first entry that is not code of library: the next table's
- // offset-to-top or RTTI pointer.
  auto table=*reinterpret_cast<void* const* const*>(object);size_t length=0;
- for(;length<1024;length++)if(!posix::readable(table+length,sizeof(void*))||!lib->executes(table[length]))break;
+ for(size_t at=0;at<1024;at++){
+  if(!posix::readable(table+at,sizeof(void*)))break;
+  if(lib->executes(table[at])){length=at+1;continue;}
+  auto access=posix::protection(table[at]);if(access<0||!(access&PROT_EXEC))break;
+ }
  return length;
 #else
  auto module=GetModuleHandleW(library);if(!module||!object)return 0;
- // The vtable ends at the first entry that is not code of library: the next
- // table's RTTI locator (materialsystem.dll) or other data (vphysics.dll).
  auto table=*reinterpret_cast<void* const* const*>(object);
  size_t length=0;MEMORY_BASIC_INFORMATION memory{};
- for(;length<1024;length++){
-  if(!VirtualQuery(table+length,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_NOACCESS|PAGE_GUARD)))break;
-  auto target=table[length];
-  if(!VirtualQuery(target,&memory,sizeof(memory))||memory.AllocationBase!=module||!(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))break;
+ for(size_t at=0;at<1024;at++){
+  if(!VirtualQuery(table+at,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||(memory.Protect&(PAGE_NOACCESS|PAGE_GUARD)))break;
+  auto target=table[at];
+  if(!VirtualQuery(target,&memory,sizeof(memory))||memory.State!=MEM_COMMIT||!(memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY)))break;
+  if(memory.AllocationBase==module)length=at+1;
  }
  return length;
 #endif
 }
+std::optional<size_t> knownAppSystemShift(size_t length,size_t compiledLength){
+ if(length>=compiledLength)return 0;
+ if(length+4==compiledLength)return 4;
+ return std::nullopt;
+}
 size_t appSystemShift(void* object,const wchar_t* library,size_t compiledLength){
- auto length=vtableLength(object,library);
- // Any other length keeps the compiled slots: a later build that only appends methods.
- size_t shift=length+4==compiledLength?4:0;
- std::lock_guard lock(shiftMutex);auto& entry=shifts[utf8(library)];entry["slotShift"]=shift;entry["vtableLength"]=length;entry["compiledLength"]=compiledLength;
- return shift;
+ auto length=vtableLength(object,library);auto shift=knownAppSystemShift(length,compiledLength);
+ {std::lock_guard lock(shiftMutex);auto& entry=shifts[utf8(library)];entry["slotShift"]=shift?Json(*shift):Json();entry["vtableLength"]=length;entry["compiledLength"]=compiledLength;}
+ if(!shift)throw std::runtime_error("Unrecognized "+utf8(library)+" interface layout ("+std::to_string(length)+" vtable entries, expected "+std::to_string(compiledLength)+" or "+std::to_string(compiledLength-4)+")");
+ return *shift;
 }
 bool olderPhysicsLayout(void* physics,void* collision){
- auto length=vtableLength(collision,L"vphysics.dll");
- bool older=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength)==4&&length+7==CollisionVtableLength;
- std::lock_guard lock(shiftMutex);auto& entry=shifts["vphysics.dll"];entry["collisionVtableLength"]=length;entry["olderPhysics"]=older;
+ auto length=vtableLength(collision,L"vphysics.dll");auto shift=appSystemShift(physics,L"vphysics.dll",PhysicsVtableLength);
+ // Two layouts are known: the x86-64 build's (or one that appends methods), and the default
+ // branch's older one, short of the IAppSystem methods and of seven collision methods.
+ bool older=shift==4&&length+7==CollisionVtableLength,newer=shift==0&&length>=CollisionVtableLength;
+ {std::lock_guard lock(shiftMutex);auto& entry=shifts["vphysics.dll"];entry["collisionVtableLength"]=length;entry["olderPhysics"]=older;}
+ if(!older&&!newer)throw std::runtime_error("Unrecognized VPhysicsCollision007 layout ("+std::to_string(length)+" vtable entries beside a VPhysics031 shift of "+std::to_string(shift)+")");
  return older;
 }
 Json appSystemShifts(){std::lock_guard lock(shiftMutex);return shifts;}

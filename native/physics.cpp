@@ -7,15 +7,17 @@
 #include <BulletSoftBody/btSoftBodyHelpers.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <set>
 #include <stdexcept>
 
 namespace mmd {
 namespace {
+// A JSON number as a finite float: a double beyond float's range would not convert.
+float finiteFloat(const Json& j){double v=j.get<double>();if(!std::isfinite(v)||std::abs(v)>double(FLT_MAX))throw std::runtime_error("Non-finite vector");return float(v);}
 btVector3 jvec(const Json& j,btVector3 fallback=btVector3(0,0,0)){
-    if(!j.is_array()||j.size()!=3)return fallback;btVector3 v(j[0].get<float>(),j[1].get<float>(),j[2].get<float>());
-    for(int i=0;i<3;i++)if(!std::isfinite(v[i]))throw std::runtime_error("Non-finite vector");return v;
+    if(!j.is_array()||j.size()!=3)return fallback;return btVector3(finiteFloat(j[0]),finiteFloat(j[1]),finiteFloat(j[2]));
 }
 Json array(const btVector3& v){return {v.x(),v.y(),v.z()};}
 btTransform pose(const float* p,const float* r){btMatrix3x3 rotation;rotation.setEulerZYX(r[0],r[1],r[2]);return btTransform(rotation,vec(p));}
@@ -92,41 +94,66 @@ void World::step(double seconds,const btVector3& gravity,bool publishSnapshots){
     if(publishSnapshots)for(auto& [id,p]:instances)p->ensureSnapshot();
     lastStepMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
 }
+// A mirror's description comes from the VPhysics bridge or the SetMirror API. All of it is
+// checked before Bullet sees any of it: a malformed one throws and leaves the mirrors as they
+// were. Counts are bounded as the bridge bounds Source's collision (8192 hulls of at most
+// 100,000 triangles each, 12,000,000 triangle vertices).
 void World::setMirror(uint64_t id,const Json& j,std::span<const float> geometry){
-    auto it=mirrors.find(id);
+    constexpr size_t MaxHulls=8192,MaxHullPoints=300000,MaxTriangleVertices=12000000;
+    if(!j.is_object())throw std::runtime_error("Invalid mirror description");
+    auto scalar=[&](const char* key,float fallback){auto it=j.find(key);if(it==j.end())return fallback;if(!it->is_number())throw std::runtime_error(std::string("Invalid mirror ")+key);return finiteFloat(*it);};
+    auto vector=[&](const char* key){auto it=j.find(key);if(it==j.end())return btVector3(0,0,0);if(!it->is_array()||it->size()!=3)throw std::runtime_error(std::string("Invalid mirror ")+key);return jvec(*it);};
+    // A static mirror (mass 0) never uses its inertia.
+    float mass=scalar("mass",0);auto inertia=vector("inertia");
+    if(mass<0||(mass>0&&(inertia.x()<0||inertia.y()<0||inertia.z()<0)))throw std::runtime_error("Invalid mirror mass or inertia");
+    auto angles=vector("angles");btQuaternion rotation;rotation.setEulerZYX(angles.y()*SIMD_RADS_PER_DEG,angles.x()*SIMD_RADS_PER_DEG,angles.z()*SIMD_RADS_PER_DEG);
+    // Callers pass Source roll,pitch,yaw as intrinsic XYZ radians via quaternion when available.
+    if(auto r=j.find("rotation");r!=j.end()){
+        if(!r->is_array()||r->size()!=4)throw std::runtime_error("Invalid mirror rotation");
+        btQuaternion q(finiteFloat((*r)[0]),finiteFloat((*r)[1]),finiteFloat((*r)[2]),finiteFloat((*r)[3]));
+        // A zero quaternion normalizes to NaNs.
+        if(!std::isfinite(q.length2())||q.length2()<1e-12f)throw std::runtime_error("Degenerate mirror rotation");
+        rotation=q.normalized();
+    }
+    btTransform transform(rotation,vector("position")*Inch);auto velocity=vector("velocity")*Inch,angular=vector("angularVelocity");
+    auto it=mirrors.find(id);std::unique_ptr<Mirror> created;
     if(it==mirrors.end()){
-        auto m=std::make_unique<Mirror>();m->id=id;auto type=j.value("shape",std::string("convex"));
-        if(type=="sphere")m->shape=std::make_unique<btSphereShape>(std::max(.001f,j.value("radius",1.f)*Inch));
-        else if(type=="box")m->shape=std::make_unique<btBoxShape>(jvec(j.at("half"))*Inch);
-        else if(type=="triangles"){
-            if(geometry.size()%9||geometry.empty())throw std::runtime_error("Invalid collision triangles");m->triangles=std::make_unique<btTriangleMesh>();
+        for(float v:geometry)if(!std::isfinite(v))throw std::runtime_error("Non-finite mirror geometry");
+        auto m=std::make_unique<Mirror>();m->id=id;auto shape=j.find("shape");auto type=shape==j.end()?std::string("convex"):shape->is_string()?shape->get<std::string>():std::string();
+        if(type=="sphere"){float radius=scalar("radius",1);if(radius<0)throw std::runtime_error("Invalid mirror sphere radius");m->shape=std::make_unique<btSphereShape>(std::max(.001f,radius*Inch));}
+        else if(type=="box"){
+            auto h=j.find("half");if(h==j.end()||!h->is_array()||h->size()!=3)throw std::runtime_error("Invalid mirror box extents");
+            auto half=jvec(*h);if(half.x()<0||half.y()<0||half.z()<0)throw std::runtime_error("Invalid mirror box extents");
+            half*=Inch;half.setMax(btVector3(.001f,.001f,.001f));m->shape=std::make_unique<btBoxShape>(half);
+        } else if(type=="triangles"){
+            if(geometry.empty()||geometry.size()%9||geometry.size()/3>MaxTriangleVertices)throw std::runtime_error("Invalid collision triangles");m->triangles=std::make_unique<btTriangleMesh>();
             for(size_t i=0;i<geometry.size();i+=9)m->triangles->addTriangle(vec(&geometry[i])*Inch,vec(&geometry[i+3])*Inch,vec(&geometry[i+6])*Inch);
             m->shape=std::make_unique<btBvhTriangleMeshShape>(m->triangles.get(),true);
         } else if(type=="compound"){
+            auto hulls=j.find("hulls");if(hulls==j.end()||!hulls->is_array()||hulls->empty()||hulls->size()>MaxHulls)throw std::runtime_error("Invalid convex hull list");
             auto compound=std::make_unique<btCompoundShape>();size_t cursor=0;
-            for(auto& count:j.at("hulls")){size_t n=count.get<size_t>();if(n<4||cursor+n*3>geometry.size())throw std::runtime_error("Invalid convex hull range");
-                auto shape=std::make_unique<btConvexHullShape>();for(size_t i=0;i<n;i++)shape->addPoint(vec(geometry.data()+cursor+i*3)*Inch,false);cursor+=n*3;shape->recalcLocalAabb();shape->setMargin(.002f);compound->addChildShape(btTransform::getIdentity(),shape.get());m->children.push_back(std::move(shape));}
+            // Division, not cursor+n*3: a count near 2^64/3 wraps the product past the check.
+            for(auto& count:*hulls){auto n=wholeNumber(count,4,MaxHullPoints);if(!n||size_t(*n)>(geometry.size()-cursor)/3)throw std::runtime_error("Invalid convex hull range");
+                auto hull=std::make_unique<btConvexHullShape>();for(size_t i=0;i<size_t(*n);i++)hull->addPoint(vec(geometry.data()+cursor+i*3)*Inch,false);cursor+=size_t(*n)*3;hull->recalcLocalAabb();hull->setMargin(.002f);compound->addChildShape(btTransform::getIdentity(),hull.get());m->children.push_back(std::move(hull));}
             if(cursor!=geometry.size())throw std::runtime_error("Trailing convex vertices");m->shape=std::move(compound);
         } else throw std::runtime_error("Unsupported mirror shape");
-        float mass=j.value("mass",0.f);if(type=="triangles")mass=0;
-        btVector3 inertia=j.contains("inertia")?jvec(j["inertia"]):btVector3(0,0,0);if(mass>0&&inertia.length2()<1e-12f)m->shape->calculateLocalInertia(mass,inertia);
-        btRigidBody::btRigidBodyConstructionInfo ci(mass,nullptr,m->shape.get(),inertia);m->body=std::make_unique<btRigidBody>(ci);m->body->setUserIndex(2);m->body->setUserPointer(m.get());
+        if(m->triangles)mass=0;
+        auto bodyInertia=inertia;if(mass>0&&bodyInertia.length2()<1e-12f)m->shape->calculateLocalInertia(mass,bodyInertia);
+        btRigidBody::btRigidBodyConstructionInfo ci(mass,nullptr,m->shape.get(),bodyInertia);m->body=std::make_unique<btRigidBody>(ci);m->body->setUserIndex(2);m->body->setUserPointer(m.get());
         m->body->setFlags(BT_DISABLE_WORLD_GRAVITY);m->body->setGravity(btVector3(0,0,0));m->body->setDamping(0,0);m->body->setActivationState(DISABLE_DEACTIVATION);
-        dynamics().addRigidBody(m->body.get());it=mirrors.emplace(id,std::move(m)).first;
+        created=std::move(m);
     }
+    // Everything is valid: only now does the mirror enter Bullet.
+    if(created){auto body=created->body.get();it=mirrors.emplace(id,std::move(created)).first;dynamics().addRigidBody(body);}
     auto& m=*it->second;
-    float mass=m.triangles?0:std::max(0.f,j.value("mass",0.f));
+    if(m.triangles)mass=0;
     if((mass>0?1.f/mass:0)!=m.body->getInvMass()){
-        dynamics().removeRigidBody(m.body.get());auto inertia=j.contains("inertia")?jvec(j["inertia"]):btVector3(0,0,0);if(mass>0&&inertia.length2()<1e-12f)m.shape->calculateLocalInertia(mass,inertia);
-        m.body->setMassProps(mass,inertia);m.body->updateInertiaTensor();m.impulse.setZero();m.torque.setZero();dynamics().addRigidBody(m.body.get());
+        dynamics().removeRigidBody(m.body.get());auto bodyInertia=inertia;if(mass>0&&bodyInertia.length2()<1e-12f)m.shape->calculateLocalInertia(mass,bodyInertia);
+        m.body->setMassProps(mass,bodyInertia);m.body->updateInertiaTensor();m.impulse.setZero();m.torque.setZero();dynamics().addRigidBody(m.body.get());
     }
-    auto angles=jvec(j.value("angles",Json::array()));btQuaternion rotation;rotation.setEulerZYX(angles.y()*SIMD_RADS_PER_DEG,angles.x()*SIMD_RADS_PER_DEG,angles.z()*SIMD_RADS_PER_DEG);
-    // Callers pass Source roll,pitch,yaw as intrinsic XYZ radians via quaternion when available.
-    if(j.contains("rotation")){auto r=j["rotation"];rotation=btQuaternion(r[0],r[1],r[2],r[3]);rotation.normalize();}
-    btTransform transform(rotation,jvec(j.value("position",Json::array()))*Inch);
     if((transform.getOrigin()-m.body->getWorldTransform().getOrigin()).length2()>4){m.impulse.setZero();m.torque.setZero();if(m.body->getBroadphaseHandle())impl->broadphase.getOverlappingPairCache()->cleanProxyFromPairs(m.body->getBroadphaseHandle(),&impl->dispatcher);}
-    m.body->setWorldTransform(transform);m.body->setInterpolationWorldTransform(transform);m.body->setLinearVelocity(jvec(j.value("velocity",Json::array()))*Inch);
-    m.body->setAngularVelocity(transform.getBasis()*jvec(j.value("angularVelocity",Json::array()))*SIMD_RADS_PER_DEG);m.body->updateInertiaTensor();dynamics().updateSingleAabb(m.body.get());m.touched=tick;
+    m.body->setWorldTransform(transform);m.body->setInterpolationWorldTransform(transform);m.body->setLinearVelocity(velocity);
+    m.body->setAngularVelocity(transform.getBasis()*angular*SIMD_RADS_PER_DEG);m.body->updateInertiaTensor();dynamics().updateSingleAabb(m.body.get());m.touched=tick;
 }
 void World::removeMirror(uint64_t id){auto it=mirrors.find(id);if(it!=mirrors.end()){dynamics().removeRigidBody(it->second->body.get());mirrors.erase(it);}}
 Json World::takeImpulses(){Json out=Json::array();for(auto& [id,m]:mirrors){if(m->impulse.length2()>1e-12f||m->torque.length2()>1e-12f)out.push_back({{"id",id},{"linear",array(m->impulse/Inch)},{"angular",array(m->torque*SIMD_DEGS_PER_RAD)}});m->impulse.setZero();m->torque.setZero();}return out;}
@@ -337,14 +364,30 @@ void Instance::setBonePose(size_t bone,const btTransform& transform){
 void Instance::reset(){if(secondary){
     // Rebuild only the secondary world, including its solver/contact history.
     // Source physics objects, the current primary pose and appearance stay intact.
-    unsigned flags=secondary->collisionFlags;sourceError.clear();pendingSourceDelta=0;
+    // The new world is made beside the current one (idle meanwhile) and replaces it
+    // only once complete; construction also poses the instance, restored on failure.
+    unsigned flags=secondary->collisionFlags;
     secondary->waitAsyncIdle();auto resets=secondary->resets;
-    secondary.reset();evaluate(false);secondary=std::make_unique<Secondary>(*this);secondary->setCollisionFlags(flags);
-    secondary->resets=resets+1;secondary->resetReason="manual";
+    auto pose=std::make_tuple(local,global,skin,effectiveScratch,lastImpulseWeights,poseDirty);
+    std::unique_ptr<Secondary> rebuilt;
+    try{evaluate(false);rebuilt=std::make_unique<Secondary>(*this);rebuilt->setCollisionFlags(flags);}
+    catch(...){std::tie(local,global,skin,effectiveScratch,lastImpulseWeights,poseDirty)=std::move(pose);throw;}
+    rebuilt->resets=resets+1;rebuilt->resetReason="manual";sourceError.clear();
+    secondary=std::move(rebuilt);
     // Construction already initializes bodies at the current Source pose. Do
     // not repeat the reset at the next presentation frame or replay old debt.
     sourceTeleport=false;pendingSourceDelta=0;presentationDirty=true;poseDirty=true;return;
 }owner->endGrab();applyPose();lastImpulseWeights=expandedMorphs();for(auto& b:bodies){b->rigid->clearForces();b->rigid->activate(true);}}
+void Instance::setSecondaryBackend(const std::string& backend){
+    if(!secondary)throw std::runtime_error("This entity has no secondary physics");
+    static const std::set<std::string> known={"reference","cpu_mt","gpu_opencl","cpu_mt_v2","gpu_vulkan"};
+    if(!known.contains(backend))throw std::runtime_error("Unknown secondary backend");
+    if(backend==secondaryBackend)return;
+    // The world reads the backend while it is built; a failed build keeps the old one, still running it.
+    auto previous=secondaryBackend;secondaryBackend=backend;
+    try{reset();}catch(...){secondaryBackend=previous;throw;}
+    secondary->resetReason="backend_change";
+}
 Json Instance::diagnostics(bool detailed) const {
     if(secondary){auto j=secondary->diagnostics(detailed);j["quality"]=secondary->qualityInfo();j.update({{"id",id},{"asset",model->id},{"sourceObjects",18},{"sourceTimestamp",sourceTimestamp},{"rig",sourceRig->key},{"presentationDriven",presentationDriven},{"presentationSmoothingMs",presentationDelay*1000},{"presentationUpdateIntervalMs",presentationUpdateInterval*1000},{"sourceError",sourceError},{"presentationFrame",presentationFrame},{"sourceUnitsPerPmx",sourceRig->scale},{"deformMs",deformMs}});
         // Bones with no Source-driven bone at or above them stayed at the world origin before 2.3.0.

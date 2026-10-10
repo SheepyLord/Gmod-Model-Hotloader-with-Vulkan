@@ -223,11 +223,12 @@ Json exportPackage(const fs::path& cache,const fs::path& gameRoot,const Json& sp
 #endif
  return result;
 }
-Json readAddonPackages(const fs::path& gameRoot,const Json& files){
+Json readAddonPackages(const fs::path& gameRoot,const Json& files,const std::atomic_bool* cancel){
  static const std::regex member("data_static/mmdhl/packages/([0-9a-f]{32})\\.json");
  Json out=Json::array();
  if(!files.is_array())return out;
  for(auto& item:files){
+  if(cancel&&cancel->load())break;
   Json ids=Json::array();
   try{
    auto path=item.is_string()?resolveAddon(gameRoot,item.get<std::string>()):fs::path();

@@ -386,3 +386,20 @@ end
 FIT_ERROR='Model has no height' mmdhl.Spawn({},id,{angles={0,0,0}},function(ent,err) got=err end) assert(got:find('server.error.fit_failed',1,true),'no height is a ragdoll problem')
 ''')
 print('PASS: spawn-time fit errors reach players as a translated token around the fitter\'s reason')
+
+# ---- A reload keeps the model's translation choice: the new revision is told the model it
+# replaces, as for its terms of use (names.lua then takes that model's recorded choice). ----
+lua.execute(r'''
+local OLD,NEW=string.rep('1',64),string.rep('2',64)
+local named,termed
+mmdhl.names={Imported=function(id,source,previous) named={id,source,previous} end}
+mmdhl.terms={Imported=function(kind,id,source,previous) termed={kind,id,source,previous} end}
+mmdhl.library.Refresh=function() end
+mmdhl.library.reloadOf['D:/model.pmx']=OLD
+mmdhl.native.PollJob=function() return py_encode({state='complete',asset=NEW,source='D:/model.pmx',info={name='Model',warnings={}}}) end
+mmdhl.library.job=1 mmdhl.library.nextPoll=0
+HOOKS['Think/MMDHL.LibraryImport']()
+assert(named and named[1]==NEW and named[2]=='D:/model.pmx' and named[3]==OLD,'a reload did not tell the names which model it replaces')
+assert(termed and termed[4]==OLD and mmdhl.library.reloadOf['D:/model.pmx']==nil and mmdhl.library.job==nil)
+''')
+print('PASS: a reloaded character passes the model it replaces to its names and terms of use')

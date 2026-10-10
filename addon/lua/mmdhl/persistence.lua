@@ -26,6 +26,74 @@ end
 local function stateFrom(data)
  return istable(data) and istable(data.EntityMods) and data.EntityMods.MMDHLNative or nil
 end
+-- A saved or pasted state comes from a file anyone can edit. Its whole schema is checked, and
+-- only a clean copy is used, before the entity is touched: a wrong type part way through would
+-- leave it half rebound (attached, without its look).
+local function finite(v) return isnumber(v) and v==v and v~=math.huge and v~=-math.huge end
+local function whole(v,low,high) return finite(v) and v%1==0 and v>=low and v<=high end
+local function text(v,bytes) return v==nil or (isstring(v) and #v<=bytes) end
+local MaxIndex=1048576
+-- Data only (text, finite numbers, booleans, vectors, angles and tables of them), bounded.
+local function plainCopy(value,depth,budget)
+ local kind=type(value)
+ if kind=='string' or kind=='boolean' then return value end
+ if kind=='number' then return finite(value) and value or nil end
+ if isvector(value) then return finite(value.x) and finite(value.y) and finite(value.z) and Vector(value) or nil end
+ if isangle(value) then return finite(value.p) and finite(value.y) and finite(value.r) and Angle(value) or nil end
+ if kind~='table' or depth>8 then return nil end
+ local out={}
+ for k,v in pairs(value) do
+  budget.n=budget.n+1 if budget.n>50000 or (not isstring(k) and not finite(k)) then return nil end
+  local copy=plainCopy(v,depth+1,budget) if copy==nil then return nil end
+  out[k]=copy
+ end
+ return out
+end
+function mmdhl.CleanNativeState(state)
+ local invalid=L'persistence.error.invalid_state'
+ if not istable(state) or not isstring(state.asset) or #state.asset~=64 or state.asset:find('[^0-9a-f]') then return nil,invalid end
+ if not text(state.rigKey,64) or not text(state.model,260) or not text(state.eyeDriver,32) or (state.version~=nil and not finite(state.version)) then return nil,invalid end
+ local out={version=state.version,asset=state.asset,rigKey=state.rigKey,model=state.model,eyeDriver=state.eyeDriver}
+ if state.options~=nil then
+  local options=istable(state.options) and plainCopy(state.options,1,{n=0})
+  -- What binding itself reads from them (AttachNative, BindEntity) has its type.
+  if not options or not text(options.secondaryBackend,32) or not text(options.role,32) or not text(options.gender,16) or (options.hostile~=nil and not isbool(options.hostile)) then return nil,invalid end
+  out.options=options
+ end
+ -- Morph and bone counts have no import limit (PMX imports only warn past 16,384): these bounds
+ -- only refuse what no model has.
+ if state.morphs~=nil then
+  if not istable(state.morphs) or #state.morphs>MaxIndex then return nil,invalid end
+  local morphs={} for i,v in pairs(state.morphs) do if not whole(i,1,#state.morphs) or not finite(v) then return nil,invalid end morphs[i]=v end
+  out.morphs=morphs
+ end
+ if state.scale~=nil then if not finite(state.scale) then return nil,invalid end out.scale=state.scale end
+ if state.manual~=nil then
+  if not istable(state.manual) then return nil,invalid end
+  local manual,count={},0
+  for i,pose in pairs(state.manual) do
+   local index=tonumber(i) count=count+1
+   local copy=istable(pose) and plainCopy(pose,1,{n=0})
+   if count>MaxIndex or not whole(index,1,MaxIndex) or not copy then return nil,invalid end
+   manual[index]=copy
+  end
+  out.manual=manual
+ end
+ if state.eyeTarget~=nil then
+  local eye=state.eyeTarget if not isvector(eye) or not (finite(eye.x) and finite(eye.y) and finite(eye.z)) then return nil,invalid end
+  out.eyeTarget=Vector(eye)
+ end
+ if state.eyeWorld~=nil then if not isbool(state.eyeWorld) then return nil,invalid end out.eyeWorld=state.eyeWorld end
+ if state.materials~=nil then
+  local m=state.materials
+  if not istable(m) or (m.overrides~=nil and not istable(m.overrides)) or (m.groups~=nil and not istable(m.groups)) then return nil,invalid end
+  local overrides,groups={},{}
+  for k,v in pairs(m.overrides or {}) do if not (isstring(k) or finite(k)) or not isstring(v) or #v>260 then return nil,invalid end overrides[k]=v end
+  for k,v in pairs(m.groups or {}) do if not (isstring(k) or finite(k)) or not whole(v,0,1) then return nil,invalid end groups[k]=v end
+  out.materials={version=finite(m.version) and m.version or nil,overrides=overrides,groups=groups}
+ end
+ return out
+end
 local function optionsFor(rig,state)
  local o=table.Copy(state and state.options or {})
  o.backend='source' o.role=rig.role or 'ragdoll' o.scale=rig.scale*.0254 o.scaleMultiplier=nil o.height=nil
@@ -116,6 +184,7 @@ local function applyAppearance(ent,state)
 end
 function mmdhl.BindEntity(ent,state)
  if not IsValid(ent) then return false end
+ if state~=nil then local clean,why=mmdhl.CleanNativeState(state) if not clean then return false,why end state=clean end
  local rig,err=mmdhl.EnsureModel(ent:GetModel()) if not rig then return false,err end
  if rig.role=='arms' or ent:GetClass()=='gmod_hands' or ent:GetClass()=='viewmodel' then
   ent.MMDHLHands=true
@@ -204,14 +273,18 @@ if not mmdhl.PersistenceDuplicator then
  end
  duplicator.DoGeneric=function(ent,data,...)
   if not data or not carrierPath(data.Model) then return generic(ent,data,...) end
-  local rig,err=mmdhl.EnsureModel(data.Model) if not rig then error(mmdhl.Localize(err)) end
+  -- A refused copy leaves nothing behind: the entity the duplicator made for it this tick,
+  -- never spawned once the error ends its paste, goes first.
+  local function refuse(why) if IsValid(ent) and ent:GetCreationTime()>=CurTime() then ent:Remove() end error(mmdhl.Localize(why)) end
+  local rig,err=mmdhl.EnsureModel(data.Model) if not rig then refuse(err) end
   local state=stateFrom(data)
-  local converted,options=rigForClass(rig,ent:GetClass(),state) if not converted then error(mmdhl.Localize(options)) end
+  if state~=nil then local clean,why=mmdhl.CleanNativeState(state) if not clean then refuse(why) end state=clean end
+  local converted,options=rigForClass(rig,ent:GetClass(),state) if not converted then refuse(options) end
   local values=table.Copy(data) values.Model=converted.model
   if ent:GetModel()~=converted.model then ent:SetModel(converted.model) end
   if ent:GetNW2String('MMDHLRig','')~=converted.key then
    local bound,bindError=mmdhl.AttachNative(ent,converted.asset,options)
-   if not bound then error(mmdhl.Localize(bindError)) end
+   if not bound then refuse(bindError) end
   end
   -- Attach before the normal loader writes bodygroups/submaterials, including
   -- overflow slots. Bone indices and local finger frames remain stable.
@@ -222,6 +295,8 @@ if not mmdhl.PersistenceDuplicator then
  end
 end
 duplicator.RegisterEntityModifier('MMDHLNative',function(p,ent,state)
- if not IsValid(ent) or not istable(state) or not mmdhl.CanUseAsset(p,state.asset) then return end
- local ok,err=mmdhl.BindEntity(ent,state) if not ok then report(ent,err) end
+ if not IsValid(ent) then return end
+ local clean,why=mmdhl.CleanNativeState(state) if not clean then report(ent,why) return end
+ if not mmdhl.CanUseAsset(p,clean.asset) then return end
+ local ok,err=mmdhl.BindEntity(ent,clean) if not ok then report(ent,err) end
 end)

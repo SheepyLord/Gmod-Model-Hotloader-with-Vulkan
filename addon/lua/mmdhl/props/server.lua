@@ -94,12 +94,14 @@ function P.CreateProp(p,id,pos,ang,scale,options)
  local info=P.Info[id] or (options.wait and P.LoadNow(id))
  if not info then return nil,L'props.error.not_loaded' end
  if IsValid(p) and gamemode.Call('PlayerSpawnProp',p,P.Placeholder)==false then return nil,L'props.error.spawn_blocked' end
+ if not P.FiniteVector(pos) or (ang~=nil and not P.FiniteAngle(ang)) then return nil,L'props.error.invalid_transform' end
  local ent=ents.Create('mmdhl_prop') if not IsValid(ent) then return nil,L'props.error.create_failed' end
  ent.MMDHLSurface=options.surface
  ent:SetPos(pos) ent:SetAngles(ang or angle_zero) ent:Spawn() ent:Activate()
  local ok,err=P.ApplyPhysics(ent,id,scale,options.wait) if not ok then ent:Remove() return nil,err end
  local phys=ent:GetPhysicsObject()
- phys:SetMass(math.Clamp(tonumber(options.mass) or P.DefaultMass(phys),1,50000))
+ local mass=tonumber(options.mass) if not P.Finite(mass) then mass=P.DefaultMass(phys) end
+ phys:SetMass(math.Clamp(mass,1,50000))
  if options.frozen then phys:EnableMotion(false) else phys:Wake() end
  if IsValid(p) then
   ent:SetCreator(p)
@@ -123,6 +125,9 @@ end
 -- gravity, physprop (a P.SurfaceMaterials id), color.
 function P.PlaceAt(p,id,tr,settings,callback)
  local scale=P.CanonicalScale(tonumber(settings.scale) or 1)
+ -- A turn or size that is no finite number ("1e309", NaN) is refused before anything loads.
+ if settings.yaw~=nil and not P.Finite(tonumber(settings.yaw)) then callback(nil,L'props.error.invalid_transform') return end
+ if not P.ValidScale(scale) then callback(nil,L'props.error.size_range') return end
  if not tr.Hit or tr.HitSky or tr.StartSolid or tr.HitPos:DistToSqr(p:EyePos())>4096^2 then callback(nil,L'props.error.aim_surface') return end
  local generation=mmdhl.cleanupGeneration
  P.Load(id,function(info,err)
@@ -135,7 +140,8 @@ function P.PlaceAt(p,id,tr,settings,callback)
   local ent,e=P.CreateProp(p,id,pos,ang,scale,{frozen=settings.frozen==true,surface=surface})
   if not IsValid(ent) then callback(nil,e) return end
   P.SetCollision(ent,P.CollisionModeIds[settings.collide] and settings.collide or P.DefaultCollision,settings.gravity~=false)
-  if istable(settings.color) then ent:SetColor(Color(math.Clamp(tonumber(settings.color[1]) or 255,0,255),math.Clamp(tonumber(settings.color[2]) or 255,0,255),math.Clamp(tonumber(settings.color[3]) or 255,0,255))) end
+  local function channel(v) v=tonumber(v) return P.Finite(v) and math.Clamp(v,0,255) or 255 end
+  if istable(settings.color) then ent:SetColor(Color(channel(settings.color[1]),channel(settings.color[2]),channel(settings.color[3]))) end
   undo.Create('mmdhl.undo.static_prop') undo.AddEntity(ent) undo.SetPlayer(p) customUndoText(info) undo.Finish()
   callback(ent,P.Name(info))
  end)
@@ -175,17 +181,30 @@ duplicator.RegisterConstraint('MMDHLAttach',function(target,ent,bone,pos,ang)
  if not IsValid(target) or not IsValid(ent) or ent:GetClass()~='mmdhl_prop' then return end
  bone=tonumber(bone) or -1
  if bone>=math.max(target:GetBoneCount(),0) then return end
- P.Attach(ent,target,bone,isvector(pos) and pos or Vector(),isangle(ang) and ang or Angle())
+ P.Attach(ent,target,bone,P.FiniteVector(pos) and pos or Vector(),P.FiniteAngle(ang) and ang or Angle())
  return ent.MMDHLAttachLink
 end,'Ent1','Ent2','Bone','LPos','LAng')
 function P.Detach(ent)
+ local id,scale=ent:GetAssetID(),P.ScaleOf(ent)
+ -- The new body is built on a hidden stand-in first: when the bundle, its hulls or the physics
+ -- object cannot be made, the prop stays attached exactly as it was.
+ local probe=ents.Create('mmdhl_prop') if not IsValid(probe) then return false,L'props.error.create_failed' end
+ probe:SetNoDraw(true) probe:SetPos(Vector(0,0,-16000)) probe:Spawn() probe.MMDHLSurface=ent.MMDHLSurface
+ local valid,why=P.ApplyPhysics(probe,id,scale,true) probe:Remove()
+ if not valid then return false,why end
+ local attach,parent,collide=ent.MMDHLAttach,ent:GetParent(),ent:GetNW2String('MMDHLCollide','')
  local pos,ang=ent:GetPos(),ent:GetAngles()
  ent:SetParent(NULL) ent:RemoveEffects(EF_FOLLOWBONE) ent:SetPos(pos) ent:SetAngles(ang)
  ent.MMDHLAttach=nil ent:SetNW2Bool('MMDHLAttached',false) ent:SetCollisionGroup(COLLISION_GROUP_NONE)
- if ent:GetNW2String('MMDHLCollide','')=='' then ent:SetNW2String('MMDHLCollide',P.DefaultCollision) end
+ if collide=='' then ent:SetNW2String('MMDHLCollide',P.DefaultCollision) end
  if IsValid(ent.MMDHLAttachLink) then ent.MMDHLAttachLink:Remove() end ent.MMDHLAttachLink=nil
- local ok,err=P.ApplyPhysics(ent,ent:GetAssetID(),P.ScaleOf(ent),true)
- if not ok then return false,err end
+ local ok,err=P.ApplyPhysics(ent,id,scale,true)
+ if not ok then
+  -- Should the prop itself still fail, it goes back to what it followed.
+  ent:SetNW2String('MMDHLCollide',collide)
+  if attach and IsValid(parent) then P.Attach(ent,parent,attach.bone,attach.pos,attach.ang) end
+  return false,err
+ end
  local phys=ent:GetPhysicsObject() phys:SetMass(P.DefaultMass(phys)) phys:EnableMotion(false)
  return true
 end
@@ -209,7 +228,10 @@ net.Receive('mmdhl_prop_attach',function(_,p)
  if action~='attach' then return end
  local allowed,why=mayUseTarget(p,target) if not allowed then notice(p,why) return end
  if bone<-1 or bone>=math.max(target:GetBoneCount(),0) then notice(p,L'props.attach.bone_missing') return end
+ -- NaN passes the length test below; it must never reach the engine's local transform.
+ if not P.FiniteVector(pos) or not P.FiniteAngle(ang) then notice(p,L'props.error.invalid_transform') return end
  if pos:Length()>4096 then notice(p,L'props.attach.offset_too_far') return end
+ if not P.ValidScale(scale) then notice(p,L'props.error.size_range') return end
  local assetId=IsValid(existing) and existing:GetAssetID() or id
  if not P.ValidID(assetId) or not P.CanUse(p,assetId) then notice(p,L'props.attach.select_shared') return end
  local generation=mmdhl.cleanupGeneration
@@ -274,7 +296,8 @@ function P.Rebuild(ent,id,scale)
  local old,oldScale=ent:GetAssetID(),P.ScaleOf(ent) local phys=ent:GetPhysicsObject()
  if not IsValid(phys) then return false,L'props.error.no_body' end
  -- Validate the replacement body before touching the existing entity.
- local probe=ents.Create('mmdhl_prop') probe:SetNoDraw(true) probe:SetPos(Vector(0,0,-16000)) probe:Spawn()
+ local probe=ents.Create('mmdhl_prop') if not IsValid(probe) then return false,L'props.error.create_failed' end
+ probe:SetNoDraw(true) probe:SetPos(Vector(0,0,-16000)) probe:Spawn()
  local valid,why=P.ApplyPhysics(probe,id,scale) probe:Remove()
  if not valid then return false,why end
  local state={pos=ent:GetPos(),angles=ent:GetAngles(),mass=phys:GetMass(),motion=phys:IsMotionEnabled(),gravity=phys:IsGravityEnabled(),velocity=phys:GetVelocity(),angular=phys:GetAngleVelocity(),material=phys:GetMaterial()}
@@ -345,7 +368,7 @@ duplicator.RegisterEntityClass('mmdhl_prop',function(p,data)
  if not P.CanUse(p,entry.asset) or not native.PropHas(entry.asset) then notice(p,L'props.error.dupe_unavailable') return end
  -- Any surface property the game knows (the Physical Properties tool offers more).
  local surface=isstring(entry.surface) and #entry.surface<=64 and util.GetSurfaceIndex(entry.surface)>=0 and entry.surface or nil
- local ent,err=P.CreateProp(p,entry.asset,data.Pos,data.Angle,tonumber(entry.scale) or 1,{wait=true,mass=entry.mass,frozen=entry.frozen,surface=surface})
+ local ent,err=P.CreateProp(p,entry.asset,data.Pos,data.Angle,P.CanonicalScale(tonumber(entry.scale) or 1),{wait=true,mass=entry.mass,frozen=entry.frozen,surface=surface})
  if not IsValid(ent) then notice(p,err) return end
  duplicator.DoGeneric(ent,data)
  -- Copies made before collision modes collided with everything.

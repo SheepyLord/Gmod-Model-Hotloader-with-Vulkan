@@ -51,5 +51,7 @@ struct GmaEntry { Bytes data; fs::path file; };
 // Writes the same bytes as makeGma without loading the file entries into memory.
 void writeGma(const fs::path&,const std::map<std::string,GmaEntry>&,const std::string& title);
 void prepareSourceMaterials(const fs::path&,const std::string&);
+// The same from a manifest not yet on disk: an import writes its manifest last.
+void prepareSourceMaterials(const fs::path& cache,const std::string& id,const Json& manifest);
 Json packageCarrier(const fs::path& cache,const Rig&,Bytes physics);
 }

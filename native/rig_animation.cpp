@@ -124,10 +124,14 @@ void configureAnimations(Rig& r,const Json& options){
   // extraction, not an indexed list of material modes.
   if(parts.is_array()&&parts.empty())parts=Json::object();
   if(!parts.is_object())throw std::runtime_error("Arms parts must map material slots to extraction modes");
+  // util.TableToJSON writes the modes as -1.0, 0.0 and 1.0; the manifest keeps whole numbers.
+  Json modes=Json::object();
   for(auto& [key,value]:parts.items()){
-   if(key.empty()||key.size()>8||!std::all_of(key.begin(),key.end(),[](char c){return c>='0'&&c<='9';})||std::stoull(key)>=r.manifest["materials"].size()||!value.is_number_integer()||value.get<int>()<-1||value.get<int>()>1)throw std::runtime_error("Invalid arms material selection");
+   auto mode=wholeNumber(value,-1,1);
+   if(key.empty()||key.size()>8||!std::all_of(key.begin(),key.end(),[](char c){return c>='0'&&c<='9';})||std::stoull(key)>=r.manifest["materials"].size()||!mode)throw std::runtime_error("Invalid arms material selection");
+   modes[key]=int(*mode);
   }
-  r.manifest["armsParts"]=std::move(parts);
+  r.manifest["armsParts"]=std::move(modes);
  }
 }
 void writeAnimations(StudioWriter& w,const Rig& r,size_t bones,const btVector3& lo,const btVector3& hi){

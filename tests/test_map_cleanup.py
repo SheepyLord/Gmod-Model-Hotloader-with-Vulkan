@@ -5,11 +5,13 @@ Runs the addon's server.lua and props/server.lua on a simulated server."""
 from pathlib import Path
 from lupa import LuaRuntime
 from lua_i18n import attach
+from lua_source import definition
 
 root = Path(__file__).resolve().parents[1]
 common = r'''
 SERVER=true CLIENT=false NOW=0 SysTime=function() return NOW end RealTime=SysTime CurTime=SysTime
 IsValid=function(v) return v~=nil and not v.removed end isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end
+isnumber=function(v) return type(v)=='number' end
 math.Clamp=function(v,low,high) return math.min(math.max(v,low),high) end
 table.Copy=function(t) local c={} for k,v in pairs(t) do c[k]=v end return c end
 local V={} V.__index=V
@@ -19,7 +21,9 @@ V.__mul=function(a,s) return Vector(a.x*s,a.y*s,a.z*s) end
 function V:DistToSqr(o) return (self.x-o.x)^2+(self.y-o.y)^2+(self.z-o.z)^2 end
 function V:Length() return math.sqrt(self:DistToSqr(Vector())) end
 function V:Unpack() return self.x,self.y,self.z end
-Angle=function() return {Unpack=function() return 0,0,0 end} end
+local A={} A.__index=A function A:Unpack() return self.p,self.y,self.r end
+Angle=function(p,y,r) return setmetatable({p=p or 0,y=y or 0,r=r or 0},A) end
+isvector=function(v) return getmetatable(v)==V end isangle=function(v) return getmetatable(v)==A end
 Entity=function() return nil end
 HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end,Run=function() end}
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end}
@@ -95,11 +99,14 @@ mmdhl.props=P CreateConVar=function() end game={SinglePlayer=function() return f
 GetConVar=function() return {GetInt=function() return 256 end} end
 LOADS={} CREATED=0
 P.ValidID=function(id) return #id==64 end P.CanonicalScale=function(v) return v end P.CheckScale=function() return true end
-P.SpawnPose=function() return Vector(),Angle() end P.Name=function(info) return info.name end
+P.SpawnPose=function() return Vector(),Angle() end P.Name=function(info) return info.name end P.MinScale,P.MaxScale=.01,100
 P.Load=function(id,cb) LOADS[#LOADS+1]=cb end
 P.SetCollision=function() end P.CollisionModeIds={} P.DefaultCollision='world'
 ''')
 attach(props)
+shared = (root / 'addon/lua/mmdhl/props/shared.lua').read_text(encoding='utf-8')
+for header in ('function P.ValidScale(', 'function P.Finite(', 'function P.FiniteVector(', 'function P.FiniteAngle('):
+    props.execute('local P=mmdhl.props ' + definition(props, shared, header))
 props.execute((root / 'addon/lua/mmdhl/props/server.lua').read_text(encoding='utf-8'))
 props.execute(r'''
 P.CreateProp=function() CREATED=CREATED+1 return {GetPhysicsObject=function() return nil end,EntIndex=function() return 7 end} end

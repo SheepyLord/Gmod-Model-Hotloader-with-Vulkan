@@ -12,6 +12,11 @@ if SERVER then
  for _,name in ipairs({'mmdhl_prop_action','mmdhl_prop_status','mmdhl_prop_catalog','mmdhl_prop_collision','mmdhl_prop_forget'}) do util.AddNetworkString(name) end
 end
 function P.ValidID(id) return isstring(id) and #id==64 and not id:find('[^0-9a-f]') end
+-- Finite numbers only: NaN, infinities and numeric text that overflows ("1e309") from net
+-- messages, settings or copies never reach engine transforms.
+function P.Finite(v) return isnumber(v) and v==v and v~=math.huge and v~=-math.huge end
+function P.FiniteVector(v) return isvector(v) and P.Finite(v.x) and P.Finite(v.y) and P.Finite(v.z) end
+function P.FiniteAngle(a) return isangle(a) and P.Finite(a.p) and P.Finite(a.y) and P.Finite(a.r) end
 function P.Vector(v) return Vector(tonumber(v and v[1]) or 0,tonumber(v and v[2]) or 0,tonumber(v and v[3]) or 0) end
 function P.ValidScale(value) return isnumber(value) and value==value and value>=P.MinScale and value<=P.MaxScale end
 -- Float network fields round 0.01 slightly below the lower bound. Canonicalize
@@ -87,7 +92,8 @@ end
 -- Placement pose shared by the server and the tool's ghost preview.
 function P.SpawnPose(p,info,scale,tr,yaw)
  -- Imported fronts (glTF +Z, PMX -Z, FBX front axis) land on local -Y; face the player.
- local ang=Angle(0,math.NormalizeAngle(p:EyeAngles().y-90+(tonumber(yaw) or 0)),0)
+ local extra=tonumber(yaw) if not P.Finite(extra) then extra=0 end
+ local ang=Angle(0,math.NormalizeAngle(p:EyeAngles().y-90+extra),0)
  local normal=tr.HitNormal
  return tr.HitPos+normal*(P.SupportDistance(info,scale,ang,normal)+1),ang
 end
