@@ -746,6 +746,58 @@ request(admin,'clear_default',ent,{}) assert(last(admin).state=='ready' and FILE
 ''')
 print('PASS: Save for new spawns writes the ragdoll\'s own options and canonical physics (not the client\'s), with who and when; saved files are validated; Forget deletes them')
 
+# L13c: the spawn menu's editor (Character Models: Ragdoll physics for all spawns…). The server places
+# a frozen preview ragdoll of the model; every build that replaces it is saved as the model's default.
+s = server_runtime()
+s.execute(r'''
+local P=mmdhl.physics CONVARS.mmdhl_physics_editor.value='2' local A=string.rep('a',64)
+local function aiming(p) function p:GetEyeTrace() return {Hit=true,HitPos=Vector(10,0,0),HitNormal=Vector(0,0,1)} end function p:EyePos() return Vector(0,0,64) end function p:GetPos() return Vector() end return p end
+local admin,other=aiming(player(true,false,false,'Admin')),aiming(player(false,false,false,'Other'))
+-- Saving a model's default is for admins, the listen host and single player; nothing is spawned for others.
+local spawns=#SPAWNS request(other,'model',NULL,{asset=A})
+assert(says(last(other),'physics_editor.error.admin_only') and #SPAWNS==spawns,'a player who may not save defaults got a preview')
+request(admin,'model',NULL,{asset='x'}) assert(last(admin).state=='error' and #SPAWNS==spawns,'an invalid model id was spawned')
+CONVARS.mmdhl_physics_editor.value='0' request(admin,'model',NULL,{asset=A}) assert(says(last(admin),'physics_editor.error.disabled') and #SPAWNS==spawns) CONVARS.mmdhl_physics_editor.value='2'
+-- Open ground at z=0, nothing else in the way.
+local Ang=getmetatable(Angle()) function Ang:Forward() local y=math.rad(self.y) return Vector(math.cos(y),math.sin(y),0) end
+util.TraceLine=function(t) if t.endpos.z<t.start.z then return {Hit=true,HitPos=Vector(t.start.x,t.start.y,0)} end return {Hit=false,HitPos=t.endpos} end
+-- Aimed nearer than the editor's camera orbits (or at the sky), the preview goes 200 units ahead, on the floor.
+NOW=NOW+10 request(admin,'model',NULL,{asset=A})
+local near,first=SPAWNS[#SPAWNS].options.position,LAST_SPAWNED assert(last(admin).state=='ready' and math.abs(near[1])<1e-6 and math.abs(near[2]-200)<1e-6 and near[3]==3,'a near aim did not place the preview 200 units ahead on the floor')
+-- An admin gets a frozen preview where they aim, outside undo and cleanup (it goes with the editor), marked for clients.
+function admin:GetEyeTrace() return {Hit=true,HitPos=Vector(300,0,0),HitNormal=Vector(0,0,1)} end
+NOW=NOW+10 request(admin,'model',NULL,{asset=A})
+local r=last(admin) local preview=LAST_SPAWNED local at=SPAWNS[#SPAWNS].options.position
+assert(r.state=='ready' and ENTS[r.ent]==preview and SPAWNS[#SPAWNS].asset==A and SPAWNS[#SPAWNS].options.frozen==true and SPAWNS[#SPAWNS].flags.replace==true,'the preview was not spawned frozen and outside undo')
+assert(at[1]==300 and at[2]==0 and at[3]==3,'the preview was not placed where the player aims')
+assert(first.removed and admin.MMDHLPhysicsModel==preview,'opening again did not replace the first preview')
+assert(preview:GetNW2Bool('MMDHLPhysicsModelPreview',false)==true and preview:GetCreator()==admin and admin.MMDHLPhysicsModel==preview)
+NOW=NOW+10 request(admin,'open',preview,{}) assert(last(admin).data.modelPreview==true,'the editor was not told it edits the preview')
+-- Apply on the preview saves the new version for every new spawn of the model.
+local req={collisionOverrides={},mass=55,physicsOverrides={}}
+NOW=NOW+10 request(admin,'apply',preview,{base=preview:GetNW2String('MMDHLRig',''),request=req})
+r=last(admin) local applied=ENTS[r.ent]
+assert(r.state=='ready' and applied~=preview and preview.removed and admin.MMDHLPhysicsModel==applied and applied:GetNW2Bool('MMDHLPhysicsModelPreview',false) and r.data.modelPreview==true,'the applied preview lost its mark')
+local saved=util.JSONToTable(FILES[P.SavedPath(A)] or '') assert(saved and saved.mass==55 and saved.editor.savedByName=='Admin','Apply on the preview did not save the model default')
+-- Reset forgets the saved default; Restore saved leaves it as it is.
+NOW=NOW+10 request(admin,'reset',applied,{base=applied:GetNW2String('MMDHLRig','')})
+local reset=ENTS[last(admin).ent] assert(last(admin).state=='ready' and FILES[P.SavedPath(A)]==nil and admin.MMDHLPhysicsModel==reset,'Reset on the preview did not forget the model default')
+-- An ordinary ragdoll's Apply saves nothing.
+local plain=ragdoll(KEY,{mass=70},admin) NOW=NOW+10 request(admin,'apply',plain,{base=KEY,request={collisionOverrides={},mass=40,physicsOverrides={}}})
+assert(last(admin).state=='ready' and FILES[P.SavedPath(A)]==nil and admin.MMDHLPhysicsModel==reset,'an ordinary Apply saved the model default')
+-- A preview build by someone who lost the right to save defaults is refused before building.
+local count=#SPAWNS hook.Add('MMDHLCanSavePhysicsDefault','test',function() return false end)
+NOW=NOW+10 request(admin,'apply',reset,{base=reset:GetNW2String('MMDHLRig',''),request=req}) hook.Remove('MMDHLCanSavePhysicsDefault','test')
+assert(says(last(admin),'physics_editor.error.admin_only') and #SPAWNS==count and not reset.removed,'a preview build without save rights ran')
+-- Closing the editor, or leaving, removes the preview; a preview the closed editor no longer waits for goes at once.
+request(admin,'close',reset,{}) assert(reset.removed and admin.MMDHLPhysicsModel==nil,'closing the editor kept the preview')
+NOW=NOW+10 DEFER=true request(admin,'model',NULL,{asset=A}) request(admin,'close',NULL,{}) DEFER=false DEFERRED()
+assert(LAST_SPAWNED.removed and admin.MMDHLPhysicsModel==nil,'a preview finished after its editor closed stayed')
+NOW=NOW+10 request(admin,'model',NULL,{asset=A}) local left=LAST_SPAWNED HOOKS.PlayerDisconnected['MMDHL.PhysicsTestCopy'](admin)
+assert(left.removed,'the preview stayed after its player left')
+''')
+print('PASS: the spawn menu\'s physics editor: a frozen preview for those who may save defaults, where they aim or 200 units ahead on the floor; Apply saves the model default, Reset forgets it, ordinary ragdolls save nothing; the preview goes with the editor or its player')
+
 # L13b: the bone window's pins share the saved file; the editor keeps them, previews and builds with them.
 s = server_runtime()
 s.execute(r'''
@@ -1266,6 +1318,41 @@ assert(#ERRORS==0,table.concat(ERRORS,'\n'))
 e:Edit(function(d) d.mass=90 end) e:Close() assert(#QUERIES==1 and mmdhl.GetPhysicsEditor()==e) QUERIES[1].args[2]() assert(mmdhl.GetPhysicsEditor()==nil)
 ''')
 print('PASS: with a current module the exact preview drives overlap checks, fixes and the .phy view; Apply rebinds and keeps the draft, Reset shows the factory physics clean; pending refits hold Checks and Apply; picking from the world cancels; notices name the model')
+
+# The spawn menu's editor (Character Models: Ragdoll physics for all spawns…): it asks the server for
+# a preview ragdoll, waits for it, and says throughout that what it applies is saved for every spawn.
+c = client_runtime(CURRENT_NATIVE)
+c.execute(r'''
+PROGRESS=nil notification.AddProgress=function(_,t) PROGRESS=t end notification.Kill=function() PROGRESS=nil end
+SENT={} mmdhl.OpenModelPhysicsEditor('not an id') assert(#SENT==0,'an invalid model id was sent')
+mmdhl.OpenModelPhysicsEditor(string.rep('e',64))
+local m=lastSent() assert(m and m.fields[3]=='model','the spawn menu did not ask the server for a preview')
+REQ_ID=m.fields[2] answer('building','',0) assert(mmdhl.GetPhysicsEditor()==nil and PROGRESS==mmdhl.L'physics_editor.model.opening') answer('ready','',33) tick()
+local open=lastSent() assert(open.fields[3]=='open' and mmdhl.GetPhysicsEditor() and PROGRESS==nil,'the editor did not open on the preview ragdoll')
+getmetatable(mmdhl.GetPhysicsEditor().frame).SetTitle=function(self,t) self.title=t end
+REQ_ID=open.fields[2] local state=table.Copy(STATE) state.modelPreview=true answer('state','',33,state)
+local e=mmdhl.GetPhysicsEditor() walk()
+assert(e.modelPreview and e:Banner()=='model' and e.frame.title==mmdhl.L('physics_editor.model.title',{name=e.name}),'the window does not say that it edits every spawn')
+e:Edit(function(d) d.mass=90 end) walk()
+assert(find(mmdhl.L('physics_editor.model.apply_count',{count=#e.diff}),'DButton'),'the main button does not say that it saves for all spawns')
+assert(find(mmdhl.L'physics_editor.save_new_spawns','DButton').visible==false,'Save for new spawns is offered beside it')
+-- Reset offers automatic physics (which forgets the saved ones) and this part, not the saved settings.
+find(mmdhl.L'physics_editor.reset'..' ▾','DButton'):DoClick()
+assert(#MENU.options==2 and MENU.options[1][1]==mmdhl.L'physics_editor.reset.automatic' and MENU.options[2][1]==mmdhl.L'physics_editor.reset.part','the preview offers Restore saved')
+MENU.options[1][2]() assert(QUERIES[#QUERIES].text==mmdhl.L('physics_editor.model.confirm_reset',{name=e.name}),'Reset does not say that the saved physics are forgotten')
+-- After Apply the notice and the status say what was saved, by the model's name.
+NEWRIG={key=string.rep('9',32),scale=3.23656,bodies=RIG.bodies,bones=RIG.bones,materialCount=3}
+local new=setmetatable({key=NEWRIG.key,index=44},getmetatable(RAGDOLL)) ENTS[44]=new
+local after=table.Copy(state) after.base=NEWRIG.key after.applied.mass=90
+SENT={} e:Apply() REQ_ID=lastSent().fields[2] answer('ready',mmdhl.I18n.Token('physics_editor.notice.applied'),44,after) tick()
+assert(e.ent==new and NOTES[#NOTES]==mmdhl.L('physics_editor.notice.saved',{name=e.name}) and e:Status()==mmdhl.L('physics_editor.status.saved_all',{time=os.date('%H:%M',e.appliedAt)}),'the saved version was not named')
+-- A server refusal (no right to save defaults) reaches the player, and no editor opens.
+e:Close(true) SENT={} mmdhl.OpenModelPhysicsEditor(string.rep('e',64)) REQ_ID=lastSent().fields[2]
+answer('error',mmdhl.I18n.Token('physics_editor.error.admin_only'),0) tick()
+assert(mmdhl.GetPhysicsEditor()==nil and NOTES[#NOTES]==mmdhl.L'physics_editor.error.admin_only','a refused preview was not explained')
+assert(#ERRORS==0,table.concat(ERRORS,'\n'))
+''')
+print('PASS: the spawn menu\'s editor asks for a preview ragdoll and opens on it; its title, banner, main button, Reset and notices say that it saves for every spawn; refusals are explained')
 
 # The editor's widgets keep GMod's built-in panel behaviour and follow the draft; the preview
 # fits with the server's pins; test copies are found once a frame.

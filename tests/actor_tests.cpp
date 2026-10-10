@@ -131,6 +131,15 @@ int main(int argc,char** argv){try{
   // Only the player pack the game ships: a missing include adds error.mdl's "idle".
   if(std::string(role)=="player"&&actor.manifest["animation"]["includes"]!=Json::array({"models/f_anm.mdl"}))throw std::runtime_error("Player model includes packs the game lacks");
   if(std::string(role)=="arms"&&!actor.manifest["armsParts"].is_object())throw std::runtime_error("Empty GLua arms selection was not normalized");
+  // util.TableToJSON writes the modes -1, 0 and 1 as -1.0, 0.0 and 1.0: accepted and kept as whole
+  // numbers; other values are still refused.
+  if(std::string(role)=="arms"){
+   for(int mode:{-1,0,1}){auto glua=options;glua["armsParts"]=Json::parse("{\"0\":"+std::to_string(mode)+".0}");auto fitted=fitRig(*model,glua);
+    if(fitted.manifest["armsParts"]!=Json({{"0",mode}})||!fitted.manifest["armsParts"]["0"].is_number_integer())throw std::runtime_error("GLua arms mode "+std::to_string(mode)+".0 was refused or kept as a float");}
+   for(auto bad:{"1.5","2.0","\"1\"","1e309"}){auto glua=options;bool refused=false;
+    try{glua["armsParts"]=Json::parse(std::string("{\"0\":")+bad+"}");fitRig(*model,glua);}catch(const std::exception&){refused=true;}
+    if(!refused)throw std::runtime_error(std::string("Arms mode ")+bad+" was accepted");}
+  }
   if(actor.key==rag.key)throw std::runtime_error("Actor cache identities alias");
   // Arms fixture explicitly includes its tiny mesh to exercise VVD/VTX writing.
   if(std::string(role)=="arms")actor.manifest["armsParts"]={{"0",1}};

@@ -11,6 +11,7 @@ source = (root / 'addon/lua/mmdhl/scene_sharing.lua').read_text(encoding='utf-8'
 common = r'''
 NOW=0 RealTime=function() return NOW end CurTime=function() return NOW end
 IsValid=function(v) return v~=nil and not v.gone end istable=function(v) return type(v)=='table' end
+isnumber=function(v) return type(v)=='number' end isstring=function(v) return type(v)=='string' end
 bit={band=function(a,b) return a&b end,bor=function(a,b) return a|b end}
 math.Clamp=function(v,low,high) return math.min(math.max(v,low),high) end
 game={SinglePlayer=function() return false end}
@@ -108,13 +109,29 @@ run('Think')
 assert(SENT[1][1]==0 and SENT[1][2]==true and SENT[1][3]==4000,'the client subscribes with its own sphere')
 assert(SENT[1][4]==4,'the client names the kinds of scene objects it collides with')
 SENT={}
+-- Objects as the server's ExportSecondaryScene writes them (shape: the geometry's SHA-256).
+local function object(id,shape) return {id=id,owner=0,bone=0,shape=shape or string.rep('a',64),bytes=60,static=false,actor=0,position={0,0,0},rotation={0,0,0,1},velocity={0,0,0},angular={0,0,0}} end
 -- A frame of 20001 objects is dropped: nothing is requested or published.
-local big={objects={}} for i=1,20001 do big.objects[i]={id=i,shape='s'..i,bytes=10} end
+local big={objects={},timestamp=1} for i=1,20001 do big.objects[i]=object(i,string.format('%064x',i)) end
 FRAMES.big=big deliver(1,'big')
 assert(LIMITS[1]==32*1048576,'frames decompress to at most 32 MB')
 assert(#SENT==0,'an oversized frame was used')
 -- A frame within the bounds is used: its unknown shape is requested.
-FRAMES.small={objects={{id=1,shape='abc',bytes=10}}} deliver(2,'small')
-assert(#SENT==1 and SENT[1][1]==1 and SENT[1][2]=='abc' and SENT[1][3]==0,'a valid frame was not used')
+FRAMES.small={objects={object(1)},timestamp=1} deliver(2,'small')
+assert(#SENT==1 and SENT[1][1]==1 and SENT[1][2]==string.rep('a',64) and SENT[1][3]==0,'a valid frame was not used')
+-- An empty chunk short of the shape's end would ask for the same bytes forever: refused.
+SENT={} INBOX={1,string.rep('a',64),0,true,0,''} RECEIVE()
+assert(mmdhl.sceneError=='Invalid collision shape transfer' and #SENT==0,'an empty chunk was accepted')
+mmdhl.sceneError=nil
+-- A malformed object (a mismatched or modified server) drops its frame, with no Lua error: a
+-- scalar entry, no id or shape, a NaN position, a zero rotation, a shape larger than any capture.
+local bad={5,object(nil),object(2,'not a hash'),object(2),object(2),object(2),object(2)}
+bad[4].position={0,0/0,0} bad[5].rotation={0,0,0,0} bad[6].bytes=2^40 bad[7].center={1,2}
+for n,o in ipairs(bad) do
+ SENT={} FRAMES['bad'..n]={objects={object(3,string.rep('c',64)),o},timestamp=1} deliver(2+n,'bad'..n)
+ assert(#SENT==0,'malformed object '..n..' was used')
+end
+-- A frame without a finite clock is dropped too.
+SENT={} FRAMES.clock={objects={object(4,string.rep('d',64))},timestamp=1/0} deliver(20,'clock') assert(#SENT==0,'a frame with an infinite clock was used')
 ''')
-print('PASS: clients bound frame decompression to 32 MB and 20000 objects')
+print('PASS: clients bound frame decompression to 32 MB and 20000 objects, and drop frames with malformed objects or empty chunks')

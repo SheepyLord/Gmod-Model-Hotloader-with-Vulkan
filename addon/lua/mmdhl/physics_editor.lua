@@ -9,7 +9,7 @@ local P=mmdhl.physics if not P then return end
 local L=mmdhl.L
 local Protocol=1
 local MaxPayload=60000
-local Ops={open=true,close=true,test=true,apply=true,previous=true,reset=true,restore_saved=true,save_default=true,clear_default=true}
+local Ops={open=true,close=true,test=true,apply=true,previous=true,reset=true,restore_saved=true,save_default=true,clear_default=true,model=true}
 local Builds={test=true,apply=true,previous=true,reset=true,restore_saved=true}
 local Replaces={apply=true,previous=true,reset=true,restore_saved=true}
 local Based={test=true,apply=true,previous=true,reset=true,restore_saved=true,save_default=true}
@@ -137,7 +137,7 @@ if SERVER then
    applied={collisionOverrides=o.collisionOverrides or {},collisionOverrideScale=tonumber(o.collisionOverrideScale) or rig.scale,excludedMaterials=o.excludedMaterials or {},mass=tonumber(o.mass) or 70,
     physicsOverrides=istable(rig.physicsOverrides) and rig.physicsOverrides or o.physicsOverrides or {},physicsEditor=o.physicsEditor},
    savedDefault={exists=P.HasSavedDefault(saved),hasPhysics=saved~=nil and istable(saved.physics),savedAt=editor.savedAt,savedByName=editor.savedByName},
-   materialCount=tonumber(rig.materialCount) or 0}
+   materialCount=tonumber(rig.materialCount) or 0,modelPreview=IsValid(p) and p.MMDHLPhysicsModel==ent}
  end
  -- Swaps a freshly built ragdoll in for the old one, keeping its pose, look,
  -- constraints, owner, undo and cleanup entries. Nothing changes until it all worked.
@@ -189,7 +189,11 @@ if SERVER then
  end
  P.Reply=reply
  local function removeTestCopy(p) if IsValid(p) and IsValid(p.MMDHLPhysicsTestCopy) then p.MMDHLPhysicsTestCopy:Remove() end if IsValid(p) then p.MMDHLPhysicsTestCopy=nil end end
- hook.Add('PlayerDisconnected','MMDHL.PhysicsTestCopy',removeTestCopy)
+ -- The spawn menu's editor (op 'model') works on a preview ragdoll of the model; every build that
+ -- replaces it is saved as the model's default for new spawns. It goes when the editor closes.
+ local function removeModelPreview(p) if IsValid(p) and IsValid(p.MMDHLPhysicsModel) then p.MMDHLPhysicsModel:Remove() end if IsValid(p) then p.MMDHLPhysicsModel=nil end end
+ local function markModelPreview(p,ent) p.MMDHLPhysicsModel=ent ent:SetNW2Bool('MMDHLPhysicsModelPreview',true) end
+ hook.Add('PlayerDisconnected','MMDHL.PhysicsTestCopy',function(p) removeTestCopy(p) removeModelPreview(p) end)
  -- A native build failure as the token the editor shows (§7.5).
  function P.FailureToken(err)
   local text=tostring(err or '')
@@ -257,7 +261,46 @@ if SERVER then
  local function handle(p,request,op,ent,payload)
   local function answer(state,message,target,data) reply(p,request,state,message,target,data) end
   -- A test copy still building when the editor closes is removed when it arrives.
-  if op=='close' then p.MMDHLPhysicsSession=(p.MMDHLPhysicsSession or 0)+1 removeTestCopy(p) return end
+  if op=='close' then p.MMDHLPhysicsSession=(p.MMDHLPhysicsSession or 0)+1 removeTestCopy(p) removeModelPreview(p) return end
+  if op=='model' then
+   -- Saving a model's default is for those who may (single player, the listen host, admins).
+   local asset=payload.asset
+   if not mmdhl.native then answer('error',L'physics_editor.error.server_core') return end
+   if not (isstring(asset) and #asset==64 and not asset:find('[^0-9a-f]')) then answer('error',L('physics_editor.error.invalid',{field='asset',reason='protocol'})) return end
+   if mode:GetInt()==0 then answer('error',L'physics_editor.error.disabled') return end
+   if mode:GetInt()==1 and not (IsValid(p) and p:IsAdmin()) then answer('error',L'physics_editor.error.admin_only') return end
+   if not P.CanSaveDefault(p,asset) then answer('error',L'physics_editor.error.admin_only') return end
+   if p.MMDHLPhysicsBusy then answer('error',L'physics_editor.error.busy') return end
+   local wait=P.RateLimited(p) if wait then answer('error',L('physics_editor.error.rate_limited',{seconds=wait}),nil,{seconds=wait}) return end
+   if gamemode.Call('PlayerSpawnRagdoll',p,asset)==false then answer('error',L'physics_editor.error.spawn_limit') return end
+   removeModelPreview(p)
+   -- Where the player aims, frozen, facing them, with the saved default. The editor's camera orbits
+   -- it about two heights away: nearer than that (or at the sky) it goes 200 units ahead instead,
+   -- on the floor and short of a wall, so that the camera does not look through the player.
+   local tr,eye=p:GetEyeTrace(),p:EyePos()
+   local pos=tr.Hit and not tr.HitSky and not tr.StartSolid and tr.HitPos:DistToSqr(eye)<=4096^2 and tr.HitPos:DistToSqr(eye)>=200^2 and tr.HitPos+tr.HitNormal*3
+   if not pos then
+    local forward=Angle(0,p:EyeAngles().y,0):Forward()
+    local reach=util.TraceLine({start=eye,endpos=eye+forward*200,filter=p}) local ahead=reach.HitPos-forward*(reach.Hit and 24 or 0)
+    local floor=util.TraceLine({start=ahead,endpos=ahead-Vector(0,0,1024),filter=p})
+    pos=floor.Hit and not floor.StartSolid and floor.HitPos+Vector(0,0,3) or ahead
+   end
+   p.MMDHLPhysicsBusy=true local session=p.MMDHLPhysicsSession
+   answer('building','')
+   local ok,err=xpcall(function()
+    mmdhl.Spawn(p,asset,{position={pos:Unpack()},frozen=true,backend='source',role='ragdoll'},function(new,failure)
+     if IsValid(p) then p.MMDHLPhysicsBusy=nil end recordBuild(p)
+     if not IsValid(new) then answer('error',P.FailureToken(failure)) return end
+     -- The editor closed (or another opened) while it built.
+     if not IsValid(p) or p.MMDHLPhysicsSession~=session then new:Remove() return end
+     new:SetCreator(p) if new.CPPISetOwner then new:CPPISetOwner(p) end
+     markModelPreview(p,new)
+     answer('ready','',new)
+    end,nil,{replace=true})
+   end,debug.traceback)
+   if not ok then if IsValid(p) then p.MMDHLPhysicsBusy=nil end ErrorNoHalt('[Model Hotloader physics] '..tostring(err)..'\n') answer('error',L('physics_editor.error.build_failed',{reason=tostring(err):match('^[^\n]*')})) end
+   return
+  end
   if op=='open' then
    -- Cheap to ask, not to answer: at most 4 states a second per player.
    local recent={} for _,t in ipairs(p.MMDHLPhysicsOpens or {}) do if CurTime()-t<1 then recent[#recent+1]=t end end
@@ -268,6 +311,9 @@ if SERVER then
   if not (IsValid(ent) and ent:GetClass()=='prop_ragdoll' and mmdhl.IsMMD(ent) and ent:GetPhysicsObjectCount()==18) then answer('error',L'physics_editor.error.not_ragdoll') return end
   if op=='open' then answer('state','',ent,mmdhl.PhysicsState(p,ent)) return end
   local allowed,why=P.Can(p,ent,op) if not allowed then answer('error',L(why)) return end
+  -- On the spawn menu's preview a build also saves the model's default: it needs that right too.
+  local preview=Replaces[op] and p.MMDHLPhysicsModel==ent
+  if preview then allowed,why=P.Can(p,ent,'save_default') if not allowed then answer('error',L(why)) return end end
   if ent.MMDHLPhysicsBusy or p.MMDHLPhysicsBusy then answer('error',L'physics_editor.error.busy') return end
   if Based[op] and payload.base~=ent:GetNW2String('MMDHLRig','') then answer('error',L'physics_editor.error.stale') return end
   if Replaces[op] and ent:GetNW2Bool('MMDHLPhysgunHeld',false) then answer('error',L'physics_editor.error.held') return end
@@ -320,6 +366,13 @@ if SERVER then
      local replaced,result=mmdhl.ReplaceRagdoll(p,ent,new,op)
      if not replaced then ErrorNoHalt('[Model Hotloader physics] '..tostring(result)..'\n') answer('error',L('physics_editor.error.build_failed',{reason=tostring(result):match('^[^\n]*')})) return end
      for _,w in ipairs(result) do warnings[#warnings+1]=w end
+     -- Every new spawn of the model now gets what the preview has: Reset forgets the saved
+     -- default (automatic physics), Restore saved keeps it, the others save the new version.
+     if preview and IsValid(p) then
+      markModelPreview(p,new)
+      local saved=op=='restore_saved' or (op=='reset' and mmdhl.ClearPhysicsDefault(p,new)) or (op~='reset' and mmdhl.SavePhysicsDefault(p,new))
+      if not saved then warnings[#warnings+1]=L'physics_editor.error.save_failed' end
+     end
      local state=mmdhl.PhysicsState(p,new) state.warnings=warnings
      answer('ready',L'physics_editor.notice.applied',new,state)
     end,debug.traceback)
@@ -427,6 +480,29 @@ properties.Add('mmdhl_physics_editor',{
  Filter=function(_,ent,ply) return editable(ent) end,
  Action=function(_,ent) if mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) end end
 })
+-- The spawn menu's way in (Character Models: Ragdoll physics for all spawns…). The server places a
+-- frozen preview ragdoll of the model; the editor then saves each build as the model's default
+-- for new spawns, and the preview goes when the editor closes.
+function mmdhl.OpenModelPhysicsEditor(asset)
+ if not (isstring(asset) and #asset==64 and not asset:find('[^0-9a-f]')) then return end
+ local open=mmdhl.GetPhysicsEditor and mmdhl.GetPhysicsEditor()
+ if open and open:Valid() then
+  if open:Dirty() then Derma_Query(L'physics_editor.confirm.close',L'physics_editor.title_short',L'physics_editor.button.discard',function() open:Close(true) mmdhl.OpenModelPhysicsEditor(asset) end,L'physics_editor.button.keep_editing',function() end) return end
+  open:Close(true)
+ end
+ notification.AddProgress('MMDHL.PhysicsModel',L'physics_editor.model.opening')
+ mmdhl.PhysicsRequest('model',NULL,{asset=asset},function(state,message,_,_,index)
+  if state=='building' then return end
+  if state~='ready' then notification.Kill('MMDHL.PhysicsModel') notification.AddLegacy(message~='' and message or L'physics_editor.error.no_answer',NOTIFY_ERROR,6) return end
+  -- As after Apply: wait for the ragdoll and its carrier on this computer, then edit it.
+  local started=RealTime()
+  timer.Create('MMDHL.PhysicsModelOpen',.1,0,function()
+   local ent=Entity(index or 0)
+   if editable(ent) and mmdhl.GetRig(ent) then timer.Remove('MMDHL.PhysicsModelOpen') notification.Kill('MMDHL.PhysicsModel') if mmdhl.OpenPhysicsEditor then mmdhl.OpenPhysicsEditor(ent) end
+   elseif RealTime()-started>15 then timer.Remove('MMDHL.PhysicsModelOpen') notification.Kill('MMDHL.PhysicsModel') notification.AddLegacy(L'physics_editor.error.not_ragdoll',NOTIFY_ERROR,5) end
+  end)
+ end)
+end
 -- Not "mmdhl_physics_editor": that name is the server's replicated setting, and a command cannot share it.
 concommand.Add('mmdhl_physics_editor_open',function()
  local ent=LocalPlayer():GetEyeTrace().Entity
@@ -439,7 +515,7 @@ local function findTestCopies()
  local frame=FrameNumber() if frame==testCopiesFrame then return testCopies end
  testCopiesFrame=frame for i=#testCopies,1,-1 do testCopies[i]=nil end
  for _,ent in ipairs(mmdhl.Entities and mmdhl.Entities() or {}) do
-  if IsValid(ent) and ent:GetClass()=='prop_ragdoll' and ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) then testCopies[#testCopies+1]=ent end
+  if IsValid(ent) and ent:GetClass()=='prop_ragdoll' and (ent:GetNW2Bool('MMDHLPhysicsTestCopy',false) or ent:GetNW2Bool('MMDHLPhysicsModelPreview',false)) then testCopies[#testCopies+1]=ent end
  end
  return testCopies
 end
@@ -448,7 +524,8 @@ hook.Add('PostDrawTranslucentRenderables','MMDHL.PhysicsTestCopy',function(depth
  for _,ent in ipairs(findTestCopies()) do
   local rig=IsValid(ent) and mmdhl.GetRig(ent) local head=rig and rig.bodies and rig.bodies[4] local matrix=head and ent:GetBoneMatrix(head.bone)
   if matrix then local m=(tonumber(rig.scale) or 3.23656)/3.23656 local ang=EyeAngles() ang:RotateAroundAxis(ang:Up(),-90) ang:RotateAroundAxis(ang:Forward(),90)
-   cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(L'physics_editor.test_copy_label','DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
+   local label=ent:GetNW2Bool('MMDHLPhysicsModelPreview',false) and L'physics_editor.model.preview_label' or L'physics_editor.test_copy_label'
+   cam.Start3D2D(matrix:GetTranslation()+Vector(0,0,12*m),ang,.1*m) draw.SimpleTextOutlined(label,'DermaLarge',0,0,Color(255,215,0),TEXT_ALIGN_CENTER,TEXT_ALIGN_CENTER,2,Color(0,0,0)) cam.End3D2D() end
  end
 end)
 include('mmdhl/physics_editor_ui.lua')

@@ -195,6 +195,19 @@ assert B not in json.loads(G.FS['mmd_hotloader/translations/models.json'])
 assert not N.Allowed(None), 'text without a model is never sent'
 print('PASS: consent')
 
+# --- A reload's new revision (another id) keeps the choice of the model it replaces: one whose
+# translation was declined stays declined after a restart (no import-window choice is left),
+# whatever the default for new imports.
+R1, R2 = '9' * 64, '8' * 64
+N.SetAllowed(R1, False)
+G.CONVARS['mmdhl_translate_new_imports'] = '1'; G.CONVARS['mmdhl_translate_notice_seen'] = '1'
+N.chosen = lua.table()
+G.REQUESTS = to_lua([])
+N.Imported(R2, 'D:\reloaded.pmx', R1)
+assert json.loads(G.FS['mmd_hotloader/translations/models.json'])[R2] is False and not N.Allowed(R2)
+show('新しい髪飾り', R2); tick(); assert requests() == [], 'a reload of a declined model sent its names'
+print('PASS: a reload keeps the declined translation of the model it replaces')
+
 # --- Models without a recorded choice are never sent before the player has seen
 # what translation shares (import window, library notice or the setting).
 D, E = 'd' * 64, 'e' * 64

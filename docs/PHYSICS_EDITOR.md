@@ -19,6 +19,36 @@ Native details (the `physicsOverrides` option, the manifest and
   ragdoll to edit it; physics saved for new spawns also apply to them).
 * Or look at the ragdoll and run `mmdhl_physics_editor_open` in the console
   (`mmdhl_physics_editor` is the server setting below).
+* Or, for every new spawn of a model, from the spawn menu: **Q → External Models →
+  Character Models**, select the character and press **Ragdoll physics for all
+  spawns…** (also in the list's right-click menu). See below.
+
+### From the spawn menu: physics for all spawns
+
+The spawn menu's editor changes a model's saved physics, the default every new
+ragdoll, NPC and player model of that character spawns with (as **Save for new
+spawns** stores it). The server places a frozen preview ragdoll of the model where
+you aim (200 units ahead when you aim closer or at the sky, so that the camera
+does not look through you), labelled PHYSICS PREVIEW, and the editor opens on it
+with a banner saying so. Everything works as on any ragdoll, except:
+
+* The main button is **Save for all spawns**: it rebuilds the preview with your
+  changes and saves them as the model's default in one step. **Previous version**
+  saves the version it goes back to. **Reset → Automatic** rebuilds the preview
+  with automatic physics and forgets the saved ones (it asks first). The separate
+  **Save for new spawns** button and **Reset → This model's saved settings** are
+  not shown: the preview always has the saved version.
+* The preview is removed when you close the editor or leave the server; it is not
+  in your undo list. **Test copy** still spawns a copy to throw around.
+* Ragdolls already in the world keep their physics.
+
+It needs the right to save a model's default: single player, the listen server
+host and admins, or whom `MMDHLCanSavePhysicsDefault` allows; anyone else is told
+so and nothing is spawned. `mmdhl_physics_editor` 0 turns it off too, and its
+builds count toward the cooldown and budget. The server's op is `model`
+(`{asset=…}`); `PhysicsState` reports `modelPreview` for the preview, and each
+build that replaces it saves (`apply`, `previous`) or forgets (`reset`) the
+default before answering.
 
 The window docks on the right. The ragdoll's collision parts are drawn in the
 world; click a part to select it. Hold the right mouse button to look around
@@ -236,7 +266,8 @@ Hooks (server):
 
 * `MMDHLCanEditPhysics(ply, ent, op)`: return `false` to deny an operation
   (`test`, `apply`, `previous`, `reset`, `restore_saved`, `save_default`,
-  `clear_default`). The collision editor's corrected copy asks with `test`.
+  `clear_default`). The collision editor's corrected copy asks with `test`; a
+  build of the spawn menu's preview asks with its operation and with `save_default`.
 * `MMDHLCanSavePhysicsDefault(ply, asset)`: return `true` or `false` to override
   who may save and forget a model's default.
 * `MMDHLPhysicsApplied(ply, oldEnt, newEnt)`: called after a rebuilt ragdoll
@@ -245,6 +276,8 @@ Hooks (server):
 Functions:
 
 * `mmdhl.OpenPhysicsEditor(ent)` and `mmdhl.GetPhysicsEditor()` (client).
+* `mmdhl.OpenModelPhysicsEditor(asset)` (client): the spawn menu's editor for every
+  new spawn of a model (see above).
 * `mmdhl.PhysicsRequest(op, ent, payload, callback)` (client) sends one
   operation and returns its request number. The callback receives
   `(state, message, entity, data, entityIndex)`: `building` while the server

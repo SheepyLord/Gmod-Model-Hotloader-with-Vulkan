@@ -6,7 +6,9 @@
 #include <nlohmann/json.hpp>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -14,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -39,6 +42,14 @@ ExceptionCounterRegistration exceptionCounterRegistration;
 }
 #endif
 fs::path ioPath(const fs::path& path);
+// A whole number in [low, high] however the JSON stores it: GMod's util.TableToJSON
+// writes Lua's integral numbers as 1.0, a C++ writer as 1. The bounds stay below 2^53.
+inline std::optional<int64_t> wholeNumber(const Json& j,int64_t low,int64_t high){
+    if(j.is_number_unsigned()){auto v=j.get<uint64_t>();if(v<=uint64_t(INT64_MAX)&&int64_t(v)>=low&&int64_t(v)<=high)return int64_t(v);return std::nullopt;}
+    if(j.is_number_integer()){auto v=j.get<int64_t>();if(v>=low&&v<=high)return v;return std::nullopt;}
+    if(j.is_number_float()){double v=j.get<double>();if(std::isfinite(v)&&v==std::floor(v)&&v>=double(low)&&v<=double(high))return int64_t(v);}
+    return std::nullopt;
+}
 constexpr float Inch=.0254f;
 constexpr float ScmiSourceUnitsPerPmx=.08f*40.457f;
 float resolveSourceScale(const Json&,float height);
@@ -360,7 +371,10 @@ struct Instance {
     void ensureSnapshot();
     void beforeStep();
     void buildPhysics(const Json&);
+    // A secondary world is rebuilt beside the current one, which it replaces only once
+    // complete: a failed rebuild keeps the working world, its backend and its flags.
     void reset();
+    void setSecondaryBackend(const std::string&);
     void applyPose();
     void updatePose();
     void setBonePose(size_t,const btTransform&);

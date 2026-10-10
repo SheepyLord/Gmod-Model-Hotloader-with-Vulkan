@@ -74,13 +74,21 @@ template<class R,class... A> static R callMaterials(size_t compiled,A... args){
     auto table=*reinterpret_cast<void* const* const*>(materials);
     return reinterpret_cast<R(*)(IMaterialSystem*,A...)>(table[compiled-materialShift])(materials,args...);
 }
-static IMatRenderContext* renderContext(){
-    static const size_t slot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetRenderContext();});
-    return callMaterials<IMatRenderContext*>(slot);
+using MaterialLock=decltype(std::declval<IMaterialSystem*>()->Lock());
+// Every IMaterialSystem method called by slot (callMaterials), at its compiled slot. initialize()
+// checks that each, at the running layout, is still the material system's own code.
+struct MaterialSlots {size_t renderContext,findMaterial,threadMode,lock,unlock;};
+static const MaterialSlots& materialSlots(){
+    static const MaterialSlots slots{virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetRenderContext();}),
+        virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->FindMaterial("","",false,nullptr);}),
+        virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetThreadMode();}),
+        virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Lock();}),
+        virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Unlock(MaterialLock());})};
+    return slots;
 }
+static IMatRenderContext* renderContext(){return callMaterials<IMatRenderContext*>(materialSlots().renderContext);}
 static IMaterial* sourceMaterial(const char* name,const char* group){
-    static const size_t slot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->FindMaterial("","",false,nullptr);});
-    return callMaterials<IMaterial*>(slot,name,group,false,static_cast<const char*>(nullptr));
+    return callMaterials<IMaterial*>(materialSlots().findMaterial,name,group,false,static_cast<const char*>(nullptr));
 }
 static bool remixFixedFunction=false;
 static std::string status="not initialized";
@@ -274,7 +282,11 @@ static void initialize(){
     remixFixedFunction=false;
     for(auto library:{L"materialsystem.dll",L"shaderapidx9.dll",L"stdshader_dx9.dll"})requireGameBinary(library);
 #endif
-    materials=static_cast<IMaterialSystem*>(factory("VMaterialSystem080",nullptr));if(!materials)throw std::runtime_error("VMaterialSystem080 unavailable");materialShift=appSystemShift(materials,L"materialsystem.dll",MaterialSystemVtableLength);status=materialShift?"VMaterialSystem080 (default-branch layout)/native dynamic mesh":"VMaterialSystem080/native dynamic mesh";
+    auto system=static_cast<IMaterialSystem*>(factory("VMaterialSystem080",nullptr));if(!system)throw std::runtime_error("VMaterialSystem080 unavailable");
+    // An unknown layout throws here, and so does a slot to be called that another module took over.
+    auto shift=appSystemShift(system,L"materialsystem.dll",MaterialSystemVtableLength);const auto& slots=materialSlots();
+    requireOwnedSlots(system,L"materialsystem.dll",{slots.renderContext-shift,slots.findMaterial-shift,slots.threadMode-shift,slots.lock-shift,slots.unlock-shift});
+    materials=system;materialShift=shift;status=materialShift?"VMaterialSystem080 (default-branch layout)/native dynamic mesh":"VMaterialSystem080/native dynamic mesh";
     });
 }
 std::string rendererStatus(){std::lock_guard lock(renderMutex);return status;}
@@ -573,8 +585,7 @@ static Json queueStats(){
 #else
     if(materials){CMatRenderContextPtr context(renderContext());const auto base=gameLibraryBase(L"materialsystem.dll");
 #endif
-        static const size_t threadModeSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->GetThreadMode();});
-        out["threadMode"]=int(callMaterials<MaterialThreadMode_t>(threadModeSlot));out["materialSlotShift"]=materialShift;out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
+        out["threadMode"]=int(callMaterials<MaterialThreadMode_t>(materialSlots().threadMode));out["materialSlotShift"]=materialShift;out["contextVtableRva"]=reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(static_cast<IMatRenderContext*>(context)))-base;
         auto rva=[&](void* table){return table?reinterpret_cast<uintptr_t>(table)-base:0;};
         out["contextClass"]=rttiClass(static_cast<IMatRenderContext*>(context),L"materialsystem.dll");
         out["queuedContextRva"]=rva(queuedContextTable.load());out["hardwareContextRva"]=rva(hardwareContextTable.load());
@@ -601,12 +612,9 @@ void drainRenderQueue(){
     {CMatRenderContextPtr context(renderContext());
      if(recordsForRenderThread(context)){auto calls=reinterpret_cast<SourceCallList*>(context->GetCallQueue());
          if(reinterpret_cast<char*>(calls)-reinterpret_cast<char*>(static_cast<IMatRenderContext*>(context))==CallListOffset)list=calls;}}
-    using Lock=decltype(std::declval<IMaterialSystem*>()->Lock());
-    static const size_t lockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Lock();});
-    static const size_t unlockSlot=virtualSlot<IMaterialSystem>([](IMaterialSystem* m){m->Unlock(Lock());});
-    auto lock=callMaterials<Lock>(lockSlot);
+    auto lock=callMaterials<MaterialLock>(materialSlots().lock);
     for(auto call:list?takeCalls(list):std::vector<RenderThreadCall*>{}){if(call->draw)call->discard();else (*call)();}
-    callMaterials<void>(unlockSlot,lock);
+    callMaterials<void>(materialSlots().unlock,lock);
 }
 // Module close: drains the queue; should a call of this module still be queued
 // where the drain cannot reach it, the module stays loaded until the process

@@ -18,6 +18,8 @@ W.packages=W.packages or {}
 W.origins=W.origins or {}
 W.provided=W.provided or {}
 W.failures=W.failures or {}
+-- Models whose assembled files passed the native check this session (step), by key.
+W.checked=W.checked or {}
 local function hex(s,n) return isstring(s) and #s==n and not s:find('[^0-9a-f]') end
 local function integer(v,low,high) return isnumber(v) and v%1==0 and v>=low and v<=high end
 -- Keeps UTF-8 whole: never cut inside a multi-byte character.
@@ -321,7 +323,20 @@ local function close(job) if job.stream then job.stream:Close() job.stream=nil e
 local function step(job,deadline)
  while SysTime()<deadline do
   local f=job.files[job.index]
-  if not f then return true,nil end
+  if not f then
+   -- Every file matches its hash. Together they must also make up the model the package
+   -- names (natives after 2.3.0 load it as using it would) before it counts as installed.
+   if not native.StartAssetCheck then return true,nil end
+   if job.phase~='validate' then
+    local handle,err=native.StartAssetCheck(job.item.kind,job.item.asset) if not handle then return true,err end
+    job.check,job.phase=handle,'validate'
+   end
+   local valid,err,code=native.PollAssetCheck(job.check)
+   if valid==false then return false end
+   job.check=nil
+   if valid==true then W.checked[job.key]=true return true,nil end
+   job.invalid=code=='invalid' return true,L('workshop.error.invalid_model',{reason=mmdhl.Localize(tostring(err or '?'))})
+  end
   if job.phase=='check' then
    local matches,err=native.SharedFileMatches(f.path,f.size,f.sha256)
    if err then return true,err end
@@ -365,6 +380,9 @@ hook.Add('Think','MMDHL.WorkshopInstall',function()
  local finished,err=step(current,SysTime()+ChunkBudget)
  if not finished then return end
  local job=current current=nil queued[job.key]=nil close(job)
+ -- Files that make up no valid model are not left for the library to list: their manifest (a
+ -- prop: its bundle) goes. Shared textures stay.
+ if job.invalid then file.Delete(job.item.kind=='static' and 'mmd_hotloader/static/assets/'..job.item.asset..'.gmdl' or 'mmd_hotloader/assets/'..job.item.asset..'/manifest.json') end
  if err then fail(job,err) else W.failures[job.key]=nil W.installed=W.installed+1 installed(job) end
  if #queue==0 then
   if CLIENT and W.installed>0 then notification.AddLegacy(L('workshop.installed',{count=W.installed}),NOTIFY_GENERIC,6) end
@@ -547,10 +565,38 @@ else
   end
   W.ForgetMissing()
  end
- function W.Approve(item,package)
+ local function approve(item,package)
   if item.kind=='static' then if mmdhl.props and mmdhl.props.ApproveWorkshop then mmdhl.props.ApproveWorkshop(item.asset,item.name,package.id) end
   elseif mmdhl.ApproveWorkshopAsset then mmdhl.ApproveWorkshopAsset(item.asset,item.name,package.id) end
  end
+ -- A model is approved once its assembled files passed the native check: in this server's own
+ -- install (step), or here for one installed earlier or, on a listen server, by the host's game.
+ -- Checks run one at a time; a model approved before (or by an administrator) needs none.
+ local approvals,approving,waiting={},nil,{}
+ function W.Approve(item,package)
+  local key=W.Key(item.kind,item.asset) local list=mmdhl.approved and (item.kind=='static' and mmdhl.approved.props or mmdhl.approved.assets) or {}
+  local entry=list[item.asset]
+  if entry and (entry.approvedBy~='workshop' or entry.package==package.id) then return end
+  if W.checked[key] or not native.StartAssetCheck then approve(item,package) return end
+  if waiting[key] then waiting[key].item,waiting[key].package=item,package return end
+  waiting[key]={key=key,item=item,package=package} approvals[#approvals+1]=waiting[key]
+ end
+ hook.Add('Think','MMDHL.WorkshopApprove',function()
+  if not approving then
+   approving=table.remove(approvals,1) if not approving then return end
+   local handle,err=native.StartAssetCheck(approving.item.kind,approving.item.asset)
+   if not handle then waiting[approving.key]=nil ErrorNoHalt('[Model Hotloader workshop] '..approving.item.asset..': '..tostring(err)..'\n') approving=nil return end
+   approving.handle=handle
+  end
+  local valid,err=native.PollAssetCheck(approving.handle)
+  if valid==false then return end
+  local done=approving approving=nil waiting[done.key]=nil
+  if valid==true then W.checked[done.key]=true approve(done.item,done.package)
+  else
+   W.failures[done.key]=mmdhl.Localize(L('workshop.error.invalid_model',{reason=tostring(err or '?')}))
+   ErrorNoHalt('[Model Hotloader workshop] '..(done.item.name~='' and done.item.name or done.item.asset)..': '..W.failures[done.key]..'\n')
+  end
+ end)
  W.OnInstalled(function(item,package)
   -- A repaired file must not be offered from a manifest made before.
   if mmdhl.InvalidateSharedManifests then mmdhl.InvalidateSharedManifests() end

@@ -234,6 +234,7 @@ function PANEL:Init()
   if self.mode=='library' then
    menu:AddOption(L'ui.spawn.ragdoll',function() self:Place('ragdoll') end)
    menu:AddOption(L'ui.bodygroups.edit',function() self:EditBodygroups() end)
+   if mmdhl.OpenModelPhysicsEditor then menu:AddOption(L'ui.character.ragdoll_physics',function() self:EditPhysics() end):SetIcon('icon16/shape_handles.png') end
    -- The bone window may be missing or partly loaded (its files did not arrive).
    local BM=mmdhl.boneMapper local picked=row.entry
    if not istable(BM) or not isfunction(BM.Available) then BM=nil end
@@ -309,6 +310,9 @@ function PANEL:BuildCharacterActions()
  self.BodygroupPreset=bodyRow:Add('DComboBox') self.BodygroupPreset:Dock(FILL) styleChoices(self.BodygroupPreset,s,f.Body)
  self.BodygroupPreset.OnSelect=function(_,_,_,data) self.bodygroupPreset=data end
  self.BodygroupPreset:SetTooltip(L'ui.tooltip.bodygroup_preset')
+ -- The ragdoll physics editor for every new spawn of this model (physics_editor.lua).
+ self.PhysicsEdit=button(actions,L'ui.character.ragdoll_physics',function() self:EditPhysics() end,s(30),f.Body)
+ self.PhysicsEdit:Dock(TOP) self.PhysicsEdit:DockMargin(0,0,0,s(6)) self.PhysicsEdit:SetTooltip(L'ui.tooltip.ragdoll_physics') self.PhysicsEdit:SetVisible(mmdhl.OpenModelPhysicsEditor~=nil)
  self.Frozen=checkbox(actions,L'ui.character.freeze','mmdhl_spawn_frozen',f.Body,s(28)) self.Frozen:Dock(TOP) self.Frozen:DockMargin(0,0,0,s(4))
  -- Health of new NPCs, from these buttons or the spawn menu; at 0 the label says the game's health is kept.
  self.NPCHealth=actions:Add('DNumSlider') self.NPCHealth:Dock(TOP) self.NPCHealth:SetTall(s(32)) self.NPCHealth:SetMinMax(0,mmdhl.MaxNPCHealth) self.NPCHealth:SetDecimals(0) self.NPCHealth:SetDark(true) self.NPCHealth.Label:SetFont(f.Body) self.NPCHealth:DockMargin(0,0,0,s(4))
@@ -743,6 +747,7 @@ function PANEL:EnableActions(enabled)
  local prop=enabled and self.mode=='static' and self.selected~=nil
  if IsValid(self.PropSpawn) then self.PropSpawn:SetEnabled(prop) self.PropTool:SetEnabled(prop) self.PropParts:SetEnabled(prop) end
  if IsValid(self.BodygroupEdit) then self.BodygroupEdit:SetEnabled(self.mode=='library' and self.selected~=nil) end
+ if IsValid(self.PhysicsEdit) then self.PhysicsEdit:SetEnabled(enabled and self.mode=='library' and self.selected~=nil) end
 end
 function PANEL:Place(role)
  if not self.selected or self.mode~='library' then self:SetStatus(L'ui.status.select_character_tab',true) return end
@@ -782,6 +787,10 @@ end
 function PANEL:EditBodygroups()
  if not self.selected or not library.entries[self.selected] then self:SetStatus(L'ui.status.select_character',true) return end
  mmdhl.OpenBodygroupEditor(self.selected,function() if IsValid(self) then self:RefreshBodygroupChoices(library.entries[self.selected]) end end)
+end
+function PANEL:EditPhysics()
+ if not self.selected or self.mode~='library' or not library.entries[self.selected] then self:SetStatus(L'ui.status.select_character',true) return end
+ if mmdhl.OpenModelPhysicsEditor then mmdhl.OpenModelPhysicsEditor(self.selected) end
 end
 function PANEL:RefreshBodygroupChoices(entry)
  local combo=self.BodygroupPreset if not IsValid(combo) then return end

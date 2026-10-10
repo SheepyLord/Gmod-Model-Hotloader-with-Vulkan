@@ -117,7 +117,9 @@ function mmdhl.Spawn(p,id,options,done,progress,flags)
   end
   local handle,err=native.CreateInstance(id,util.TableToJSON(options))
   if not handle then finish(nil,err) return end
-  local ent=ents.Create('mmdhl_ragdoll') ent:SetAsset(id) ent:SetInstance(handle) ent:SetFrozen(options.frozen or false)
+  -- NULL near the networked-edict limit: the instance made for it goes again.
+  local ent=ents.Create('mmdhl_ragdoll') if not IsValid(ent) then native.DestroyInstance(handle) finish(nil,L'server.error.native_ragdoll_failed') return end
+  ent:SetAsset(id) ent:SetInstance(handle) ent:SetFrozen(options.frozen or false)
   ent.MMDOptions=table.Copy(options) ent:SetPos(Vector(unpack(options.position))) ent:Spawn() ent:SetCreator(p)
   gamemode.Call('PlayerSpawnedRagdoll',p,ent:GetModel(),ent)
   undo.Create('mmdhl.undo.ragdoll') undo.AddEntity(ent) undo.SetPlayer(p) undo.Finish()
@@ -219,7 +221,8 @@ duplicator.RegisterEntityClass('mmdhl_ragdoll',function(p,data)
  end
  local options=table.Copy(entry.options or {}) options.center={data.Pos.x,data.Pos.y,data.Pos.z}
  local h,err=native.CreateInstance(entry.asset,util.TableToJSON(options)) if not h then notice(p,err) return end
- local ent=ents.Create('mmdhl_ragdoll') ent:SetAsset(entry.asset) ent:SetInstance(h) ent:SetFrozen(options.frozen or false) ent.MMDOptions=options ent:SetPos(data.Pos) ent:Spawn() ent:SetCreator(p)
+ local ent=ents.Create('mmdhl_ragdoll') if not IsValid(ent) then native.DestroyInstance(h) notice(p,L'server.error.native_ragdoll_failed') return end
+ ent:SetAsset(entry.asset) ent:SetInstance(h) ent:SetFrozen(options.frozen or false) ent.MMDOptions=options ent:SetPos(data.Pos) ent:Spawn() ent:SetCreator(p)
  if entry.state then native.SetState(h,util.TableToJSON(entry.state),data.Pos) ent:SetFrozen(entry.state.frozen or false) end
  ent.MMDAngles=entry.angles ent:SetNW2Float('MMDFlexScale',entry.flexScale or 1)
  p:AddCleanup('mmdhl',ent) mmdhl.simulationEnabled=true return ent

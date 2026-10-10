@@ -328,6 +328,21 @@ recognizes that layout (13 and 52 slots) and calls collision methods after slot 
 and physics-object methods after slot 43 one slot lower. Any other change in the
 middle of an interface cannot be recognized this way; it needs a native update.
 
+From 2.3.0 the measurement and its verdict are strict. A vtable runs to its last
+entry that is code of the library before the first entry that is no code at all, so
+a slot another module hooked (code elsewhere) inside the table no longer ends it: an
+early hook used to make the default branch's 147-entry table look shorter, and the
+unshifted slots of the x86-64 layout were called. Only the two known layouts (and a
+longer table, whose methods were appended) are accepted, for `VPhysics031` only
+together with the matching `VPhysicsCollision007` length; any other length is
+refused (`game_incompatible`: "Unrecognized materialsystem.dll interface layout (…
+vtable entries…)"), so the renderer falls back to Source's own and the physics
+bridge refuses, instead of calling slots that hold other functions. Each
+`IMaterialSystem` method the renderer calls by slot is also checked, at the
+running layout's slot, to be the material system's own code. Measured on
+2026-10-10: the x86-64 branch's `materialsystem.dll` 151 entries (shift 0), its
+`vphysics.dll` 17 and 59.
+
 Every build also passes the runtime checks before private calls or hooks: named
 factories and interface versions, and the ownership of each used vtable slot by
 the expected library (a slot another module replaced is refused). Physics

@@ -82,14 +82,16 @@ server = LuaRuntime(unpack_returned_tuples=True)
 server.execute(r'''
 SERVER=true CLIENT=false IN_ATTACK=1 angle_zero={}
 IsValid=function(v) return v~=nil and not v.removed end isstring=function(v) return type(v)=='string' end istable=function(v) return type(v)=='table' end
-isvector=function() return true end isangle=function() return true end
+isnumber=function(v) return type(v)=='number' end
 math.Clamp=function(v,low,high) return math.min(math.max(v,low),high) end
 local V={} V.__index=V
 function Vector(x,y,z) return setmetatable({x=x or 0,y=y or 0,z=z or 0},V) end
 V.__mul=function(a,s) return Vector(a.x*s,a.y*s,a.z*s) end
 V.__sub=function(a,b) return Vector(a.x-b.x,a.y-b.y,a.z-b.z) end
 function V:DistToSqr(o) return (self.x-o.x)^2+(self.y-o.y)^2+(self.z-o.z)^2 end
-Angle=function() return {} end
+local A={} A.__index=A
+Angle=function(p,y,r) return setmetatable({p=p or 0,y=y or 0,r=r or 0},A) end
+isvector=function(v) return getmetatable(v)==V end isangle=function(v) return getmetatable(v)==A end
 HOOKS={} hook={Add=function(event,name,f) HOOKS[event]=HOOKS[event] or {} HOOKS[event][name]=f end,Run=function() end}
 timer={Create=function() end,Simple=function() end} CurTime=function() return 0 end RealTime=CurTime
 properties={Add=function() end,List={}} gamemode={Call=function() end}
@@ -115,6 +117,7 @@ function E:SetAngles(a) self.ang=a end function E:GetAngles() return self.ang or
 for _,name in ipairs({'Spawn','Activate','SetModel','SetSolid','SetMoveType','EnableCustomCollisions','SetCollisionBounds','SetCreator','SetCollisionGroup',
  'FollowBone','SetParent','SetLocalPos','SetLocalAngles','SetNW2Int','SetNW2Vector','SetNW2Angle','DeleteOnRemove','RemoveEffects','SetNoDraw','SetTable'}) do E[name]=function() end end
 function E:Remove() self.removed=true end
+function E:SetParent(p) self.parent=p end function E:FollowBone(p) self.parent=p end function E:GetParent() return self.parent end
 function E:PhysicsInitMultiConvex() self.phys=physics() return true end
 function E:PhysicsDestroy() self.phys=nil end
 function E:GetPhysicsObject() return self.phys end
@@ -139,7 +142,12 @@ P.Load=function(id,cb) cb(P.Info[id]) end P.LoadNow=function(id) return P.Info[i
 P.ValidID=function(id) return isstring(id) and #id==64 end P.CanonicalScale=function(v) return v end P.CheckScale=function() return true end
 P.ScaleOf=function(ent) return ent:GetPropScale() end P.Vector=function(v) return Vector(v[1],v[2],v[3]) end
 P.SpawnPose=function() return Vector(),Angle() end P.Name=function(info) return info.name end P.SupportDistance=function() return 0 end
+P.MinScale,P.MaxScale=.01,100
 ''')
+
+shared = (root / 'addon/lua/mmdhl/props/shared.lua').read_text(encoding='utf-8')
+for header in ('function P.ValidScale(', 'function P.Finite(', 'function P.FiniteVector(', 'function P.FiniteAngle('):
+    server.execute('local P=mmdhl.props ' + definition(server, shared, header))
 server.execute((root / 'addon/lua/mmdhl/props/server.lua').read_text(encoding='utf-8'))
 server.execute('ENT={} AddCSLuaFile=function() end include=function() end')
 server.execute((root / 'addon/lua/entities/mmdhl_prop/init.lua').read_text(encoding='utf-8'))
@@ -205,3 +213,15 @@ models=panel('library') models:DeleteSelected() QUERIES[#QUERIES]()
 assert(CALLS[4]=='workshop character:'..id and models.status=='hidden')
 ''')
 print('PASS: deleting props and models from the library runs on both tabs, with and without the Workshop module')
+
+# --- Character Models: Ragdoll physics for all spawns… opens the model editor for the selected model.
+client.execute('local library,L=mmdhl.library,mmdhl.L ' + definition(client, ui, 'function PANEL:EditPhysics('))
+client.execute(r'''
+local id=string.rep('b',64) local opened
+mmdhl.OpenModelPhysicsEditor=function(asset) opened=asset end
+mmdhl.library.entries={[id]={id=id}}
+local models=panel('library') models.selected=id models:EditPhysics() assert(opened==id,'the model editor was not opened for the selected model')
+opened=nil local props=panel('static') props.selected=id props:EditPhysics() assert(opened==nil and props.statusError,'a prop opened the ragdoll physics editor')
+local none=panel('library') none:EditPhysics() assert(opened==nil and none.statusError,'nothing selected opened the editor')
+''')
+print('PASS: Ragdoll physics for all spawns… opens the editor for the selected character only')

@@ -14,6 +14,10 @@ On a server this game does not host, every client script comes from that server.
 
 Both realms: `RequestAsset(hash)` asynchronously verifies and parses a cached model. Poll `AssetInfo(hash)` until it returns a table or an error. Cache paths are `data/mmd_hotloader/assets/<hash>/` and `textures/<hash>.png`. Models, manifests and textures are checked before use. The parser rejects a model with a non-finite or out-of-range number (vertices, bones and IK, materials, morphs, rigid bodies, joints, soft bodies; VRM spring parameters) before anything is cached. A zero-length normal is replaced by its adjacent faces' normal, or by up when those are degenerate too. The asset hash includes the source and texture manifest, so an explicit reload can create a new revision without invalidating an existing live instance.
 
+Both realms (natives after 2.3.0): `StartAssetCheck(kind, hash) -> handle` checks off the main thread that cached files make up the model they name, as using it would (a `character` as `RequestAsset` loads it, a `static` prop's bundle as the prop loader decodes it), without keeping it loaded. `PollAssetCheck(handle)` returns `false` while it runs, then `true`, or `nil`, the reason and `"invalid"`. Workshop installs and server approvals wait for it. At most eight checks wait to be polled.
+
+`StartAddonPackageScan(gmaListJSON) -> handle` / `PollAddonPackageScan(handle)` (both realms) read which mounted GMAs hold model packages. Two scans run at a time and eight may wait to be polled; a finished result nobody polls is dropped a minute after the next scan sees it done, and closing the module stops the scans.
+
 Client preview: `CreatePreview(hash) -> handle`, `DrawPreview(handle, materialIndex, runtimeMaterialName, edgeShell)`, `ClearPreview()`. Preview physics lives in a separate frozen world and does not add server entities.
 
 ## Instances
@@ -44,7 +48,7 @@ Both realms can read `GetBoneTransform(instance,index)` (Source position and pit
 
 The entity owns one non-colliding Source physics handle (`SOLID_OBB` plus `TestCollision` against Bullet). It is automatically excluded from `CapturePhysics`, so it cannot collide with its own Bullet rig. This does not expose a Source ragdoll physics-bone array. Right-click freeze currently freezes the whole MMD instance.
 
-`SetMirror`, `RemoveMirror`, `TakeImpulses`, `ProbePhysics` and `Clear` are developer-level functions. Mirror geometry uses packed native float XYZ values in Source units. See `docs/ABI.md` for units and ownership. Never feed returned impulses back twice.
+`SetMirror`, `RemoveMirror`, `TakeImpulses`, `ProbePhysics` and `Clear` are developer-level functions. Mirror geometry uses packed native float XYZ values in Source units. `SetMirror` checks the whole description before Bullet sees any of it and refuses a malformed one with the mirrors unchanged: hull counts that are not whole numbers from 4 to 300,000 (at most 8,192 hulls) or do not fit the buffer, more than 12,000,000 triangle vertices, NaN or infinite numbers (or numbers beyond float range), a zero rotation quaternion, negative extents, mass or inertia. See `docs/ABI.md` for units and ownership. Never feed returned impulses back twice.
 
 ## Rendering
 

@@ -149,10 +149,13 @@ props::Json importProp(const mmd::fs::path& source,const mmd::fs::path& cache,co
     auto options=props::parseOptions(request);auto root=cache/L"static";
     PropProgress progress(status,mmd::utf8(source.filename().wstring()));
     props::Progress report{[&](const props::ProgressUpdate& event){progress.update(event);}};
-    auto asset=props::importModel(source,options,report);auto id=props::saveAsset(root,asset,report,options.limits);
+    auto asset=props::importModel(source,options,report);bool created=false;auto id=props::saveAsset(root,asset,report,options.limits,&created);
     // Local-only registry for Reimport. It is never shared with a server. A damaged one is set aside, not overwritten.
-    auto registryPath=root/L"sources.local.json";std::string setAside;auto registry=mmd::openSourceRegistry(registryPath,setAside);
-    registry[id]={{"source",mmd::utf8(mmd::fs::absolute(source).wstring())},{"options",request}};props::writeJson(registryPath,registry);
+    // The library lists the bundle: a failure here removes the one this import wrote.
+    auto registryPath=root/L"sources.local.json";std::string setAside;
+    try{auto registry=mmd::openSourceRegistry(registryPath,setAside);
+     registry[id]={{"source",mmd::utf8(mmd::fs::absolute(source).wstring())},{"options",request}};props::writeJson(registryPath,registry);}
+    catch(...){if(created){std::error_code ec;mmd::fs::remove(root/L"assets"/props::wide(id+".gmdl"),ec);}throw;}
     props::Json info={{"name",asset.manifest.value("name",std::string("Imported prop"))},{"warnings",asset.manifest.value("warnings",props::Json::array())},{"triangles",asset.indices.size()/3},{"vertices",asset.vertices.size()},
         {"materials",asset.manifest.at("materials").size()},{"collision_hulls",asset.hulls.size()},{"collision_method",asset.manifest.value("collision_method",std::string("coacd"))},{"format",asset.manifest.value("format",std::string())},{"mins",asset.manifest.at("mins")},{"maxs",asset.manifest.at("maxs")}};
     if(asset.manifest.contains("skeleton"))info["skeleton"]=asset.manifest["skeleton"];
@@ -170,6 +173,18 @@ props::Json listBlend(const mmd::fs::path& source,const props::Json& request,con
     return progress.complete({{"state","complete"},{"kind","blend_scene"},{"progress",1},{"stage","Choose objects"},{"scene",scene},{"options",request}});
 }
 }
+// The code points of valid UTF-8, or nothing for invalid bytes (overlong forms, surrogates).
+static std::optional<size_t> codePoints(std::string_view s){
+    size_t count=0;
+    for(size_t i=0;i<s.size();count++){
+        auto c=static_cast<unsigned char>(s[i]);size_t n=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:(c>>3)==30?4:0;
+        if(!n||i+n>s.size())return std::nullopt;uint32_t v=n==1?c:c&(0x7f>>n);
+        for(size_t k=1;k<n;k++){auto t=static_cast<unsigned char>(s[i+k]);if((t>>6)!=2)return std::nullopt;v=v<<6|(t&0x3f);}
+        if((n==2&&v<0x80)||(n==3&&v<0x800)||(n==4&&(v<0x10000||v>0x10ffff))||(v>=0xd800&&v<=0xdfff))return std::nullopt;
+        i+=n;
+    }
+    return count;
+}
 // Part presets: a new content-addressed prop cut from an imported one by
 // material and/or a region box (triangles whose centre lies inside), with its
 // own collision. The parent bundle is never modified.
@@ -177,12 +192,15 @@ props::Json deriveProp(const mmd::fs::path& cache,const props::Json& request,con
     using props::Json;using props::Vec;
     auto root=cache/L"static";auto parent=request.value("parent",std::string());auto presetName=request.value("name",std::string("Preset"));
     if(!props::validHash(parent))throw std::runtime_error("Invalid original prop");
-    if(presetName.empty()||presetName.size()>120)throw std::runtime_error("Choose a preset name of up to 120 characters");
+    // The editor keeps 60 characters (code points, as Lua's utf8.sub counts them), whatever their bytes.
+    auto characters=codePoints(presetName);if(presetName.empty()||!characters||*characters>60)throw std::runtime_error("Choose a preset name of up to 60 characters");
     PropProgress progress(status,presetName);
     props::Progress report{[&](const props::ProgressUpdate& event){progress.update(event);}};
     report("Reading the original prop",.05f);
     auto a=props::loadAsset(root,parent);
-    std::set<size_t> hidden;for(auto& v:request.value("hidden",Json::array()))if(v.is_number_unsigned())hidden.insert(v.get<size_t>());
+    // Material slots to leave out. util.TableToJSON writes Lua's whole numbers as 1.0.
+    auto hiddenSlots=request.value("hidden",Json::array());if(!hiddenSlots.is_array())throw std::runtime_error("Invalid hidden materials");
+    std::set<size_t> hidden;for(auto& v:hiddenSlots){auto slot=mmd::wholeNumber(v,0,65535);if(!slot)throw std::runtime_error("Invalid hidden material slot");hidden.insert(size_t(*slot));}
     bool useBox=request.contains("box")&&request["box"].is_object();Vec lo{},hi{};
     if(useBox){lo=request["box"].at("min").get<Vec>();hi=request["box"].at("max").get<Vec>();if(lo.x>hi.x||lo.y>hi.y||lo.z>hi.z)throw std::runtime_error("The region box is inverted");}
     report("Selecting parts",.2f);

@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include "jobs.hpp"
 #include "prop_bindings.hpp"
+#include "props/core.hpp"
 #include "physics_profile.hpp"
 #include "import_error.hpp"
 #include "file_access.hpp"
@@ -53,7 +54,9 @@ static unsigned long GetCurrentProcessId(){return static_cast<unsigned long>(get
 struct SharedTransfer{fs::path staging;std::string relative,digest;uint64_t size=0,rawSize=0,written=0;bool packed=false;std::atomic_bool canceled=false;std::ofstream stream;~SharedTransfer(){stream.close();std::error_code error;fs::remove(staging,error);}};
 struct SharedExport{fs::path path;std::future<fs::path> preparing;bool discarded=false;};
 struct PackageJob{std::shared_ptr<PackageProgress> progress;std::future<Json> future;Json result;bool finished=false;};
-struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,std::future<Json>> addonScans;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;std::unique_ptr<PickedModels> picked;};
+// finished: when a poll or a later start first saw the scan done (GetTickCount64).
+struct AddonScan{std::future<Json> future;std::shared_ptr<std::atomic_bool> cancel;uint64_t finished=0;};
+struct Context{std::map<uint64_t,PackageJob> packages;std::map<uint64_t,AddonScan> addonScans;std::map<uint64_t,std::future<void>> assetChecks;fs::path root;SceneShare sceneShare;std::map<uint64_t,SharedExport> exports;std::map<uint64_t,std::future<bool>> commits;std::map<uint64_t,std::shared_ptr<SharedTransfer>> transfers;std::unique_ptr<World> runtime=std::make_unique<World>();fs::path bin,cache;uint64_t sequence=1;std::map<uint64_t,Job> jobs;std::map<std::string,std::shared_ptr<Model>> assets;std::map<std::string,std::future<std::shared_ptr<Model>>> loading;std::map<std::string,std::future<Rig>> fitting;std::map<std::string,Rig> fitted;PreviewQueue previews;std::unique_ptr<World> preview;std::map<uint64_t,std::unique_ptr<World>> editors;std::unique_ptr<FileAccess> files;std::unique_ptr<PickedModels> picked;};
 std::unique_ptr<Context> context;
 std::future<Json> installationProbe;
 void pruneSharedWork(){
@@ -232,6 +235,27 @@ j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} EN
 FUNCTION(RequestAsset) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid asset ID");if(!fs::exists(context->cache/L"assets"/wide(id)/L"manifest.json"))throw std::runtime_error("Model was deleted; import it again");if(!context->assets.contains(id)&&!context->loading.contains(id)){auto cache=context->cache;context->loading[id]=std::async(std::launch::async,[cache,id]{return loadAsset(cache,id);});}LUA->PushBool(true);return 1;} END_FUNCTION
 std::shared_ptr<Model> asset(const std::string& id){if(context->assets.contains(id))return context->assets.at(id);auto it=context->loading.find(id);if(it!=context->loading.end()&&it->second.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto pending=std::move(it->second);context->loading.erase(it);auto m=pending.get();for(auto old=context->assets.begin();old!=context->assets.end()&&context->assets.size()>=8;)if(old->second.use_count()==1)old=context->assets.erase(old);else ++old;context->assets[id]=m;return m;}return {};}
 FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}push(LUA,m->info());return 1;} END_FUNCTION
+// A Workshop item's files all match their hashes; whether they make up the model the package
+// names is checked as using it would: a character as loadAsset reads it (manifest version and
+// identity, model and texture checksums, the model itself), a prop's bundle as decode reads it.
+// Installing records an item, and a server approves it, only once this passed (workshop.lua).
+FUNCTION(StartAssetCheck) {
+ auto kind=stringArg(LUA,1),id=stringArg(LUA,2);if(!validId(id)||(kind!="character"&&kind!="static"))throw std::runtime_error("Invalid asset check");
+ if(context->assetChecks.size()>=8)throw std::runtime_error("Earlier asset checks are still running or waiting to be polled");
+ auto cache=context->cache;auto handle=context->sequence++;
+ context->assetChecks.emplace(handle,std::async(std::launch::async,[cache,kind,id]{
+  if(kind=="character"){loadAsset(cache,id);return;}
+  auto bundle=props::decode(props::readFile(cache/L"static"/L"assets"/wide(id+".gmdl")));if(bundle.id!=id)throw std::runtime_error("Prop SHA-256 mismatch");}));
+ LUA->PushNumber(double(handle));return 1;
+} END_FUNCTION
+// false while the check runs, then true, or nil, why the files do not make up the model and "invalid".
+FUNCTION(PollAssetCheck) {
+ auto it=context->assetChecks.find(number(LUA,1));if(it==context->assetChecks.end())throw std::runtime_error("Unknown asset check");
+ if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready){LUA->PushBool(false);return 1;}
+ auto check=std::move(it->second);context->assetChecks.erase(it);
+ try{check.get();}catch(const std::exception& e){LUA->PushNil();LUA->PushString(e.what());LUA->PushString("invalid");return 3;}
+ LUA->PushBool(true);return 1;
+} END_FUNCTION
 // The physics editor's exact preview, in both realms: the carrier a build with
 // these options would produce (shapes, masses, overlaps, .phy text), without
 // writing anything. A cached fit answers at once; a refit runs off-thread and
@@ -371,16 +395,28 @@ FUNCTION(RevealPackageExport) {
  #endif
 } END_FUNCTION
 #endif
-// Which mounted GMAs contain which package manifests (engine.GetAddons() file paths).
+// Which mounted GMAs contain which package manifests (engine.GetAddons() file paths). Scans an
+// addon starts and never polls must not pile up: two run at a time, eight wait at most, and a
+// result nobody collected a minute after it was done is dropped.
 FUNCTION(StartAddonPackageScan) {
  auto files=json(LUA,1);if(!files.is_array()||files.size()>100000)throw std::runtime_error("Invalid addon list");
- auto root=context->root;auto id=context->sequence++;
- context->addonScans.emplace(id,std::async(std::launch::async,[root,files]{return readAddonPackages(root,files);}));LUA->PushNumber(double(id));return 1;
+ auto now=GetTickCount64();size_t running=0;
+ for(auto it=context->addonScans.begin();it!=context->addonScans.end();){
+  auto& scan=it->second;
+  if(scan.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)running++;
+  else if(!scan.finished)scan.finished=now;
+  else if(now-scan.finished>60000){it=context->addonScans.erase(it);continue;}
+  ++it;
+ }
+ if(running>=2||context->addonScans.size()>=8)throw std::runtime_error("Earlier addon scans are still running or waiting to be polled");
+ auto root=context->root;auto id=context->sequence++;auto cancel=std::make_shared<std::atomic_bool>(false);
+ context->addonScans.emplace(id,AddonScan{std::async(std::launch::async,[root,files,cancel]{return readAddonPackages(root,files,cancel.get());}),cancel});
+ LUA->PushNumber(double(id));return 1;
 } END_FUNCTION
 FUNCTION(PollAddonPackageScan) {
  auto it=context->addonScans.find(number(LUA,1));if(it==context->addonScans.end())throw std::runtime_error("Unknown addon scan");
- if(it->second.wait_for(std::chrono::seconds(0))!=std::future_status::ready){LUA->PushBool(false);return 1;}
- auto result=it->second.get();context->addonScans.erase(it);push(LUA,result);return 1;
+ if(it->second.future.wait_for(std::chrono::seconds(0))!=std::future_status::ready){LUA->PushBool(false);return 1;}
+ auto result=it->second.future.get();context->addonScans.erase(it);push(LUA,result);return 1;
 } END_FUNCTION
 FUNCTION(RebindSourceEntity) {auto& p=world().get(number(LUA,1));if(p.secondary)p.secondary->waitAsyncIdle();p.sceneOwner=number(LUA,2);LUA->PushBool(true);return 1;} END_FUNCTION
 // Seven numbers (minimum xyz, maximum xyz, sequence) or nil: the per-frame render path decodes no JSON.
@@ -399,7 +435,7 @@ FUNCTION(SetState) {requireServer();auto& p=world().get(number(LUA,1));auto j=js
 FUNCTION(GetSecondaryCapabilities) {push(LUA,{{"reference",true},{"cpu_mt",true},{"cpu_mt_v2",true},{"gpu_opencl",openclCapabilities()},{"gpu_vulkan",vulkanCapabilities()},{"sleep",Secondary::sleepPolicy()},{"tuning",Secondary::tuning()},{"workers",workerCount()},{"waitBudgetMs",Secondary::asyncWaitBudget()}});return 1;} END_FUNCTION
 FUNCTION(GetSecondaryBackend) {auto& p=world().get(number(LUA,1));if(!p.secondary)throw std::runtime_error("This entity has no secondary physics");auto d=p.secondary->diagnostics(false);push(LUA,{{"requested",d["secondaryBackendRequested"]},{"effective",d["secondaryBackend"]},{"reason",d["secondaryBackendFallback"]},{"compute",d.value("compute",Json::object())}});return 1;} END_FUNCTION
 FUNCTION(SetVulkanSolverOrdering) {auto order=stringArg(LUA,1);if(order!="colored"&&order!="ordered")throw std::runtime_error("Ordering must be colored or ordered");setVulkanColoring(order=="colored");LUA->PushBool(true);return 1;} END_FUNCTION
-FUNCTION(SetSecondaryBackend) {auto& p=world().get(number(LUA,1));if(!p.secondary)throw std::runtime_error("This entity has no secondary physics");auto backend=stringArg(LUA,2);if(backend!="reference"&&backend!="cpu_mt"&&backend!="gpu_opencl"&&backend!="cpu_mt_v2"&&backend!="gpu_vulkan")throw std::runtime_error("Unknown secondary backend");if(backend!=p.secondaryBackend){auto previous=p.secondaryBackend;p.secondaryBackend=backend;try{p.reset();}catch(...){p.secondaryBackend=previous;p.reset();throw;}p.secondary->resetReason="backend_change";}LUA->PushBool(true);return 1;} END_FUNCTION
+FUNCTION(SetSecondaryBackend) {world().get(number(LUA,1)).setSecondaryBackend(stringArg(LUA,2));LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(SetSecondaryCollisionMode) {auto& p=world().get(number(LUA,1));if(!p.secondary)throw std::runtime_error("Secondary collision modes require a native ragdoll");p.secondary->setCollisionMode(int(number(LUA,2)));return 0;} END_FUNCTION
 // Collide:: flags (2.2); SetSecondaryCollisionMode keeps the earlier levels.
 FUNCTION(SetSecondaryCollisionFlags) {auto& p=world().get(number(LUA,1));if(!p.secondary)throw std::runtime_error("Secondary collision modes require a native ragdoll");double flags=number(LUA,2);if(flags!=std::floor(flags)||flags<0||flags>Collide::All)throw std::runtime_error("Invalid secondary collision flags");p.secondary->setCollisionFlags(unsigned(flags));return 0;} END_FUNCTION
@@ -683,7 +719,7 @@ GMOD_MODULE_OPEN(){
         REGISTER(StartInstallationProbe);REGISTER(PollInstallationProbe);REGISTER(StartPackageExport);REGISTER(PollPackageExport);REGISTER(CancelPackageExport);REGISTER(RevealPackageExport);REGISTER(InspectModelNotes);
 #endif
         REGISTER(GetMountablePackage);REGISTER(StartAddonPackageScan);REGISTER(PollAddonPackageScan);
-        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(AssetInfo);REGISTER(InspectBoneMap);REGISTER(GetBoneMapProposal);REGISTER(PreviewCarrierFit);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
+        REGISTER(ExportSecondaryScene);REGISTER(ReadSceneChunk);REGISTER(AcceptSceneGeometry);REGISTER(PublishRemoteScene);REGISTER(ClearRemoteScene);REGISTER(StartSharedMaterialBuild);REGISTER(StartSharedExport);REGISTER(GetSharedExportSize);REGISTER(ReadSharedExport);REGISTER(ReleaseSharedExport);REGISTER(PollSharedCommit);REGISTER(GetSharedManifest);REGISTER(SharedFileMatches);REGISTER(ReadSharedChunk);REGISTER(BeginSharedFile);REGISTER(AppendSharedChunk);REGISTER(CommitSharedFile);REGISTER(CancelSharedFile);REGISTER(ForgetAssets);REGISTER(GetCapabilities);REGISTER(Browse);REGISTER(BeginImport);REGISTER(Reload);REGISTER(PollJob);REGISTER(CancelJob);REGISTER(RequestAsset);REGISTER(StartAssetCheck);REGISTER(PollAssetCheck);REGISTER(AssetInfo);REGISTER(InspectBoneMap);REGISTER(GetBoneMapProposal);REGISTER(PreviewCarrierFit);REGISTER(CreateInstance);REGISTER(DestroyInstance);REGISTER(GetDiagnostics);REGISTER(SetMaterialVisibility);REGISTER(SetSecondaryCollisionMode);REGISTER(SetSecondaryCollisionFlags);REGISTER(GetSecondaryCapabilities);REGISTER(GetSecondaryBackend);REGISTER(SetSecondaryBackend);REGISTER(SetVulkanSolverOrdering);REGISTER(Step);REGISTER(ResetPhysics);REGISTER(SetFrozen);REGISTER(SetMorph);REGISTER(SetBonePose);REGISTER(SetMirror);REGISTER(RemoveMirror);REGISTER(TakeImpulses);REGISTER(Raycast);REGISTER(BeginPhysgun);REGISTER(UpdatePhysgun);REGISTER(GetBoneTransform);REGISTER(GetMorphWeights);REGISTER(BeginGrab);REGISTER(UpdateGrab);REGISTER(EndGrab);REGISTER(Clear);
         REGISTER(RebindSourceEntity);REGISTER(GetBounds);REGISTER(GetBoundsValues);REGISTER(GetState);REGISTER(SetState);REGISTER(SubmitSourcePose);REGISTER(StepSources);REGISTER(SetMorphs);REGISTER(GetMaterialState);
 #ifdef MMDHL_SERVER
         REGISTER(ReadAnimationModel);REGISTER(ProbePhysics);REGISTER(ProbeCarrierCollisions);REGISTER(CapturePhysics);REGISTER(CaptureSecondaryScene);REGISTER(SceneInterest);REGISTER(PrepareCarrier);REGISTER(RequestCarrierFit);
@@ -714,9 +750,9 @@ if(context){
  {WorldScope realm(context->runtime.get());clearPhysicsBridge();}
 #endif
  #ifdef _WIN32
- for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,scan]:context->addonScans)*scan.cancel=true;for(auto& [id,j]:context->jobs){if(j.group){TerminateJobObject(j.group,1);CloseHandle(j.group);}if(j.process)CloseHandle(j.process);}context.reset();
  #else
- for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,j]:context->jobs)j.child.kill();context.reset();
+ for(auto& [id,job]:context->packages)job.progress->cancel=true;for(auto& [id,scan]:context->addonScans)*scan.cancel=true;for(auto& [id,j]:context->jobs)j.child.kill();context.reset();
  #endif
 releaseRuntimeRealm(ServerRealm);}
 return 0;}

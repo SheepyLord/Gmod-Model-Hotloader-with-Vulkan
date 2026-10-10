@@ -201,9 +201,10 @@ static std::string normalizeTexture(const Bytes& bytes,const std::string& name,c
     if(!stbi_write_png_to_func(callback,&png,width,height,4,pixels,width*4))throw std::runtime_error("Texture encoding failed");auto id=hash(png);auto path=cache/L"textures"/wide(id+".png");if(!fs::exists(path))writeAtomic(path,png);return id;
 }
 // Source-readable derivatives allow normal IMaterial/VMT editor workflows.
-void prepareSourceMaterials(const fs::path& cache,const std::string& id){
+void prepareSourceMaterials(const fs::path& cache,const std::string& id){prepareSourceMaterials(cache,id,readJson(cache/L"assets"/wide(id)/L"manifest.json"));}
+void prepareSourceMaterials(const fs::path& cache,const std::string& id,const Json& manifest){
  auto directory=cache/L"assets"/wide(id),package=directory/L"materials-v5.gma";
- auto manifest=readJson(directory/L"manifest.json");registerShortName(cache,"assets",id);
+ registerShortName(cache,"assets",id);
  std::vector<fs::path> retained={fs::path(L"assets")/wide(id)};
  for(auto& t:manifest["textures"])for(auto kind:{"base","sphere","toon"}){auto h=t.value(kind,"");if(validId(h))for(auto ext:{".png",".vtf"})retained.push_back(fs::path(L"textures")/wide(h+ext));}
  retainCacheFiles(cache,retained);if(fs::is_regular_file(package))return;
@@ -328,11 +329,22 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     }
     report("Saving to the cache","cache",.9f);
     manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
-    auto directory=cache/L"assets"/wide(id);writeAtomic(directory/L"model.bin",raw);writeJson(directory/L"manifest.json",manifest);
-    // A damaged registry (Reload's source paths) must not block every import: it is set aside and a new one starts.
-    auto registryPath=cache/L"sources.local.json";std::string setAside;Json registry=openSourceRegistry(registryPath,setAside);
-    registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
-    model->id=id;report("Preparing Source materials","materials",.91f);prepareSourceMaterials(cache,id);report("Fitting native collision anatomy","fit",.94f);auto fit=prepareModelFit(*model,cache);
+    // The library lists a model by its manifest: written last, once every other step worked, so a
+    // failed import leaves nothing to list. What this import created before failing goes again.
+    auto directory=cache/L"assets"/wide(id);std::error_code exists;const bool fresh=!fs::exists(ioPath(directory/L"manifest.json"),exists);
+    std::string setAside;Json fit;
+    try{
+     writeAtomic(directory/L"model.bin",raw);
+     model->id=id;report("Preparing Source materials","materials",.91f);prepareSourceMaterials(cache,id,manifest);
+     // A damaged registry (Reload's source paths) must not block every import: it is set aside and a new one starts.
+     auto registryPath=cache/L"sources.local.json";Json registry=openSourceRegistry(registryPath,setAside);
+     registry[id]={{"source",utf8(fs::absolute(source).wstring())},{"options",options}};writeJson(registryPath,registry);
+     report("Fitting native collision anatomy","fit",.94f);fit=prepareModelFit(*model,cache);
+     writeJson(directory/L"manifest.json",manifest);
+    }catch(...){
+     if(fresh){std::error_code ec;fs::remove(ioPath(directory/L"manifest.json"),ec);fs::remove(ioPath(directory/L"materials-v5.gma"),ec);fs::remove(ioPath(directory/L"model.bin"),ec);fs::remove(ioPath(directory),ec);}
+     throw;
+    }
     // The fit stays outside the manifest (and so outside the asset's identity). A failed
     // one carries its facts as errorDetails too, like any import failure (the Lua reads either).
     if(!fit.value("ok",true)&&!fit.contains("errorDetails"))fit["errorDetails"]={{"missing",fit.value("missing",Json::array())}};

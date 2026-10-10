@@ -99,6 +99,17 @@ end
 local function accept(p,token,manifest)
  if not istable(manifest) or manifest.transport~=2 then return false,L'share.error.version_mismatch' end
  if manifest.version~=1 or not isstring(manifest.asset) or #manifest.asset~=64 or manifest.asset:find('[^a-f0-9]') or not istable(manifest.files) or #manifest.files>65535 then return false,L'share.error.invalid_manifest' end
+ -- The file list is a list of records: anything else (a number, holes, extra keys) is refused
+ -- before a field is read, and the transfer works on clean copies of them.
+ local count=0 for _ in pairs(manifest.files) do count=count+1 end
+ if count~=#manifest.files then return false,L'share.error.invalid_manifest' end
+ local files={}
+ for i=1,count do
+  local item=manifest.files[i]
+  if not istable(item) or (item.derive~=nil and not isstring(item.derive)) then return false,L'share.error.invalid_file_metadata' end
+  files[i]={path=item.path,size=item.size,sha256=item.sha256,derive=item.derive}
+ end
+ manifest.files=files manifest.name=isstring(manifest.name) and manifest.name or manifest.asset:sub(1,12)
  if manifest.kind=='static' then
   local item=manifest.files[1]
   if #manifest.files~=1 or not istable(item) or item.path~='static/assets/'..manifest.asset..'.gmdl' or item.sha256~=manifest.asset or not isnumber(item.size) or item.size<24 or item.size>268435456 or item.size%1~=0 or item.derive then return false,L'share.error.invalid_prop_manifest' end

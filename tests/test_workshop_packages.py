@@ -499,3 +499,40 @@ for k in [k for k in G.FS.keys() if k.startswith('DATA|mmd_hotloader/')]: del G.
 new_session(); W.Scan(); run()
 installed_fits()
 print('PASS: dedicated servers and clients install fits that hold only bone pins or only physics')
+
+# --- Natives after 2.3.0 check the assembled model (StartAssetCheck: its manifest's identity, the
+# checksums, the model itself) before it counts as installed, and a server approves only what passed:
+# files whose hashes all match can still make up another model than the package names.
+lua.execute('''
+file.Delete=function(path,id) FS[(id or 'DATA')..'|'..path]=nil end
+CHECKS={} VERDICT={}
+native.StartAssetCheck=function(kind,id) CHECKS[#CHECKS+1]=kind..':'..id return #CHECKS end
+native.PollAssetCheck=function(h) local v=VERDICT[CHECKS[h]:match(':(%x+)$')] if v==nil then return false end if v==true then return true end return nil,v,'invalid' end
+function INSTALLED(key) local r=mmdhl.workshop.state.assets[key] return r~=nil and r.installed==true end
+''')
+# The pins pack shares the character's files: mount the Anime Pack again after removing it.
+unmount(pins_pkg); mount(workshop_pkg, 'Anime Pack', ['GAME', 'Anime Pack'])
+for k in [k for k in G.FS.keys() if k.startswith('DATA|mmd_hotloader/')]: del G.FS[k]
+G.ADDONS = to_lua([{'title': 'Anime Pack', 'wsid': '123456', 'mounted': True, 'file': 'x.gma'}])
+manifest_key = f'DATA|mmd_hotloader/assets/{character}/manifest.json'
+new_session(); W.Scan(); run()
+assert manifest_key in G.FS and not G.INSTALLED('character:' + character), ('a model counted as installed before its check', list(G.CHECKS.values()))
+G.VERDICT[character] = 'Cache version or ID mismatch'; run()
+assert not G.INSTALLED('character:' + character) and manifest_key not in G.FS, 'an incoherent model was installed or left for the library to list'
+assert 'Cache version or ID mismatch' in W.failures['character:' + character]
+G.VERDICT[character] = True; W.Scan(); run()
+assert G.INSTALLED('character:' + character) and manifest_key in G.FS and W.checked['character:' + character], 'a valid model was not installed'
+# A dedicated server approves a model installed in an earlier session once it passed the check.
+lua.execute('''
+CLIENT=false SERVER=true SINGLE=false DEDICATED=true APPROVED={}
+mmdhl.approved={assets={},props={}}
+mmdhl.ApproveWorkshopAsset=function(id,name,package) APPROVED[#APPROVED+1]=id end
+''')
+G.VERDICT[character] = None; new_session(); W.Scan(); run()
+assert len(G.APPROVED) == 0, 'a server approved a model before its check'
+G.VERDICT[character] = 'Cached model checksum mismatch'; run()
+assert len(G.APPROVED) == 0 and 'checksum' in W.failures['character:' + character], 'a server approved an incoherent model'
+G.VERDICT[character] = True; new_session(); W.Scan(); run()
+assert list(G.APPROVED.values()) == [character], 'a server did not approve a valid model'
+lua.execute('CLIENT=true SERVER=false SINGLE=true DEDICATED=false native.StartAssetCheck=nil native.PollAssetCheck=nil')
+print('PASS: a Workshop model counts as installed, and is approved, only once its assembled files load as that model')

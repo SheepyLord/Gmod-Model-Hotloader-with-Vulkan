@@ -4,8 +4,11 @@ local L=mmdhl.L
 local function capture(ent)
  local pose={} for _,morph in ipairs(mmdhl.GetMorphs(ent)) do pose[morph.name]=mmdhl.GetMorphWeight(ent,morph.mmd) end return pose
 end
+-- pose: morph name -> weight. A value that is no finite number (a damaged preset) counts as 0;
+-- names this model does not have are ignored.
 local function apply(ent,pose)
- local weights={} for i,morph in ipairs(mmdhl.GetMorphs(ent)) do local value=pose[morph.name] or 0 weights[i]=value
+ if not istable(pose) then return false end
+ local weights={} for i,morph in ipairs(mmdhl.GetMorphs(ent)) do local value=pose[morph.name] if not (isnumber(value) and value==value and math.abs(value)~=math.huge) then value=0 end weights[i]=value
   if CLIENT and morph.native>=0 then RunConsoleCommand('faceposer_flex'..morph.native,tostring(value)) end
  end
  mmdhl.SetMorphWeights(ent,weights)
@@ -47,7 +50,8 @@ local function install()
   local preset=vgui.Create('DTextEntry',panel) preset:SetPlaceholderText(L'faceposer.preset_name') panel:AddItem(preset)
   local function path() local name=preset:GetValue():gsub('[^%w_-]',''):sub(1,64) if name=='' then return end return 'mmd_hotloader/face_presets/'..name..'.json' end
   button(L'faceposer.save',function() local p=path() if p then file.CreateDir('mmd_hotloader/face_presets') file.Write(p,util.TableToJSON({version=1,morphs=capture(ent)},true)) end end)
-  button(L'faceposer.load',function() local p=path() local saved=p and util.JSONToTable(file.Read(p,'DATA') or '') if saved and saved.version==1 then apply(ent,saved.morphs) end end)
+  button(L'faceposer.load',function() local p=path() local saved=p and util.JSONToTable(file.Read(p,'DATA') or '')
+   if istable(saved) and saved.version==1 and istable(saved.morphs) then apply(ent,saved.morphs) elseif saved~=nil then notification.AddLegacy(L'faceposer.preset_damaged',NOTIFY_ERROR,5) end end)
   local overflow=0 for _,m in ipairs(rig.morphs) do if m.native<0 then overflow=overflow+1 end end
   if overflow==0 then return end
   panel.MMDOverflowCount=overflow panel.MMDOverflowControls={}

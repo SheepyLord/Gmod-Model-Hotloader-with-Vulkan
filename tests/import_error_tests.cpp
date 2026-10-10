@@ -251,7 +251,13 @@ int main(int argc,char** argv){try{
   auto base=result["info"]["textures"][textured].value("base","");auto vtf=temp/L"cache2"/L"textures"/wide(base+".vtf");check(!base.empty()&&fs::is_regular_file(vtf),"the texture has its Source derivative");
   writeAtomic(vtf,bytes("not a vtf"));fs::remove(temp/L"cache2"/L"assets"/wide(id)/L"materials-v5.gma");
   auto e=failure([&]{prepareSourceMaterials(temp/L"cache2",id);},"damaged vtf");
-  check(e.code=="texture.derivative"&&e.details.value("path","")==utf8(vtf.wstring())&&placed(e.details["where"],"material",int64_t(textured),result["info"]["materials"][textured].value("name","")),"a damaged cached texture names the material and the file's path");}
+  check(e.code=="texture.derivative"&&e.details.value("path","")==utf8(vtf.wstring())&&placed(e.details["where"],"material",int64_t(textured),result["info"]["materials"][textured].value("name","")),"a damaged cached texture names the material and the file's path");
+  // An import that fails after its model data is written leaves nothing for the library to list: the
+  // manifest is written last, and what the import wrote goes again.
+  auto rollback=temp/L"cache-rollback";fs::create_directories(rollback/L"textures");writeAtomic(rollback/L"textures"/wide(base+".vtf"),bytes("not a vtf"));
+  e=failure([&]{importAsset(folder/L"model.pmx",rollback,Json::object(),{});},"import over a damaged derivative");
+  check(e.code=="texture.derivative"&&!fs::exists(rollback/L"assets"/wide(id)/L"manifest.json")&&!fs::exists(rollback/L"assets"/wide(id)),"a failed import leaves no catalog entry and removes the model data it wrote");
+  auto registry=rollback/L"sources.local.json";check(!fs::exists(registry)||!readJson(registry).contains(id),"a failed import records no source to reload");}
 
  // ---- a PMX character's textures (dependency_scope.hpp, Reach::Local) ----
  // As in 2.2 a texture may climb out of the model's folder or lie behind a junction (artists'
@@ -313,7 +319,29 @@ int main(int argc,char** argv){try{
   auto code=run(worker,{L"--crash-test",crash.wstring(),L"access"});auto log=readFile(crash/L"worker.log");std::string text(log.begin(),log.end());
   check(code==AccessExit&&has(text,AccessLog)&&has(text,"during stage test"),"worker: an access violation ends with its exception code and one log line");
   code=run(worker,{L"--crash-test",crash.wstring(),L"terminate"});log=readFile(crash/L"worker.log");text.assign(log.begin(),log.end());
-  check(code==TerminateExit&&has(text,"std::terminate during stage test"),"worker: std::terminate exits with 3 and logs");}
+  check(code==TerminateExit&&has(text,"std::terminate during stage test"),"worker: std::terminate exits with 3 and logs");
+  // ---- part presets (props/editor.lua) as GLua sends them ----
+  // util.TableToJSON writes hidden material slots as 0.0; the editor keeps 60 characters of a name,
+  // whatever their bytes (41 CJK characters are 123 bytes, 31 emoji 124).
+  auto cube=temp/L"cube";fs::create_directories(cube);
+  writeAtomic(cube/L"cube.mtl",bytes("newmtl Front\nKd 1 0 0\nnewmtl Rest\nKd 0 0 1\n"));
+  writeAtomic(cube/L"cube.obj",bytes("mtllib cube.mtl\nv -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\n"
+   "usemtl Front\nf 1 2 3\nf 1 3 4\nusemtl Rest\nf 5 7 6\nf 5 8 7\nf 1 5 6\nf 1 6 2\nf 2 6 7\nf 2 7 3\nf 3 7 8\nf 3 8 4\nf 4 8 5\nf 4 5 1\n"));
+  r=request(worker,temp/L"job5",cube/L"cube.obj",{{"kind","static"}});auto parent=r.status.value("asset",std::string());
+  check(r.status["state"]=="complete"&&r.status["info"]["triangles"]==12&&r.status["info"].value("materials",0)>=2,"worker: the two-material cube imports as a static prop");
+  auto derive=[&](const wchar_t* job,const std::string& name,const std::string& hidden){
+   auto options=Json::parse("{\"kind\":\"derive\",\"parent\":\""+parent+"\",\"name\":\""+name+"\",\"hidden\":"+hidden+",\"collision\":\"hull\"}");
+   return request(worker,temp/job,cube/L"cube.obj",options);};
+  std::string cjk;for(int i=0;i<41;i++)cjk+="\xe9\xab\xaa";std::string emoji;for(int i=0;i<31;i++)emoji+="\xf0\x9f\x98\x80";
+  // Assimp may add a default slot. Every triangle is in one slot: hiding each slot in turn keeps
+  // 12 x (slots - 1) triangles over all presets (36 when the floats are ignored).
+  int slots=r.status["info"].value("materials",0),total=0,fewest=12;bool taken=true;std::string all;
+  for(int k=0;k<slots;k++){r=derive((L"hide"+std::to_wstring(k)).c_str(),k%2?emoji:cjk,"["+std::to_string(k)+".0]");taken&=r.status["state"]=="complete";
+   auto kept=r.status["info"].value("triangles",0);total+=kept;fewest=std::min(fewest,kept);all+=(k?",":"")+std::to_string(k)+".0";}
+  check(taken&&total==12*(slots-1)&&fewest<12,"worker: slots hidden as GLua floats (0.0, 1.0…) leave the presets; 41 CJK characters and 31 emoji are names within 60 characters");
+  r=derive(L"long",std::string(61,'n'),"[]");check(r.status["state"]=="failed"&&has(r.status["error"],"60 characters"),"worker: a preset name over 60 characters is refused");
+  r=derive(L"half","Bad","[0.5]");check(r.status["state"]=="failed","worker: a hidden slot that is no whole number is refused, not ignored");
+  r=derive(L"every","All","["+all+"]");check(r.status["state"]=="failed"&&has(r.status["error"],"keeps no geometry"),"worker: hiding every slot as GLua floats reaches the no-geometry guard");}
  else std::cout<<"SKIP worker checks: pass the path of mmdhl_worker.exe\n";
  std::error_code ec;fs::remove_all(temp,ec);
  std::cout<<checks<<" import error checks passed\n";return 0;

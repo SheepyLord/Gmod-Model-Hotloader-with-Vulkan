@@ -5,6 +5,8 @@
 #include <stdexcept>
 using namespace mmd;
 static void check(bool value){if(!value)throw std::runtime_error("Installation validation assertion failed");}
+// Code of this executable for fake vtables (vtableLength counts entries of a named module).
+static int __declspec(noinline) ownSlot(){return 7;}
 int main(int argc,char** argv){try{
  if(argc>=3&&std::string(argv[1])=="--installation-test"){
   if(GetEnvironmentVariableW(L"MMDHL_TEST_WORKER_TIMEOUT",nullptr,0))Sleep(15000);
@@ -33,6 +35,25 @@ int main(int argc,char** argv){try{
  check(configureCompatibility(none).value("configured",false));check(configureCompatibility(none).value("configured",false));
  rejected=false;try{configureCompatibility({{"schema",1},{"family","source-win64-v1"},{"libraries",Json::array({profile("client.dll")})}});}catch(const std::exception& e){rejected=std::string(e.what()).find("restart")!=std::string::npos;}check(rejected);
  check(runtimeIdentity()["installApi"]==1);
+ // vtableLength: a vtable's entries run to its last one that is code of the library; an entry another
+ // module hooked (code elsewhere) inside it does not end it, data does. An early hook used to make
+ // the default branch's 147-entry table look shorter, and its unshifted slots were called.
+ {
+  auto module=fs::path(own).filename().wstring();void* hook=reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"),"GetTickCount64"));check(hook!=nullptr);
+  auto measure=[&](size_t count,std::initializer_list<size_t> hooked,size_t compiled,bool& known){
+   std::vector<void*> table(count,reinterpret_cast<void*>(&ownSlot));for(auto i:hooked)table[i]=hook;table.push_back(nullptr);
+   struct {void* const* vtable;} object{table.data()};
+   auto length=vtableLength(&object,module.c_str());known=true;try{appSystemShift(&object,module.c_str(),compiled);}catch(const std::exception&){known=false;}
+   return length;};
+  bool known=false;
+  check(measure(147,{3},151,known)==147&&known&&appSystemShifts()[utf8(module)]["slotShift"]==4);
+  check(measure(151,{0,150},151,known)==150&&!known);
+  check(measure(151,{40},151,known)==151&&known&&appSystemShifts()[utf8(module)]["slotShift"]==0);
+  check(measure(148,{},151,known)==148&&!known&&measure(0,{},151,known)==0&&!known);
+  check(measure(160,{},151,known)==160&&known);
+  std::vector<void*> broken={reinterpret_cast<void*>(&ownSlot),nullptr,reinterpret_cast<void*>(&ownSlot)};struct {void* const* vtable;} object{broken.data()};
+  check(vtableLength(&object,module.c_str())==1);
+ }
  if(argc==2)std::cout<<peEvidence(readFile(wide(argv[1]))).dump()<<'\n';
  else {
   auto base=fs::current_path();auto fixture=base/("installation-worker-fixture-"+std::to_string(GetCurrentProcessId()));

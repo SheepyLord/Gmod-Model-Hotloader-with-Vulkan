@@ -6,6 +6,7 @@
 #include "rig_writer.hpp"
 #include "spring_bones.hpp"
 #include "cutout.hpp"
+#include "compatibility.hpp"
 #include <fstream>
 #include <iostream>
 #include <cmath>
@@ -32,7 +33,29 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
         check(agrees,"shared skinning frame matches independent position and direction paths across mixed rotations");
     }
     try{parse(Bytes{1,2,3});check(false,"truncated input rejected");}catch(...){check(true,"truncated input rejected");}
+    // IAppSystem layouts by vtable length: the compiled one (or longer, methods appended) and the default
+    // branch's, four shorter. Any other length is a layout this code does not know: refused, not guessed.
+    {bool known=knownAppSystemShift(147,151)==size_t(4)&&knownAppSystemShift(151,151)==size_t(0)&&knownAppSystemShift(152,151)==size_t(0)&&knownAppSystemShift(400,151)==size_t(0);
+     for(size_t length:{0,1,13,146,148,149,150})known&=!knownAppSystemShift(length,151);
+     check(known&&knownAppSystemShift(13,17)==size_t(4)&&!knownAppSystemShift(14,17),"vtable layouts: 147 and 151 entries (or more) are known, every other length is refused");}
     World w;w.setMirror(1,{{"shape","box"},{"half",{10,10,1}},{"position",{0,0,0}},{"mass",0}});w.step(1,btVector3(0,0,-9.8f));check(w.dropped>.9,"catchup bounded and reported");check(w.takeImpulses().empty(),"static environment produces no feedback");w.removeMirror(1);check(w.mirrors.empty(),"mirror removal");
+    // A malformed mirror (SetMirror is a Lua API) throws before Bullet sees any of it and leaves
+    // the mirrors as they were: a hull count whose three-fold product wraps on x64, a zero
+    // rotation, negative extents, NaN or infinite vertices and numbers beyond float's range.
+    {World test;test.setMirror(1,{{"shape","sphere"},{"radius",1}});const int objects=test.dynamics().getNumCollisionObjects();
+     auto rejected=[&](const Json& spec,std::vector<float> geometry){
+      try{test.setMirror(2,spec,geometry);}catch(const std::exception&){return !test.mirrors.contains(2)&&test.dynamics().getNumCollisionObjects()==objects;}return false;};
+     std::vector<float> hull={0,0,0,1,0,0,0,1,0,0,0,1},nanHull=hull,infHull=hull;nanHull[4]=std::nanf("");infHull[5]=INFINITY;
+     check(rejected({{"shape","compound"},{"hulls",Json::array({6148914691236517206ull})}},{0,0,0}),"a hull count whose three-fold product wraps is rejected at once");
+     check(rejected({{"shape","compound"},{"hulls",Json::array({Json(-4)})}},hull)&&rejected({{"shape","compound"},{"hulls",Json::array({4.5})}},hull)&&rejected({{"shape","compound"},{"hulls",Json::array()}},{}),"negative, fractional and missing hull counts are rejected");
+     check(rejected({{"shape","compound"},{"hulls",Json::array({4})},{"rotation",{0,0,0,0}}},hull),"a zero rotation quaternion is rejected");
+     check(rejected({{"shape","box"},{"half",{-1,1,1}}},{})&&rejected({{"shape","sphere"},{"radius",-1}},{}),"negative extents are rejected");
+     check(rejected({{"shape","compound"},{"hulls",Json::array({4})}},nanHull)&&rejected({{"shape","compound"},{"hulls",Json::array({4})}},infHull),"NaN and infinite vertices are rejected");
+     check(rejected({{"shape","sphere"},{"radius",1},{"mass",1},{"position",{1e39,0,0}}},{})&&rejected({{"shape","sphere"},{"mass",1e39}},{}),"numbers beyond float's range are rejected");
+     test.setMirror(2,{{"shape","compound"},{"hulls",Json::array({4.0})},{"mass",1}},hull);check(test.mirrors.contains(2)&&test.dynamics().getNumCollisionObjects()==objects+1,"a valid compound mirror, its count written as 4.0, is added");
+     auto before=test.mirrors.at(2)->body->getWorldTransform().getOrigin();bool threw=false;
+     try{test.setMirror(2,{{"position",{100,0,0}},{"rotation",{0,0,0,0}}});}catch(const std::exception&){threw=true;}
+     check(threw&&test.mirrors.at(2)->body->getWorldTransform().getOrigin()==before,"a rejected update leaves the mirror where it was");}
     {World test;test.setMirror(1,{{"shape","box"},{"half",{1,1,1}},{"mass",1},{"inertia",{0,1,1}}});test.captureBefore();test.mirrors.at(1)->body->setAngularVelocity({0,1,0});test.captureAfter();auto out=test.takeImpulses();check(out.size()==1&&std::isfinite(out[0]["angular"][0].get<float>())&&btFabs(out[0]["angular"][1].get<float>()-SIMD_DEGS_PER_RAD)<.001f,"locked mirror inertia exports finite torque");}
     {World test;auto m=std::make_shared<Model>();Bone bone;bone.name="root";m->bones.push_back(bone);m->order={0};m->minimum={-1,0,-1};m->maximum={1,2,1};auto id=test.create(m,{{"frozen",true}});test.setMirror(9,{{"shape","sphere"},{"radius",1},{"position",{-5,0,2.36}},{"velocity",{200,0,0}},{"mass",2}});
      auto before=test.mirrors[9]->body->getLinearVelocity();btVector3 exported(0,0,0);for(int k=0;k<10;k++){test.step(1./120,{0,0,0});for(auto& e:test.takeImpulses())exported+=btVector3(e["linear"][0],e["linear"][1],e["linear"][2]);}auto actual=(test.mirrors[9]->body->getLinearVelocity()-before)*2/Inch;
@@ -423,6 +446,21 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      bool ok=cache&&follower&&simulated&&contacts(Collide::Default)&&!contacts(Collide::Objects)&&contacts(Collide::Default)&&!contacts(0)&&contacts(Collide::Character)&&!contacts(Collide::World);
      check(ok&&s.diagnostics()["bodies"]==model->bodies.size(),(std::string("the character checkbox turns the body's contacts with hair and clothing off and on (")+backend+")").c_str());
     }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"character collision flag regression");}
+    // A secondary world that fails to rebuild (Reset physics, a backend switch) leaves the working one
+    // in place: the same world, backend, collision flags and pose, and its next tick runs.
+    try{
+     auto model=parse(readFile("tests/fixtures/native-chain.pmx"));World host;auto& p=host.get(host.create(model,{{"backend","source"},{"secondaryBackend","reference"},{"collisionFlags",Collide::Default}}));
+     p.secondary->setCollisionFlags(Collide::Character);auto* before=p.secondary.get();auto skin=p.skin;
+     auto samePose=[&]{if(p.skin.size()!=skin.size())return false;for(size_t i=0;i<skin.size();i++)if((p.skin[i].getOrigin()-skin[i].getOrigin()).length()>1e-5f)return false;return true;};
+     // The world reads the backend name first while it is built: a name it does not know fails there.
+     bool threw=false;p.secondaryBackend="no such backend";try{p.reset();}catch(const std::exception&){threw=true;}p.secondaryBackend="reference";
+     bool kept=threw&&p.secondary.get()==before&&p.secondary->collisionFlags==Collide::Character&&samePose();
+     threw=false;try{p.setSecondaryBackend("bogus");}catch(const std::exception&){threw=true;}
+     kept=kept&&threw&&p.secondary.get()==before&&p.secondaryBackend=="reference";
+     p.secondary->step(1./60);auto resets=p.secondary->resets;
+     p.setSecondaryBackend("cpu_mt_v2");
+     check(kept&&p.secondary.get()!=before&&p.secondaryBackend=="cpu_mt_v2"&&p.secondary->collisionFlags==Collide::Character&&p.secondary->resets==resets+1&&p.secondary->resetReason=="backend_change","a failed secondary rebuild keeps the working world, backend, flags and pose; a valid switch still replaces it");
+    }catch(const std::exception& e){std::cerr<<e.what()<<"\n";check(false,"secondary rebuild failure regression");}
     // Issue #6: Source drives the pelvis and limbs; nothing drives the MMD control roots above
     // the pelvis (全ての親 > センター > グルーブ), an unrelated root (操作中心) or the leg IK goals
     // under 全ての親. They ride with the Source pelvis, and IK goals with their chain's driven
