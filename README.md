@@ -64,7 +64,7 @@ Linux packages build in the manylinux_2_28 container (glibc 2.28, GCC 14), as th
 docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux_2_28_x86_64:2026.10.09-1 scripts/build-linux.sh linux64
 ```
 
-Use `linux` instead of `linux64` for the 32-bit default-branch package. A build with the system compiler (GCC 11 or newer; `python3 scripts/bootstrap.py`, `python3 scripts/build-icu.py --platform linux64`, then CMake) works for development, but its files need the build machine's glibc.
+Use `linux` instead of `linux64` for the 32-bit default-branch package. A build with the system compiler (GCC 11 or newer; `python3 scripts/bootstrap.py`, `python3 scripts/patch-bullet-threading.py`, `python3 scripts/build-icu.py --platform linux64`, then CMake) works for development, but its files need the build machine's glibc.
 
 ```powershell
 ./scripts/build.ps1

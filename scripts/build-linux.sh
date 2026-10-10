@@ -23,6 +23,8 @@ if [ "$platform" = linux ]; then
   flags=(-DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32)
 fi
 "$python" scripts/bootstrap.py
+# As scripts/build.ps1: Bullet's documented local patches (heavy PMX chains, worker-local counters).
+"$python" scripts/patch-bullet-threading.py
 "$python" scripts/build-icu.py --platform "$platform"
 build=build-$platform
 # The policy record goes to the build folder (packaging reads bin/native-release.json).
