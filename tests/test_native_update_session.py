@@ -15,7 +15,7 @@ release). Also the server's console line and status, and publish-native-release.
 evaluate() with a newer recommended release."""
 from pathlib import Path
 from copy import deepcopy
-import importlib.util, json, sys
+import importlib.util, json, re, sys
 from lupa import LuaRuntime
 from lua_i18n import attach
 
@@ -142,8 +142,10 @@ _, M, s, ok = session(newer_policy(approve_current=False))
 assert ok is True and s.features.core and s.features.rendering and not s.unverified and not s.blocked and M.FeatureAvailable('rendering') is True
 assert codes(s)[0] == 'outdated_release' and s.issues[1].warning and s.update.approved is None and M.loadError is None
 # The update reminder's order: the release the files match, by build time, then by label.
+# Around the recommended release: its pre-release comes before it, the next patch and minor after.
+major, minor, patch = map(int, re.match(r'(\d+)\.(\d+)\.(\d+)', CURRENT).groups())
 _, M, s, _ = session(newer_policy())
-for label, expected in ((CURRENT, True), ('2.1.0-native.12', True), ('2.1.0-native.5+d4a199ab', True), ('9.9.9', False), ('2.3.0', False), ('2.2.0-rc.1', True), ('2.2.1', False), (7, False)):
+for label, expected in ((CURRENT, True), ('2.1.0-native.12', True), ('2.1.0-native.5+d4a199ab', True), ('9.9.9', False), (f'{major}.{minor + 1}.0', False), (f'{major}.{minor}.{patch}-rc.1', True), (f'{major}.{minor}.{patch + 1}', False), (7, False)):
     assert M.NativeReleaseAtLeast(label) is expected, label
 _, M, s, _ = session(newer_policy(), release='2.1.0-native.12')
 assert s.update.installed == '2.1.0-native.12' and M.NativeReleaseAtLeast('2.1.0-native.11') and not M.NativeReleaseAtLeast(CURRENT)
