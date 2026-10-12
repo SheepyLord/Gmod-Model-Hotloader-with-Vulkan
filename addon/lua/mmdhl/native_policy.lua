@@ -12,7 +12,8 @@ return util.JSONToTable([==[
     "2.1.0-native.10",
     "2.1.0-native.11",
     "2.1.0-native.12",
-    "2.2.0"
+    "2.2.0",
+    "2.3.0"
   ],
   "releases": {
     "2.1.0-native.1": {
@@ -600,8 +601,110 @@ return util.JSONToTable([==[
       },
       "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.2.0",
       "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
+    },
+    "2.3.0": {
+      "api": 1,
+      "build": "1df48dac8ccc-20261012T070650Z",
+      "installApi": 1,
+      "platform": "win64",
+      "release": "2.3.0",
+      "files": {
+        "client": {
+          "name": "gmcl_mmdhl_win64.dll",
+          "size": 2829824,
+          "sha256": "4f3a2f534ad0d02f9ff0df7bfa2d3468ee8ad1ad12ecec0b025c4f5b4e827d39"
+        },
+        "server": {
+          "name": "gmsv_mmdhl_win64.dll",
+          "size": 1856512,
+          "sha256": "7caa54d4749f6990f18ae16d685075cb3435cebac2a721a475ffd6bf34454228"
+        },
+        "runtime": {
+          "name": "mmdhl_runtime_win64.dll",
+          "size": 10706944,
+          "sha256": "b648aa51faabb7ba4db4038cbc0a525c56bd82ba8ad29afb2b5cb8fe52f32bbb"
+        },
+        "worker": {
+          "name": "mmdhl_worker.exe",
+          "size": 4146176,
+          "sha256": "0f7c584ca6cfa56ffebd41746844eb9068a7ef62b621ed63e687f0a3f638ea9f"
+        },
+        "coacd": {
+          "name": "lib_coacd.dll",
+          "size": 6169600,
+          "sha256": "a32e801d260b774ebc723edfc05e45e179c09d0d2355592c64cbff490698e806"
+        }
+      },
+      "renderer": {
+        "name": "d3d9.dll",
+        "size": 4042752,
+        "sha256": "eb9843027fc61b808dccae5c5487cad6df8d05d484786c571e66acbdf380574f",
+        "kind": "dxvk",
+        "dxvk": "v3.1.1",
+        "patches": [
+          "0001-shared-compute-queues.patch",
+          "0002-gmod-app-profile.patch"
+        ]
+      },
+      "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.3.0",
+      "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord",
+      "platforms": {
+        "linux64": {
+          "api": 1,
+          "build": "1df48dac8ccc-20261012T070724Z",
+          "installApi": 1,
+          "platform": "linux64",
+          "release": "2.3.0",
+          "files": {
+            "client": {
+              "name": "gmcl_mmdhl_linux64.dll",
+              "size": 2596144,
+              "sha256": "ff61aaab9e1b58eaf79ab5ee2f699a6cfc908c9963e7d43180bbf143aba53c2c"
+            },
+            "server": {
+              "name": "gmsv_mmdhl_linux64.dll",
+              "size": 2202024,
+              "sha256": "b9d1cbba81a2e136404171b80cb5aa67cc43420636b5731bd71dd9535f4b82a3"
+            },
+            "runtime": {
+              "name": "libmmdhl_runtime_linux64.so",
+              "size": 15027840,
+              "sha256": "b44054e850d090378cd6216d4a8e4ae436cb08e42ba59e2a0767829c4814353f"
+            },
+            "worker": {
+              "name": "mmdhl_worker_linux64",
+              "size": 6006128,
+              "sha256": "3437c7534fe40910aac0a1d604e6ce5a2c6b9e4f4bb6ee45a34ed382eda251db"
+            },
+            "coacd": {
+              "name": "lib_coacd.so",
+              "size": 12995121,
+              "sha256": "cfcbdf058982e3b2e6d91c98915352a32d43988992471655f9de4639b3698be8"
+            }
+          },
+          "renderer": {
+            "name": "libtogl_client.so",
+            "size": 470016,
+            "sha256": "a7a7d11b8fd8c29ffe3eec22f8cecf5b484fe8fb6403195bda26287278727704",
+            "kind": "dxvk",
+            "dxvk": "v3.1.1",
+            "patches": [
+              "0001-shared-compute-queues.patch",
+              "0002-gmod-app-profile.patch",
+              "dxvk-linux/0001-sdl2-surface-and-gmod-profile.patch"
+            ],
+            "library": {
+              "name": "libdxvk_d3d9.so",
+              "size": 8829264,
+              "sha256": "f54af343ebbd1b6b28d639131c570b3f0de848e458c56b49bec1e16d4bd64160"
+            }
+          },
+          "url": "https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases/tag/2.3.0",
+          "altUrl": "https://pan.baidu.com/s/1eUaJAUhnnnGpNSnvFojmwQ?pwd=lord"
+        }
+      }
     }
   },
-  "recommended": "2.2.0"
+  "recommended": "2.3.0"
 }
 ]==])
