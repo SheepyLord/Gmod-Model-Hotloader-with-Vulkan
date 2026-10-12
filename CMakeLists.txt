@@ -280,6 +280,9 @@ add_executable(mmdhl_async_tests tests/async_tests.cpp)
 target_link_libraries(mmdhl_async_tests PRIVATE mmd_runtime)
 target_compile_options(mmdhl_async_tests PRIVATE ${MMDHL_UTF8})
 add_test(NAME secondary_async COMMAND mmdhl_async_tests ${CMAKE_SOURCE_DIR}/tests/fixtures/native-chain.pmx)
+# It measures presentation against the clock: tests running beside it (ctest -j on a
+# four-core CI runner) make the slow step job lag further and the motion jump.
+set_tests_properties(secondary_async PROPERTIES RUN_SERIAL TRUE)
 add_executable(mmdhl_gpu_skinning_tests tests/gpu_skinning_tests.cpp)
 target_link_libraries(mmdhl_gpu_skinning_tests PRIVATE mmd_runtime)
 target_compile_options(mmdhl_gpu_skinning_tests PRIVATE ${MMDHL_UTF8})
