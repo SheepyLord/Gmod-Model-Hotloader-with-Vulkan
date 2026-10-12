@@ -1,0 +1,131 @@
+diff --git a/src/util/config/config.cpp b/src/util/config/config.cpp
+index a551c7c..4428ca5 100644
+--- a/src/util/config/config.cpp
++++ b/src/util/config/config.cpp
+@@ -547,6 +547,11 @@ namespace dxvk {
+     { R"(\\gmod(_win64)?\.exe$)", {{
+       { "dxvk.enableDescriptorHeap",       "False" },
+     }} },
++    /* Garry's Mod on Linux (x86-64 branch), with *
++     * MMDHL's libtogl_client.so                  */
++    { R"(/bin/linux64/gmod$)", {{
++      { "dxvk.enableDescriptorHeap",       "False" },
++    }} },
+     /* Sonic Adventure 2                          */
+     { R"(\\Sonic Adventure 2\\(launcher|sonic2app)\.exe$)", {{
+       { "d3d9.floatEmulation",            "Strict" },
+diff --git a/src/wsi/sdl2/wsi_platform_sdl2.cpp b/src/wsi/sdl2/wsi_platform_sdl2.cpp
+index 203cb6d..d56aca2 100644
+--- a/src/wsi/sdl2/wsi_platform_sdl2.cpp
++++ b/src/wsi/sdl2/wsi_platform_sdl2.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include <SDL_vulkan.h>
+ 
++#include <cstring>
++
+ namespace dxvk::wsi {
+ 
+   Sdl2WsiDriver::Sdl2WsiDriver() {
+@@ -47,6 +49,16 @@ namespace dxvk::wsi {
+     if (!SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount, extensionNames.data()))
+       throw DxvkError(str::format("SDL2 WSI: Failed to get instance extensions. ", SDL_GetError()));
+ 
++    // createSurface() may have to use the X11 window directly (see there).
++    const char* videoDriver = SDL_GetCurrentVideoDriver();
++    if (videoDriver && !std::strcmp(videoDriver, "x11")) {
++      bool hasXlib = false;
++      for (const char* name : extensionNames)
++        hasXlib |= !std::strcmp(name, "VK_KHR_xlib_surface");
++      if (!hasXlib)
++        extensionNames.push_back("VK_KHR_xlib_surface");
++    }
++
+     return extensionNames;
+   }
+ 
+diff --git a/src/wsi/sdl2/wsi_platform_sdl2.h b/src/wsi/sdl2/wsi_platform_sdl2.h
+index 49bcd78..67d992d 100644
+--- a/src/wsi/sdl2/wsi_platform_sdl2.h
++++ b/src/wsi/sdl2/wsi_platform_sdl2.h
+@@ -2,6 +2,9 @@
+ 
+ #include <SDL.h>
+ 
++// SDL_syswm.h brings X11's macros: only wsi_window_sdl2.cpp includes it, last.
++struct SDL_SysWMinfo;
++
+ #include "../wsi_platform.h"
+ 
+ namespace dxvk::wsi {
+diff --git a/src/wsi/sdl2/wsi_platform_sdl2_funcs.h b/src/wsi/sdl2/wsi_platform_sdl2_funcs.h
+index 4396a6b..fbf62ee 100644
+--- a/src/wsi/sdl2/wsi_platform_sdl2_funcs.h
++++ b/src/wsi/sdl2/wsi_platform_sdl2_funcs.h
+@@ -14,4 +14,6 @@ SDL_PROC(void, SDL_SetWindowSize, (SDL_Window*, int, int))
+ SDL_PROC(SDL_bool, SDL_Vulkan_CreateSurface, (SDL_Window*, VkInstance, VkSurfaceKHR*))
+ SDL_PROC(SDL_bool, SDL_Vulkan_GetInstanceExtensions, (SDL_Window*, unsigned int*, const char**))
+ SDL_PROC(int, SDL_Vulkan_LoadLibrary, (const char*))
++SDL_PROC(SDL_bool, SDL_GetWindowWMInfo, (SDL_Window*, SDL_SysWMinfo*))
++SDL_PROC(const char*, SDL_GetCurrentVideoDriver, (void))
+ #undef SDL_PROC
+diff --git a/src/wsi/sdl2/wsi_window_sdl2.cpp b/src/wsi/sdl2/wsi_window_sdl2.cpp
+index 85413da..709b8f7 100644
+--- a/src/wsi/sdl2/wsi_window_sdl2.cpp
++++ b/src/wsi/sdl2/wsi_window_sdl2.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <windows.h>
+ #include <SDL_vulkan.h>
++#include <SDL_syswm.h>
+ 
+ namespace dxvk::wsi {
+ 
+@@ -176,9 +177,44 @@ namespace dxvk::wsi {
+           VkSurfaceKHR*             pSurface) {
+     SDL_Window* window = fromHwnd(hWindow);
+ 
+-    return SDL_Vulkan_CreateSurface(window, instance, pSurface)
+-         ? VK_SUCCESS
+-         : VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (SDL_GetWindowFlags(window) & SDL_WINDOW_VULKAN) {
++      return SDL_Vulkan_CreateSurface(window, instance, pSurface)
++           ? VK_SUCCESS
++           : VK_ERROR_OUT_OF_HOST_MEMORY;
++    }
++
++    // A window created for OpenGL (Garry's Mod's launcher creates its window
++    // before the renderer exists): SDL refuses such windows, so the surface is
++    // created on the native window, which can present through Vulkan as long
++    // as nothing swaps OpenGL buffers on it.
++    SDL_SysWMinfo info = { };
++    SDL_VERSION(&info.version);
++    if (!SDL_GetWindowWMInfo(window, &info)) {
++      Logger::err(str::format("SDL2 WSI: createSurface: SDL_GetWindowWMInfo: ", SDL_GetError()));
++      return VK_ERROR_INITIALIZATION_FAILED;
++    }
++
++    switch (info.subsystem) {
++      case SDL_SYSWM_X11: {
++        struct { VkStructureType sType; const void* pNext; VkFlags flags; void* dpy; unsigned long window; } createInfo = {
++          VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, nullptr, 0, info.info.x11.display, info.info.x11.window };
++        using PFN = VkResult (VKAPI_PTR*)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
++        auto create = reinterpret_cast<PFN>(pfnVkGetInstanceProcAddr(instance, "vkCreateXlibSurfaceKHR"));
++        return create ? create(instance, &createInfo, nullptr, pSurface) : VK_ERROR_EXTENSION_NOT_PRESENT;
++      }
++#if SDL_VERSION_ATLEAST(2, 0, 2)
++      case SDL_SYSWM_WAYLAND: {
++        struct { VkStructureType sType; const void* pNext; VkFlags flags; void* display; void* surface; } createInfo = {
++          VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR, nullptr, 0, info.info.wl.display, info.info.wl.surface };
++        using PFN = VkResult (VKAPI_PTR*)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
++        auto create = reinterpret_cast<PFN>(pfnVkGetInstanceProcAddr(instance, "vkCreateWaylandSurfaceKHR"));
++        return create ? create(instance, &createInfo, nullptr, pSurface) : VK_ERROR_EXTENSION_NOT_PRESENT;
++      }
++#endif
++      default:
++        Logger::err(str::format("SDL2 WSI: createSurface: unsupported window system ", int(info.subsystem)));
++        return VK_ERROR_INITIALIZATION_FAILED;
++    }
+   }
+ 
+ }

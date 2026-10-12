@@ -2,9 +2,12 @@
 # offline validation and uploads two GarrysMod folders (scripts/package-dropin.py):
 # -vulkan with the native files and DXVK (bin/win64/d3d9.dll), and -opengl-remix
 # with the native files only, for PCs where DXVK does not work or RTX Remix runs.
-# Two Linux jobs build the Linux native files and upload one GarrysMod folder each:
-# -linux64 for the x86-64 branch and -linux for the default branch, which is 32-bit
-# on Linux (Garry's Mod draws with OpenGL there, so neither has a renderer).
+# The Linux job builds the native files for the x86-64 branch (the default branch is
+# 32-bit on Linux, which Model Hotloader does not support) and the Linux renderer, and
+# uploads two GarrysMod folders the same way: -linux64-vulkan with the native files and
+# a replacement for the game's ToGL (bin/linux64/libtogl_client.so) that runs its
+# Direct3D 9 on DXVK, and -linux64-opengl with the native files only (the game's own
+# OpenGL renderer).
 # The Lua addon is distributed through Workshop; the run's summary shows the
 # native_policy.lua records for these binaries. It runs only when started from the
 # Actions tab with "Run workflow" (any branch).
@@ -107,44 +110,52 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux ${{ matrix.platform }} build and package
+    name: Linux x86-64 build and package
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [linux64, linux]
     steps:
       - uses: actions/checkout@v6
 
-      # Pinned sources, both CoACD wheels and the static ICU build (vendor/icu-<platform>).
-      # bootstrap.py and build-icu.py reuse them only while their pins still match.
+      # Pinned sources, both CoACD wheels, the static ICU build (vendor/icu-linux64) and
+      # DXVK's source (vendor/dxvk-native). bootstrap.py and build-icu.py reuse them only
+      # while their pins still match; build-dxvk-linux.sh fetches the pinned DXVK again when
+      # the cached one is another version, and resets it when its patches changed.
       - name: Restore pinned dependencies
         uses: actions/cache@v5
         with:
           path: vendor
-          key: vendor-${{ matrix.platform }}-${{ hashFiles('dependencies.lock.json', 'scripts/bootstrap.py', 'scripts/patch-bullet-threading.py', 'scripts/shaders.py', 'scripts/build-icu.py') }}
+          key: vendor-linux64-${{ hashFiles('dependencies.lock.json', 'scripts/bootstrap.py', 'scripts/patch-bullet-threading.py', 'scripts/shaders.py', 'scripts/build-icu.py') }}
 
       # In the manylinux_2_28 container (AlmaLinux 8: glibc 2.28, GCC 14), so the files load
-      # in every Steam Linux Runtime: bootstrap, ICU, the build, CTest and the package
-      # (scripts/build-linux.sh). The container's files belong to root; they are handed back
-      # to the runner's user for the cache and the upload.
-      - name: Build, test and stage the GarrysMod folder
+      # in every Steam Linux Runtime: bootstrap, ICU, the build, CTest, the renderer (DXVK
+      # 3.1.1's d3d9 with patches/dxvk and patches/dxvk-linux, and renderer/togl, recorded in
+      # the release record) and both packages (scripts/build-linux.sh). The container's files
+      # belong to root; they are handed back to the runner's user for the cache and the upload.
+      - name: Build, test and stage the GarrysMod folders
         id: package
         run: |
           release=$(sed -n 's/^set(MMDHL_RELEASE "\([^"]*\)".*/\1/p' CMakeLists.txt)
-          name="Model-Hotloader-$release-${GITHUB_SHA::8}-${{ matrix.platform }}"
+          name="Model-Hotloader-$release-${GITHUB_SHA::8}-linux64"
           docker run --rm -v "$PWD:/src" -w /src -e GITHUB_STEP_SUMMARY=/src/linux-summary.md \
-            quay.io/pypa/manylinux_2_28_x86_64:2026.10.09-1 scripts/build-linux.sh ${{ matrix.platform }} "$name"
+            quay.io/pypa/manylinux_2_28_x86_64:2026.10.09-1 scripts/build-linux.sh linux64 "$name"
           sudo chown -R "$(id -u):$(id -g)" .
           cat linux-summary.md >> "$GITHUB_STEP_SUMMARY"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
-      # The artifact zip holds the GarrysMod folder (license notices in
+      # Each artifact zip holds the GarrysMod folder (license notices in
       # GarrysMod/garrysmod/lua/bin/LICENSES) and INSTALL.txt. Zip downloads drop the
       # executable bit; the modules restore it on the import worker.
+      # Vulkan package: native files and the renderer (bin/linux64, its notices in
+      # bin/linux64/DXVK-LICENSES).
       - uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.package.outputs.name }}
-          path: dist/${{ steps.package.outputs.name }}/
+          name: ${{ steps.package.outputs.name }}-vulkan
+          path: dist/${{ steps.package.outputs.name }}-vulkan/
+          if-no-files-found: error
+
+      # Native files only: the game keeps its own OpenGL renderer.
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.package.outputs.name }}-opengl
+          path: dist/${{ steps.package.outputs.name }}-opengl/
           if-no-files-found: error

@@ -72,7 +72,7 @@ Json peEvidence(const Bytes& bytes);
 // The read-only and executable segments of an ELF shared object, hashed as stored in the file.
 Json elfEvidence(const Bytes& bytes);
 // The file name a Linux game process loaded for a library the policy names (engine.dll:
-// engine_client.so on the x86-64 client, engine.so on the 32-bit client and servers), or "".
+// engine_client.so on the client, engine.so on dedicated servers), or "".
 std::string gameLibraryName(const wchar_t* name);
 // The address of a game library's CreateInterface, or nullptr while it is not loaded.
 void* gameInterfaceFactory(const wchar_t* name);

@@ -6,8 +6,8 @@
 // a method has that method one slot later on Linux; MSVC also lists a group of overloads
 // in reverse order, which moves no later method. Every number below is the Windows slot
 // the 2.x releases call plus Dtor where the interface has a destructor first. The Linux
-// numbers match the SDK headers as GCC compiles them (virtualSlot) and the game's
-// binaries (both branches: GetCallQueue and the vtable lengths were read from them).
+// numbers match the SDK headers as GCC compiles them (virtualSlot) and the game's x86-64
+// binaries (GetCallQueue and the vtable lengths were read from them).
 namespace mmd::abi {
 #ifdef _WIN32
 constexpr size_t Dtor=0;
@@ -44,13 +44,7 @@ constexpr size_t ObjectIsStatic=1+Dtor,ObjectIsTrigger=3+Dtor,ObjectIsFluid=4+Dt
  ObjectPosition=48+Dtor,ObjectPositionMatrix=49+Dtor,ObjectVelocity=52+Dtor,ObjectApplyForce=60+Dtor,ObjectApplyTorque=62+Dtor,ObjectCollide=74+Dtor;
 // IMatRenderContext::GetCallQueue on the queued context returns its concrete call list at
 // this offset (the hardware context returns null).
-#if defined(_WIN32)
 constexpr std::ptrdiff_t CallListOffset=0x2B0;
-#elif defined(__x86_64__)
-constexpr std::ptrdiff_t CallListOffset=0x2B0;
-#else
-constexpr std::ptrdiff_t CallListOffset=0x1DC;
-#endif
 // Vtable lengths of the x86-64 layout, for telling the older (default branch) layout
 // apart: CMaterialSystem (VMaterialSystem080), the VPhysics031 object and CPhysicsCollision.
 // Windows counts entries up to the first that is not code of the library; Linux counts the

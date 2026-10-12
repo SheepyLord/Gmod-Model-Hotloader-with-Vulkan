@@ -10,8 +10,8 @@
 
 namespace mmd {
 #ifndef _WIN32
-// The game folder of the running executable: bin/linux64/gmod (x86-64 branch), hl2_linux
-// (32-bit default branch), srcds_linux or bin/linux64/srcds_linux64 (dedicated servers).
+// The game folder of the running executable: bin/linux64/gmod (the x86-64 branch's client),
+// or a dedicated server's srcds_linux or bin/linux64/srcds_linux64.
 static fs::path gameRoot(){
  auto folder=posix::executablePath().parent_path();
  if(folder.filename()=="linux64"&&folder.parent_path().filename()=="bin")return folder.parent_path().parent_path();

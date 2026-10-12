@@ -1,15 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 project(ModelHotloader VERSION 2.3.0 LANGUAGES C CXX)
-# win64: Windows x64. linux64: Linux x86-64 (Garry's Mod's x86-64 branch).
-# linux: 32-bit Linux x86 (the default branch on Linux), built with -m32.
+# win64: Windows x64. linux64: Linux x86-64 (Garry's Mod's x86-64 branch; the default
+# branch is 32-bit on Linux, which Model Hotloader does not support).
 if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(MMDHL_PLATFORM win64)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(MMDHL_PLATFORM linux64)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-  set(MMDHL_PLATFORM linux)
 else()
-  message(FATAL_ERROR "Model Hotloader requires Windows x64 or Linux x86/x86-64")
+  message(FATAL_ERROR "Model Hotloader requires Windows x64 or Linux x86-64")
 endif()
 set(MMDHL_RELEASE "2.3.0" CACHE STRING "Immutable native release label")
 execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE MMDHL_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -50,15 +48,6 @@ else()
   set(MMDHL_UTF8 "")
   set(MMDHL_DEBUG_COMPILE -g)
   set(MMDHL_DEBUG_LINK "")
-  if(MMDHL_PLATFORM STREQUAL "linux")
-    # SSE2 floating point, as on x86-64: x87 extended precision would change physics results.
-    add_compile_options(-msse2 -mfpmath=sse)
-    # Thread-local variables at fixed offsets from the thread pointer. GCC assumes the 32-bit
-    # dynamic TLS call (___tls_get_addr) keeps SSE registers, but before glibc 2.39 its first
-    # call in each thread allocates through an SSE memset and clobbers them (glibc bug
-    # 31372): values held in them came back as garbage. The binaries' TLS is small.
-    add_compile_options(-ftls-model=initial-exec)
-  endif()
   # Unused code goes, with what only it referenced: the SDK headers' inline ConVar helpers
   # would otherwise need tier1 symbols the game does not export.
   add_compile_options(-ffunction-sections -fdata-sections)
@@ -185,13 +174,12 @@ target_link_libraries(mmdhl_worker PRIVATE mmd_runtime mmdhl_character_import mm
 if(WIN32)
   target_link_libraries(mmdhl_worker PRIVATE shell32 uuid)
 else()
-  # Both Linux packages can share a game folder (one per branch): every file names its platform.
+  # Every Linux file names its platform.
   set_target_properties(mmdhl_worker PROPERTIES OUTPUT_NAME mmdhl_worker_${MMDHL_PLATFORM})
 endif()
 target_compile_options(mmdhl_worker PRIVATE ${MMDHL_UTF8})
 # Balanced prop collision loads the pinned CoACD wheel DLL beside the worker. On
-# Linux (x86-64 only: the wheel has no 32-bit build) lib_coacd.so takes its OpenMP
-# runtime from beside it.
+# Linux lib_coacd.so takes its OpenMP runtime from beside it.
 if(WIN32)
   file(GLOB MMDHL_COACD_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/coacd/*.dll")
 elseif(MMDHL_PLATFORM STREQUAL "linux64")
@@ -226,10 +214,8 @@ target_sources(mmdhl_client PRIVATE native/renderer.cpp)
 target_sources(mmdhl_server PRIVATE native/bridge.cpp)
 if(WIN32)
   set(MMDHL_SDK_DEFINITIONS COMPILER_MSVC COMPILER_MSVC64 WIN32 _WIN32 WIN64 _WIN64)
-elseif(MMDHL_PLATFORM STREQUAL "linux64")
-  set(MMDHL_SDK_DEFINITIONS COMPILER_GCC POSIX _POSIX LINUX _LINUX GNUC PLATFORM_64BITS)
 else()
-  set(MMDHL_SDK_DEFINITIONS COMPILER_GCC POSIX _POSIX LINUX _LINUX GNUC)
+  set(MMDHL_SDK_DEFINITIONS COMPILER_GCC POSIX _POSIX LINUX _LINUX GNUC PLATFORM_64BITS)
 endif()
 target_include_directories(mmdhl_server PRIVATE vendor/sourcesdk/public vendor/sourcesdk/public/tier0 vendor/sourcesdk/public/tier1 vendor/sourcesdk/common)
 target_compile_definitions(mmdhl_server PRIVATE ${MMDHL_SDK_DEFINITIONS})

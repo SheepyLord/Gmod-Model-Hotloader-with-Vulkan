@@ -145,7 +145,7 @@ local function serverUpdateLine()
  return L('install.update.server',{installed=tostring(update.installed),recommended=tostring(update.recommended)})
 end
 -- Which d3d9.dll the game renders through (installation.lua reports it; it never blocks a feature).
--- On Linux the game always renders through OpenGL.
+-- On Linux: the game's OpenGL (ToGL), or DXVK from the Vulkan package.
 local function rendererLine(status)
  local r=status and status.renderer
  if not r then return nil end

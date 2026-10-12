@@ -7,7 +7,7 @@ Preview video:
 
 Unlike most modern sandbox games, in *Garry's Mod* you must first convert models or characters to the Source Engine format before you can actually use them. While being able to provide a Source engine native asset, this process is usually tedious and time consuming. We're pleased to introduce the GSCMI-SS which bypasses all limitations of the Source Engine compiler (include bone, material, physics rigidbody, shapekey count) by writing runtime model information directly into the game memory and the rendering pipeline, thereby completely resolving this issue by hotloading models into the game. The imported model is algorithmically identical to a normally spawned model in game, at least at the engine level, making the model porting process obsolete with moderate performance tradeoff when multiple models are processed in the player's view. For models with PBR textures, [Advanced Material Editor](https://steamcommunity.com/sharedfiles/filedetails/?id=3793132326) could allow further finetune of the rendering of the model in game. 
 
-If any issue appears when using Vulkan version (likely due to limited memory or old devices), please delete this file in your Gmod installation: Drive:\SteamLibrary\steamapps\common\GarrysMod\bin\win64\d3d9.dll
+If any issue appears when using Vulkan version (likely due to limited memory or old devices), please delete this file in your Gmod installation: Drive:\SteamLibrary\steamapps\common\GarrysMod\bin\win64\d3d9.dll. On Linux, verify the game files in Steam instead (Garry's Mod > Properties > Installed Files > Verify integrity of game files), which restores the game's OpenGL renderer.
 
 <img width="3840" height="2160" alt="20260924000541_1" src="https://github.com/user-attachments/assets/7d783459-ea74-42f5-a42b-1914ca347b0e" />
 
@@ -21,10 +21,10 @@ There are two Windows packages:
 - `…-win64-vulkan.zip` (default): the native modules plus DXVK (`bin\win64\d3d9.dll`), which runs Garry's Mod's Direct3D 9 renderer on Vulkan. It lowers GPU load and lets the Vulkan physics processor share the renderer's device.
 - `…-win64-opengl-remix.zip`: the native modules only; the game keeps its own Direct3D 9 renderer. Use it if DXVK does not work on your PC, or if you use RTX Remix, ReShade or another `d3d9.dll`, which the `-vulkan` package would replace. Deleting `bin\win64\d3d9.dll` also returns the game to Direct3D 9.
 
-And two Linux packages, one for each game branch. Garry's Mod draws with OpenGL on Linux, so neither changes the renderer; every file goes into `garrysmod/lua/bin` (afterwards `steamapps/common/GarrysMod/garrysmod/lua/bin/libmmdhl_runtime_linux64.so`, or `…_linux.so`, exists):
+And two Linux packages, both for the x86-64 branch (Steam > Garry's Mod > Properties > Betas > x86-64; the default branch is 32-bit on Linux, which Model Hotloader does not support). The native files go into `garrysmod/lua/bin` (afterwards `steamapps/common/GarrysMod/garrysmod/lua/bin/libmmdhl_runtime_linux64.so` exists):
 
-- `…-linux64.zip`: the x86-64 branch (Steam > Garry's Mod > Properties > Betas > x86-64).
-- `…-linux.zip`: the default branch, which is 32-bit on Linux. Detailed (multi-hull) collision for static props needs the x86-64 branch: CoACD has no 32-bit build.
+- `…-linux64-vulkan.zip` (default): the native modules plus `bin/linux64/libtogl_client.so` and DXVK (`bin/linux64/libdxvk_d3d9.so`). Garry's Mod on Linux runs its Direct3D 9 renderer on OpenGL through `libtogl_client.so`; the package's replacement runs it on Vulkan through DXVK, as the Windows `-vulkan` package does, and lets the Vulkan physics processor share the renderer's device. It needs a graphics driver with Vulkan 1.3. Verifying the game files in Steam returns the game to OpenGL, and so does a game update that replaces `libtogl_client.so` (copy the package again then).
+- `…-linux64-opengl.zip`: the native modules only; the game keeps its own OpenGL renderer.
 
 The Linux files need glibc 2.28 or newer, which every Steam Linux Runtime provides. Choosing files opens zenity (part of the Steam Linux Runtime) or kdialog.
 
@@ -52,19 +52,19 @@ Select imported models in the library and choose **Export as Workshop package…
 
 ## Limitation
 
-This project fits Windows x64 GMod and Linux GMod (x86-64 and default branches; see [docs/LINUX.md](docs/LINUX.md) for what differs there). Character models draw with GMod's multicore rendering; previews and legacy `mmdhl_ragdoll` entities switch to `mat_queue_mode 0` while they draw (`mmdhl_force_immediate_rendering 1` keeps the old single-threaded behaviour for every model). Physics performance was optimized but might still be slow on slow computers, thus there is not a frame-rate guarantee.
+This project fits Windows x64 GMod and Linux GMod (the x86-64 branch; see [docs/LINUX.md](docs/LINUX.md) for what differs there). Character models draw with GMod's multicore rendering; previews and legacy `mmdhl_ragdoll` entities switch to `mat_queue_mode 0` while they draw (`mmdhl_force_immediate_rendering 1` keeps the old single-threaded behaviour for every model). Physics performance was optimized but might still be slow on slow computers, thus there is not a frame-rate guarantee.
 
 ## Build and verify
 
 Requirements: Python 3, VS 2022 C++ Build Tools, Windows SDK/CMake, and the supported GMod installation. See Action for details.
 
-Linux packages build in the manylinux_2_28 container (glibc 2.28, GCC 14), as the Action does; the package lands in `dist/`:
+Linux packages build in the manylinux_2_28 container (glibc 2.28, GCC 14), as the Action does; the `-vulkan` and `-opengl` packages land in `dist/`:
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src quay.io/pypa/manylinux_2_28_x86_64:2026.10.09-1 scripts/build-linux.sh linux64
 ```
 
-Use `linux` instead of `linux64` for the 32-bit default-branch package. A build with the system compiler (GCC 11 or newer; `python3 scripts/bootstrap.py`, `python3 scripts/patch-bullet-threading.py`, `python3 scripts/build-icu.py --platform linux64`, then CMake) works for development, but its files need the build machine's glibc.
+A build with the system compiler (GCC 11 or newer; `python3 scripts/bootstrap.py`, `python3 scripts/patch-bullet-threading.py`, `python3 scripts/build-icu.py --platform linux64`, then CMake, and `scripts/build-dxvk-linux.sh` for the renderer) works for development, but its files need the build machine's glibc.
 
 ```powershell
 ./scripts/build.ps1

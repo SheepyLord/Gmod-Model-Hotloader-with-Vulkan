@@ -1,5 +1,6 @@
 """Release evidence: the renderer entry survives native-only manifest runs, the
-drop-in packager reports the packages it staged, and the policy updater accepts
+drop-in packager reports the packages it staged (Windows and the Linux -vulkan and
+-opengl ones, whose renderer is a build folder), and the policy updater accepts
 only artifacts that ship every byte their record lists."""
 from pathlib import Path
 import hashlib, json, os, shutil, subprocess, sys, tempfile, zipfile
@@ -9,6 +10,7 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import native_manifest
 PWSH=shutil.which('pwsh') or str(Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe')
 NATIVE={'client':'gmcl_mmdhl_win64.dll','server':'gmsv_mmdhl_win64.dll','runtime':'mmdhl_runtime_win64.dll','worker':'mmdhl_worker.exe','coacd':'lib_coacd.dll'}
+NATIVE_LINUX_RUNTIME=native_manifest.PLATFORM_FILES['linux64']['runtime']
 parent=(ROOT/'test-output').resolve();parent.mkdir(exist_ok=True)
 scratch=Path(tempfile.mkdtemp(prefix='release-',dir=parent)).resolve()
 def entry(path):data=path.read_bytes();return dict(name=path.name,size=len(data),sha256=hashlib.sha256(data).hexdigest())
@@ -57,6 +59,46 @@ try:
         assert 'https://github.com/SheepyLord/Gmod-Model-Hotloader-with-Vulkan/releases' in install and 'filedetails/?id=3810025467' in install,p['name']
     assert 'GarrysMod/bin/win64/DXVK-LICENSES/dxvk.txt' in names[0] and not any('DXVK-LICENSES' in n for n in names[1])
 
+    # Linux: the renderer is its build folder (libtogl_client.so and DXVK's libdxvk_d3d9.so, beside
+    # Meson's object folder), recorded with both files; -vulkan installs them in bin/linux64.
+    linux=scratch/'linux';linux.mkdir()
+    for key,name in native_manifest.PLATFORM_FILES['linux64'].items():(linux/name).write_bytes(os.urandom(4096+len(key)))
+    (linux/'libgomp-a34b3233.so.1.0.0').write_bytes(os.urandom(1024))
+    renderer=scratch/'build-dxvk-linux64';(renderer/'togl').mkdir(parents=True);(renderer/'src/d3d9/libdxvk_d3d9.so.0.30101.p').mkdir(parents=True)
+    (renderer/'togl/libtogl_client.so').write_bytes(os.urandom(6144));(renderer/'src/d3d9/libdxvk_d3d9.so.0.30101').write_bytes(os.urandom(9216))
+    linux_identity=dict(identity,platform='linux64')
+    linux_files={key:entry(linux/name) for key,name in native_manifest.PLATFORM_FILES['linux64'].items()}
+    linux_record=native_manifest.release_record(linux_identity,linux_files,{},renderer)
+    togl=linux_record['renderer']
+    assert togl['name']=='libtogl_client.so' and togl['kind']=='dxvk' and togl['sha256']==entry(renderer/'togl/libtogl_client.so')['sha256']
+    assert togl['library']==dict(entry(renderer/'src/d3d9/libdxvk_d3d9.so.0.30101'),name='libdxvk_d3d9.so')
+    assert togl['patches']==sorted(p.name for p in (ROOT/'patches/dxvk').glob('*.patch'))+sorted('dxvk-linux/'+p.name for p in (ROOT/'patches/dxvk-linux').glob('*.patch'))
+    assert native_manifest.release_record(linux_identity,linux_files,linux_record)['renderer']==togl,'A native-only manifest run dropped the Linux renderer'
+    (linux/'native-release.json').write_text(json.dumps(linux_record,indent=2),encoding='utf8')
+    linux_dist=scratch/'linux-dist'
+    def package_linux(*extra):
+        return subprocess.run([sys.executable,str(ROOT/'scripts/package-dropin.py'),'--bin',str(linux),'--dxvk-source',str(dxvk),'--output',str(linux_dist),'--name','Review-Linux',*extra],capture_output=True,text=True)
+    result=package_linux('--renderer',str(renderer));assert result.returncode==0,result.stderr
+    packages=json.loads(result.stdout)['packages']
+    assert [p['name'] for p in packages]==['Review-Linux-vulkan','Review-Linux-opengl'],packages
+    names=[]
+    for p in packages:
+        with zipfile.ZipFile(p['archive']) as z:names.append(z.namelist())
+    engine=['GarrysMod/bin/linux64/libtogl_client.so','GarrysMod/bin/linux64/libdxvk_d3d9.so']+['GarrysMod/bin/linux64/DXVK-LICENSES/'+n for n in ('dxvk.txt','dxbc-spirv.txt','libdisplay-info.txt','togl.txt')]
+    assert not [n for n in engine if n not in names[0]] and not any('bin/linux64' in n for n in names[1])
+    with zipfile.ZipFile(packages[0]['archive']) as archive:
+        assert archive.read('GarrysMod/bin/linux64/libdxvk_d3d9.so')==(renderer/'src/d3d9/libdxvk_d3d9.so.0.30101').read_bytes()
+        assert archive.read('GarrysMod/bin/linux64/DXVK-LICENSES/togl.txt')==(ROOT/'licenses/linux/togl.txt').read_bytes()
+    for p,listed in zip(packages,names):
+        assert 'GarrysMod/garrysmod/lua/bin/'+NATIVE_LINUX_RUNTIME in listed and 'GarrysMod/garrysmod/lua/bin/LICENSES/icu.txt' in listed,p['name']
+    vulkan_install=(Path(packages[0]['folder'])/'INSTALL.txt').read_text(encoding='utf8')
+    opengl_install=(Path(packages[1]['folder'])/'INSTALL.txt').read_text(encoding='utf8')
+    assert 'Verify integrity of game files' in vulkan_install and 'dxvk-linux/' in vulkan_install and 'libtogl_client.so' in opengl_install
+    # A DXVK library other than the recorded one is refused, and so is d3d9.dll as a Linux renderer.
+    (renderer/'src/d3d9/libdxvk_d3d9.so.0.30101').write_bytes(os.urandom(9216))
+    result=package_linux('--renderer',str(renderer));assert result.returncode!=0 and 'does not match' in result.stderr,result.stderr
+    result=package_linux('--renderer',str(build/'d3d9.dll'));assert result.returncode!=0 and 'build folder' in result.stderr,result.stderr
+
     def update(artifact):
         tree=scratch/('policy-'+os.urandom(4).hex());(tree/'scripts').mkdir(parents=True);(tree/'addon/lua/mmdhl').mkdir(parents=True)
         shutil.copyfile(ROOT/'scripts/update-native-policy.ps1',tree/'scripts/update-native-policy.ps1')
@@ -80,7 +122,7 @@ try:
     code,log,_=update(variant('no-runtime',lambda t:(t/'Review-Package-vulkan/GarrysMod/bin/win64/mmdhl_runtime_win64.dll').unlink()));assert code!=0 and 'game runtime' in log,log
     code,log,_=update(variant('bad-renderer',lambda t:(t/'Review-Package-vulkan/GarrysMod/bin/win64/d3d9.dll').write_bytes(b'changed')));assert code!=0 and 'renderer' in log,log
     code,log,_=update(variant('no-renderer',lambda t:shutil.rmtree(t/'Review-Package-vulkan')));assert code!=0 and 'no package ships d3d9.dll' in log,log
-    print('PASS: renderer kept by native-only manifest runs, packager reports staged names, policy update rejects manifest-only, tampered, runtime-less and renderer-less artifacts')
+    print('PASS: renderer kept by native-only manifest runs (Windows and Linux), packager reports staged names and ships the Linux renderer only in -vulkan, policy update rejects manifest-only, tampered, runtime-less and renderer-less artifacts')
 finally:
     assert scratch.resolve().parent==parent and scratch.name.startswith('release-')
     shutil.rmtree(scratch)

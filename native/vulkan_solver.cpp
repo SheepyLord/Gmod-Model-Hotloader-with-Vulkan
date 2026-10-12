@@ -267,14 +267,21 @@ struct Device {
  bool attachShared(){
   if(std::getenv("MMDHL_VULKAN_STANDALONE"))return false;
 #ifndef _WIN32
-  // Linux games render through OpenGL (ToGL): there is no DXVK device to share.
-  return false;
+  // The Linux Vulkan package's libtogl_client.so runs the game on DXVK's
+  // native d3d9 (bin/linux64/libdxvk_d3d9.so); with the game's own OpenGL
+  // ToGL it is not loaded and the solver keeps a device of its own.
+  void* d3d9=dlopen("libdxvk_d3d9.so.0",RTLD_NOW|RTLD_NOLOAD);if(!d3d9)return false;
+  auto acquireShared=reinterpret_cast<PFN_DXVK_AcquireSharedComputeQueue>(dlsym(d3d9,"DXVK_AcquireSharedComputeQueue"));
+  sharedLock=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(dlsym(d3d9,"DXVK_LockSharedComputeQueue"));
+  sharedUnlock=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(dlsym(d3d9,"DXVK_UnlockSharedComputeQueue"));
+  sharedRelease=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(dlsym(d3d9,"DXVK_ReleaseSharedComputeQueue"));
 #else
   HMODULE d3d9=GetModuleHandleW(L"d3d9.dll");if(!d3d9)return false;
   auto acquireShared=reinterpret_cast<PFN_DXVK_AcquireSharedComputeQueue>(GetProcAddress(d3d9,"DXVK_AcquireSharedComputeQueue"));
   sharedLock=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(GetProcAddress(d3d9,"DXVK_LockSharedComputeQueue"));
   sharedUnlock=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(GetProcAddress(d3d9,"DXVK_UnlockSharedComputeQueue"));
   sharedRelease=reinterpret_cast<PFN_DXVK_SharedComputeQueueOwner>(GetProcAddress(d3d9,"DXVK_ReleaseSharedComputeQueue"));
+#endif
   if(!acquireShared||!sharedLock||!sharedUnlock||!sharedRelease)return false;
   DXVK_SHARED_COMPUTE_QUEUE q{};q.Version=DXVK_SHARED_COMPUTE_QUEUE_VERSION;
   if(FAILED(acquireShared(&q))||!q.Device||!q.GetInstanceProcAddr||!q.QueueCount)return false;
@@ -297,7 +304,6 @@ struct Device {
   if(auto setting=std::getenv("MMDHL_VULKAN_OCCUPANCY");setting&&*setting){if(std::string(setting)=="off")setOccupancy=nullptr;else occupancyPriority=std::clamp(float(std::atof(setting)),0.f,1.f);}
   if(auto setting=std::getenv("MMDHL_VULKAN_THROTTLING");setting&&*setting)occupancyThrottling=std::clamp(float(std::atof(setting)),0.f,1.f);
   return true;
-#endif
  }
  void init(){if(initialized)return;initialized=true;try{
 #ifdef _WIN32

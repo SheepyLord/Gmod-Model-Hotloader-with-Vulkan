@@ -53,7 +53,7 @@ def installed(server=False,dedicated=False):
     return result
 
 count=0
-def evaluate(files=None,server=False,dedicated=False,windows=True,arch='x64',p=None):
+def evaluate(files=None,server=False,dedicated=False,windows=True,arch='x64',p=None,linux=False):
     global count
     count+=1; reads=[]; files=installed(server,dedicated) if files is None else files
     def reader(path,search,*_):
@@ -61,7 +61,7 @@ def evaluate(files=None,server=False,dedicated=False,windows=True,arch='x64',p=N
         found=files.get(key)
         if isinstance(found,str): return None,found
         return (convert(found),None) if found else (None,'missing')
-    s=lua.globals().mmdhl.EvaluateInstallation(convert(p or policy),reader,convert(dict(server=server,dedicated=dedicated,windows=windows,arch=arch)))
+    s=lua.globals().mmdhl.EvaluateInstallation(convert(p or policy),reader,convert(dict(server=server,dedicated=dedicated,windows=windows,linux=linux,arch=arch)))
     return s,reads
 
 # The recommended release: every feature, no issue.
@@ -90,8 +90,9 @@ for key in ('client','runtime','worker','coacd'):
 files=installed();files[COPY]['sha256']='0'*64
 s,_=evaluate(files);assert features(s)==CLIENT_ON and codes(s)==['damaged_or_unrecognized'] and s.issues[1].component=='workerRuntime' and s.issues[1].feature=='imports' and s.issues[1].warning
 # Another platform: no binary exists for it, so nothing is read; CheckInstallation keeps everything off (below).
-for windows,arch in ((False,'x64'),(True,'x86'),(True,'arm64')):
-    s,reads=evaluate(windows=windows,arch=arch);v=s.issues[1]
+# Linux's default branch is 32-bit: only the x86-64 branch has binaries.
+for windows,linux,arch in ((False,False,'x64'),(True,False,'x86'),(True,False,'arm64'),(False,True,'x86')):
+    s,reads=evaluate(windows=windows,arch=arch,linux=linux);v=s.issues[1]
     assert codes(s)==['unsupported_platform'] and v.warning is True and v.cause is True and v.feature=='core' and not reads and next(iter(s.files.keys()),None) is None
 for dedicated in (False,True):
     s,reads=evaluate(server=True,dedicated=dedicated);assert features(s)==SERVER_ON and codes(s)==[]
@@ -235,6 +236,35 @@ files=installed();files[d3d9]='unreadable'
 s,_=evaluate(files,p=p);assert s.renderer.kind=='other' and s.renderer.error=='unreadable' and s.features.rendering and len(s.issues)==0
 for dedicated in (False,True):
     s,reads=evaluate(server=True,dedicated=dedicated,p=p);assert s.renderer is None and d3d9 not in reads
+# Linux (x86-64 branch): every file in lua/bin, and the renderer is bin/linux64/libtogl_client.so,
+# the game's ToGL (OpenGL) unless it is the Vulkan package's replacement (DXVK) recorded for
+# this or another release. It never gates a feature either.
+LINUX_NAMES=dict(client='gmcl_mmdhl_linux64.dll',server='gmsv_mmdhl_linux64.dll',runtime='libmmdhl_runtime_linux64.so',worker='mmdhl_worker_linux64',coacd='lib_coacd.so')
+togl=dict(name='libtogl_client.so',size=1261800,sha256='a'*64,kind='dxvk',dxvk='v3.1.1',patches=['0001-shared-compute-queues.patch','dxvk-linux/0001-sdl2-surface-and-gmod-profile.patch'],
+          library=dict(name='libdxvk_d3d9.so',size=7340032,sha256='b'*64))
+def linux_record(label,digit,renderer):
+    return dict(release=label,build=label+'-linux',installApi=1,platform='linux64',renderer=renderer,url=release['url'],
+                files={key:dict(name=name,size=4096+i,sha256=digit*64) for i,(key,name) in enumerate(LINUX_NAMES.items())})
+lp=deepcopy(policy);lp['releases'][policy['recommended']]['platforms']={'linux64':linux_record(policy['recommended'],'2',togl)}
+lp['releases']['1.0.0']=dict(deepcopy(old),platforms={'linux64':linux_record('1.0.0','3',dict(togl,sha256='c'*64))});lp['approved'].append('1.0.0')
+linux_files={'MOD/lua/bin/'+name:dict(size=4096+i,sha256='2'*64,path='fixture/'+name) for i,name in enumerate(LINUX_NAMES.values())}
+togl_path='BASE_PATH/bin/linux64/libtogl_client.so'
+for sha,kind,current,owner in ((None,'opengl',None,None),('a'*64,'dxvk',True,release['release']),('c'*64,'dxvk',None,'1.0.0'),('f'*64,'opengl',None,None),('unreadable','opengl',None,None)):
+    files=deepcopy(linux_files)
+    if sha=='unreadable':files[togl_path]='unreadable'
+    elif sha:files[togl_path]=dict(size=togl['size'],sha256=sha,path='fixture/libtogl_client.so')
+    s,reads=evaluate(files,windows=False,linux=True,p=lp)
+    assert s.platform=='linux64' and s.installed==release['release'] and togl_path in reads and d3d9 not in reads,(sha,codes(s))
+    assert s.renderer.kind==kind and s.renderer.current==current and s.renderer.release==owner,(sha,kind)
+    assert features(s)==CLIENT_ON and len(s.issues)==0 and not s.unverified and not s.blocked,(sha,codes(s))
+# A policy without Linux renderer records: the game's OpenGL.
+files=deepcopy(linux_files);files[togl_path]=dict(size=togl['size'],sha256='a'*64)
+nolp=deepcopy(lp);del nolp['releases'][policy['recommended']]['platforms']['linux64']['renderer'];del nolp['releases']['1.0.0']['platforms']['linux64']['renderer']
+s,_=evaluate(files,windows=False,linux=True,p=nolp);assert s.renderer.kind=='opengl' and len(s.issues)==0
+for dedicated in (False,True):
+    files={'MOD/lua/bin/'+LINUX_NAMES[key]:dict(size=4096+i,sha256='2'*64) for i,key in enumerate(LINUX_NAMES) if key in ('server','runtime')}
+    s,reads=evaluate(files,server=True,dedicated=dedicated,windows=False,linux=True,p=lp)
+    assert s.renderer is None and togl_path not in reads and features(s)==SERVER_ON and codes(s)==[],codes(s)
 # Every approved release evaluates without any issue on client and server, as
 # publish-native-release.py's evaluate() requires before it publishes.
 spec=importlib.util.spec_from_file_location('publish_native_release',ROOT/'scripts/publish-native-release.py')
@@ -334,7 +364,7 @@ net={Start=function() end,WriteString=function() end,Broadcast=function() end,Se
 hook={Add=function() end,Run=function() end}
 TIMERS={} timer={Create=function(name,_,_,f) TIMERS[name]=f end,Remove=function(name) TIMERS[name]=nil end,Simple=function() end}
 concommand={Add=function() end}
-system={IsWindows=function() return PY_WINDOWS end,IsLinux=function() return false end} jit={arch=PY_ARCH}
+system={IsWindows=function() return PY_WINDOWS end,IsLinux=function() return PY_LINUX end} jit={arch=PY_ARCH}
 game={IsDedicated=function() return false end,SinglePlayer=function() return true end}
 CurTime=function() return 0 end RealTime=function() return 0 end
 MsgN=function(text) EVENTS[#EVENTS+1]='console: '..text end
@@ -370,7 +400,7 @@ def worker(build=None,runtime_sha=None,label=None):
     """The worker self-test's answer: the worker's identity and its runtime copy's."""
     return {'identity':{'release':label or release['release'],'build':build or release['build']},'runtime':{'build':build or release['build'],'sha256':runtime_sha or release['files']['runtime']['sha256']},'coacd':True}
 
-def session(files=None,builds=None,p=None,server=False,windows=True,arch='x64',info=None,require_error=None,probe_starts=True):
+def session(files=None,builds=None,p=None,server=False,windows=True,arch='x64',info=None,require_error=None,probe_starts=True,linux=False):
     """CheckInstallation as autorun runs it, in a fresh Lua session."""
     lua=LuaRuntime(unpack_returned_tuples=True)
     lua.execute(f'unpack=table.unpack mmdhl={{}} SERVER={"true" if server else "false"} CLIENT=not SERVER')
@@ -387,7 +417,7 @@ def session(files=None,builds=None,p=None,server=False,windows=True,arch='x64',i
     g.PY_DISK=convert({k:({'unreadable':True} if v=='unreadable' else {'size':v['size'],'sha256':v['sha256']}) for k,v in files.items()},lua)
     g.PY_BUILDS=convert({k:v for k,v in (builds or {}).items() if v},lua)
     g.PY_POLICY=convert(p or policy,lua)
-    g.PY_WINDOWS,g.PY_ARCH,g.PY_PROBE_STARTS,g.PY_REQUIRE_ERROR=windows,arch,probe_starts,require_error
+    g.PY_WINDOWS,g.PY_LINUX,g.PY_ARCH,g.PY_PROBE_STARTS,g.PY_REQUIRE_ERROR=windows,linux,arch,probe_starts,require_error
     lua.execute(STUBS)
     g.INFO=convert(info or identity(server=server),lua)
     lua.execute(source.replace(HASHED,"value={size=size,sha256=PY_DISK[search..'/'..path].sha256,path=search..'/'..path}"))
@@ -459,8 +489,8 @@ assert ok is False and 'require mmdhl' in events(g) and codes(s)==['missing','lo
 assert same(M,M.loadError,L('install.error.file_missing',path='bin/win64/'+NAMES['runtime'])) and not any(features(s))
 
 # Another platform: nothing is read and nothing loads; the platform is the reason.
-for windows,arch in ((False,'x64'),(True,'x86')):
-    lua_,g,M,ok=session(windows=windows,arch=arch);s=M.GetInstallationStatus()
+for windows,linux,arch in ((False,False,'x64'),(True,False,'x86'),(False,True,'x86')):
+    lua_,g,M,ok=session(windows=windows,arch=arch,linux=linux);s=M.GetInstallationStatus()
     assert ok is False and 'require mmdhl' not in events(g) and len(g.LOOKED)==0 and not any(features(s)) and codes(s)==['unsupported_platform'] and s.issues[1].warning is None
     assert same(M,M.loadError,L('install.error.unsupported_platform'))
 # A broken policy: require is tried; the files on disk identify the loaded module (status.expected nil).

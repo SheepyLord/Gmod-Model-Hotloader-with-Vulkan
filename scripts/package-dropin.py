@@ -7,10 +7,14 @@ its device; <name>-opengl-remix leaves Source's Direct3D 9 in place for PCs
 where DXVK does not work or another d3d9.dll (RTX Remix, ReShade) must stay.
 Without --renderer, one package named <name> holds the native files only.
 
-A Linux build (native-release.json's platform linux64 or linux) makes one package
-named <name> (default Model-Hotloader-<release>-<platform>) with every file in
-garrysmod/lua/bin: Garry's Mod on Linux draws with OpenGL, so there is no renderer
-to replace, and the runtime is found beside the modules ($ORIGIN).
+A Linux build (native-release.json's platform linux64) puts every native file in
+garrysmod/lua/bin (the runtime is found beside the modules, $ORIGIN). Garry's Mod
+on Linux draws through ToGL (bin/linux64/libtogl_client.so: Direct3D 9 on OpenGL).
+With --renderer (the renderer build folder, build-dxvk-linux64, recorded in
+native-release.json) two packages are made: <name>-vulkan also replaces ToGL with
+renderer/togl's libtogl_client.so and adds DXVK's libdxvk_d3d9.so, so the game
+renders through Vulkan; <name>-opengl leaves the game's ToGL. Without --renderer,
+one package named <name> holds the native files only.
 
 Every package also carries the project's license and the notices of everything
 built into the native files in GarrysMod/bin/win64/LICENSES (DXVK's in
@@ -24,7 +28,7 @@ their native-release.json record (release, build, sizes and SHA-256) is added to
 native_policy.lua, External Models shows a warning that it does not know them.
 """
 import argparse, hashlib, json, os, pathlib, re, shutil, zipfile
-from native_manifest import PLATFORM_FILES
+from native_manifest import PLATFORM_FILES, linux_renderer_files
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NATIVE = ('gmcl_mmdhl_win64.dll', 'gmsv_mmdhl_win64.dll', 'mmdhl_runtime_win64.dll', 'mmdhl_worker.exe', 'lib_coacd.dll')
@@ -111,27 +115,53 @@ LINUX_STEPS = '''
    (the one that contains bin and garrysmod), NOT into the garrysmod folder inside it.
    It adds:
    - garrysmod/lua/bin: native modules, import worker and runtime{coacd_line}
-   - garrysmod/shaders/fxc: character model shaders
+   - garrysmod/shaders/fxc: character model shaders{renderer_line}
    - garrysmod/lua/bin/LICENSES: license notices of Model Hotloader and the
      libraries built into these files
    Check: <Garry's Mod folder>/garrysmod/lua/bin/{runtime} must exist afterwards.
 3. Start Garry's Mod and open Q > External Models. Missing or mismatched files
-   are reported there with repair instructions.
+   are reported there with repair instructions.{renderer_check}
    Files the Workshop addon does not know yet (a test build, a release newer
    than the addon) still run, with a warning there.
 
-Garry's Mod draws with OpenGL on Linux; this package does not change that.
 Choosing files to import opens zenity (part of the Steam Linux Runtime and of
 most desktops) or, without it, kdialog.
 The files need glibc 2.28 or newer, which every Steam Linux Runtime provides.
 '''
+LINUX_VULKAN = '''
+This package switches Garry's Mod to Vulkan: it replaces bin/linux64/libtogl_client.so,
+the game's layer that runs its Direct3D 9 renderer on OpenGL, with Model Hotloader's,
+which runs it on DXVK (every game session, not only Model Hotloader). The Vulkan
+physics processor can then share the renderer's device. It needs a graphics
+driver with Vulkan 1.3.
+
+To return to OpenGL, verify the game files in Steam (Garry's Mod > Properties >
+Installed Files > Verify integrity of game files): that restores the game's own
+libtogl_client.so. Do the same if the game no longer starts or draws wrongly. A
+Garry's Mod update that replaces libtogl_client.so also returns the game to OpenGL;
+copy this package again afterwards.
+
+DXVK {dxvk} (github.com/doitsujin/dxvk; zlib license, its dxbc-spirv and
+libdisplay-info parts MIT) with Model Hotloader's patches:
+{patches}
+libtogl_client.so keeps the interface of Valve's ToGL (MIT). Their notices are in
+bin/linux64/DXVK-LICENSES.
+'''
+LINUX_NO_VULKAN = '''
+This package leaves Garry's Mod on its own OpenGL renderer (ToGL). If you installed
+the -vulkan package before, verify the game files in Steam (Garry's Mod >
+Properties > Installed Files) to restore the game's libtogl_client.so (only when
+Q > External Models shows "Renderer: DXVK (Vulkan)").
+'''
 LINUX_BRANCHES = {
-    'linux64': ('64-bit (x86-64 branch)', 'It must be on the 64-bit branch (Steam > Garry\'s Mod >\n   Properties > Betas > x86-64). On the default branch use the -linux package.'),
-    'linux': ('32-bit (default branch)', 'This package is for the default branch, which is 32-bit on\n   Linux (Steam > Garry\'s Mod > Properties > Betas > None). On the x86-64 branch\n   use the -linux64 package. Detailed (multi-hull) collision for static props\n   needs the 64-bit branch: CoACD has no 32-bit build.'),
+    'linux64': ('64-bit (x86-64 branch)', 'It must be on the 64-bit branch (Steam > Garry\'s Mod >\n   Properties > Betas > x86-64): the default branch is 32-bit on Linux, which\n   Model Hotloader does not support.'),
 }
-# Notices of what only the Linux files contain: ICU (built into the runtime) and, for
-# linux64, the OpenMP runtime that CoACD's wheel bundles.
-LINUX_NOTICES = {'linux64': ('icu.txt', 'libgomp-GPL-3.0-with-GCC-exception.txt'), 'linux': ('icu.txt',)}
+# Notices of what only the Linux files contain: ICU (built into the runtime) and the OpenMP
+# runtime that CoACD's wheel bundles.
+LINUX_NOTICES = {'linux64': ('icu.txt', 'libgomp-GPL-3.0-with-GCC-exception.txt')}
+# The Linux renderer's notices: DXVK's (as on Windows) and Valve's ToGL, whose interface
+# libtogl_client.so keeps.
+LINUX_RENDERER_NOTICES = {'togl.txt': ROOT/'licenses/linux/togl.txt'}
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -140,7 +170,7 @@ def openmp_files(native_dir):
     """CoACD's OpenMP runtime (libgomp-<hash>.so.1), which lib_coacd.so loads from beside it."""
     return sorted(p.name for p in native_dir.glob('libgomp*.so*'))
 
-def stage_linux(output, name, release, native_dir):
+def stage_linux(output, name, release, native_dir, renderer=None, dxvk=ROOT/'vendor/dxvk-native'):
     platform = release['platform']
     folder = output/name
     archive = output/(name + '.zip')
@@ -171,10 +201,29 @@ def stage_linux(output, name, release, native_dir):
         shutil.copyfile(notice, notices/notice.name)
     for notice in LINUX_NOTICES[platform]:
         shutil.copyfile(ROOT/'licenses/linux'/notice, notices/notice)
+    record = release.get('renderer') or {}
+    if renderer:
+        # The game loads ToGL from bin/linux64; the replacement loads DXVK from beside itself.
+        engine = game/'bin/linux64'
+        engine.mkdir(parents=True)
+        shim, library = renderer
+        for source, target in ((shim, 'libtogl_client.so'), (library, 'libdxvk_d3d9.so')):
+            shutil.copyfile(source, engine/target)
+            (engine/target).chmod(0o755)
+        (engine/'DXVK-LICENSES').mkdir()
+        for notice, relative in DXVK_LICENSES.items():
+            shutil.copyfile(dxvk/relative, engine/'DXVK-LICENSES'/notice)
+        for notice, source in LINUX_RENDERER_NOTICES.items():
+            shutil.copyfile(source, engine/'DXVK-LICENSES'/notice)
     branch, step = LINUX_BRANCHES[platform]
     text = LINUX_HEADER.format(release=release['release'], build=release['build'], branch=branch, workshop=WORKSHOP, repository=PUBLIC_REPOSITORY)
+    patches = '\n'.join('  - ' + patch for patch in record.get('patches', []))
+    text += (LINUX_VULKAN.format(dxvk=record.get('dxvk', '?'), patches=patches) if renderer else LINUX_NO_VULKAN if record else '')
     text += LINUX_STEPS.format(branch_step=step, runtime=release['files']['runtime']['name'],
-                               coacd_line=', and CoACD with\n     its OpenMP runtime' if 'coacd' in release['files'] else '')
+                               coacd_line=', and CoACD with\n     its OpenMP runtime' if 'coacd' in release['files'] else '',
+                               renderer_line=('\n   - bin/linux64/libtogl_client.so and libdxvk_d3d9.so: the Vulkan renderer\n'
+                                              '     (DXVK), and their notices in bin/linux64/DXVK-LICENSES') if renderer else '',
+                               renderer_check='\n   Its first line also names the renderer: DXVK (Vulkan) or OpenGL.' if record else '')
     (folder/'INSTALL.txt').write_text(text, encoding='utf8', newline='\n')
     staged = sorted(f for f in folder.rglob('*') if f.is_file())
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
@@ -238,8 +287,8 @@ def stage(output, name, release, native_dir, renderer=None, dxvk=ROOT/'vendor/dx
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--bin', type=pathlib.Path, default=ROOT/'build/bin/Release', help='Folder with the built native files and native-release.json')
-    p.add_argument('--renderer', type=pathlib.Path, help='The patched DXVK d3d9.dll recorded in native-release.json; makes <name>-vulkan with it and <name>-opengl-remix without it')
-    p.add_argument('--dxvk-source', type=pathlib.Path, default=ROOT/'vendor/dxvk', help='The DXVK checkout the renderer was built from (license files)')
+    p.add_argument('--renderer', type=pathlib.Path, help='The patched DXVK d3d9.dll recorded in native-release.json; makes <name>-vulkan with it and <name>-opengl-remix without it. For Linux: the renderer build folder (build-dxvk-linux64); makes <name>-vulkan and <name>-opengl')
+    p.add_argument('--dxvk-source', type=pathlib.Path, help='The DXVK checkout the renderer was built from (license files; default vendor/dxvk, for Linux vendor/dxvk-native)')
     p.add_argument('--output', type=pathlib.Path, default=ROOT/'dist')
     p.add_argument('--name', help='Folder and archive name (default Model-Hotloader-<release>-win64); --renderer adds -vulkan and -opengl-remix')
     args = p.parse_args()
@@ -251,21 +300,32 @@ def main():
     files = {entry['name']: entry for entry in release['files'].values()}
     if sorted(files) != sorted(expected):
         raise ValueError('native-release.json must list exactly: ' + ', '.join(expected))
-    if platform != 'win64' and args.renderer:
-        p.error('The DXVK renderer belongs to the Windows packages only')
+    if args.renderer and args.renderer.is_dir() != (platform != 'win64'):
+        p.error('The Windows renderer is d3d9.dll; the Linux one is its build folder (build-dxvk-linux64)')
+    dxvk_source = args.dxvk_source or ROOT/('vendor/dxvk' if platform == 'win64' else 'vendor/dxvk-native')
     if 'coacd' in release['files'] and platform != 'win64' and not openmp_files(args.bin):
         raise FileNotFoundError("CoACD's OpenMP runtime (libgomp*.so*) is missing beside lib_coacd.so; run scripts/bootstrap.py")
     for name, entry in files.items():
         path = args.bin/name
         if path.stat().st_size != entry['size'] or sha256(path) != entry['sha256']:
             raise ValueError(f'{name} does not match native-release.json; rebuild before packaging')
+    renderer = args.renderer
     if args.renderer:
         record = release.get('renderer')
-        if not record or record.get('name') != 'd3d9.dll' or args.renderer.stat().st_size != record['size'] or sha256(args.renderer) != record['sha256']:
-            raise ValueError('The renderer does not match native-release.json; run scripts/native_manifest.py --renderer first')
-        missing = [relative for relative in DXVK_LICENSES.values() if not (args.dxvk_source/relative).is_file()]
+        if platform == 'win64':
+            if not record or record.get('name') != 'd3d9.dll' or args.renderer.stat().st_size != record['size'] or sha256(args.renderer) != record['sha256']:
+                raise ValueError('The renderer does not match native-release.json; run scripts/native_manifest.py --renderer first')
+        else:
+            renderer = linux_renderer_files(args.renderer)
+            library = (record or {}).get('library') or {}
+            if (not record or record.get('name') != 'libtogl_client.so' or renderer[0].stat().st_size != record['size'] or sha256(renderer[0]) != record['sha256']
+                    or renderer[1].stat().st_size != library.get('size') or sha256(renderer[1]) != library.get('sha256')):
+                raise ValueError('The renderer does not match native-release.json; run scripts/native_manifest.py --renderer first')
+            if not all(source.is_file() for source in LINUX_RENDERER_NOTICES.values()):
+                raise FileNotFoundError('The ToGL notice (licenses/linux/togl.txt) is missing')
+        missing = [relative for relative in DXVK_LICENSES.values() if not (dxvk_source/relative).is_file()]
         if missing:
-            raise FileNotFoundError('DXVK license files are missing (' + ', '.join(missing) + '); build the renderer with scripts/build-dxvk.ps1')
+            raise FileNotFoundError('DXVK license files are missing (' + ', '.join(missing) + '); build the renderer with scripts/build-dxvk.ps1' + (' or scripts/build-dxvk-linux.sh' if platform != 'win64' else ''))
     name = args.name or f"Model-Hotloader-{release['release']}-{platform}"
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,109}', name):
         p.error('Invalid package name')
@@ -275,10 +335,13 @@ def main():
         raise FileNotFoundError('The Linux license notices (licenses/linux) are missing')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    if platform != 'win64':
+    if platform != 'win64' and renderer:
+        packages = [stage_linux(output, name + '-vulkan', release, args.bin, renderer, dxvk_source),
+                    stage_linux(output, name + '-opengl', release, args.bin)]
+    elif platform != 'win64':
         packages = [stage_linux(output, name, release, args.bin)]
     elif args.renderer:
-        packages = [stage(output, name + '-vulkan', release, args.bin, args.renderer, args.dxvk_source),
+        packages = [stage(output, name + '-vulkan', release, args.bin, args.renderer, dxvk_source),
                     stage(output, name + '-opengl-remix', release, args.bin)]
     else:
         packages = [stage(output, name, release, args.bin)]

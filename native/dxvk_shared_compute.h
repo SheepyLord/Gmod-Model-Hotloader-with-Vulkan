@@ -8,9 +8,12 @@
 #ifdef _WIN32
 #include <Windows.h>
 #else
-// Linux games render through ToGL (OpenGL), never DXVK: the types keep the header compiling.
+// DXVK native (the Linux Vulkan package's libdxvk_d3d9.so) exports the same functions.
 typedef int32_t HRESULT;
 #define __stdcall
+#ifndef FAILED
+#define FAILED(hr) ((HRESULT)(hr)<0)
+#endif
 #endif
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES

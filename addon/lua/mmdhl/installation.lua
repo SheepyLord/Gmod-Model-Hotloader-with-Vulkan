@@ -89,20 +89,18 @@ local function misplacedRoots(find)
  return roots
 end
 -- File names when the policy cannot name them (it is missing or broken, or records no binaries
--- of the release for this platform). win64: Windows x64; linux64: Linux, the x86-64 branch;
--- linux: Linux, the default branch (32-bit). On Linux every file sits in garrysmod/lua/bin
--- (the modules load the runtime from beside them); CoACD exists for 64-bit Linux only.
+-- of the release for this platform). win64: Windows x64; linux64: Linux, the x86-64 branch
+-- (the default branch is 32-bit on Linux: no binary exists for it). On Linux every file sits
+-- in garrysmod/lua/bin (the modules load the runtime from beside them).
 local platformFiles={
  win64={client={name='gmcl_mmdhl_win64.dll'},server={name='gmsv_mmdhl_win64.dll'},runtime={name='mmdhl_runtime_win64.dll'},worker={name='mmdhl_worker.exe'},coacd={name='lib_coacd.dll'}},
  linux64={client={name='gmcl_mmdhl_linux64.dll'},server={name='gmsv_mmdhl_linux64.dll'},runtime={name='libmmdhl_runtime_linux64.so'},worker={name='mmdhl_worker_linux64'},coacd={name='lib_coacd.so'}},
- linux={client={name='gmcl_mmdhl_linux.dll'},server={name='gmsv_mmdhl_linux.dll'},runtime={name='libmmdhl_runtime_linux.so'},worker={name='mmdhl_worker_linux'}},
 }
 -- The platform of this game process, or nil where no binary exists.
 local function platformOf(env)
  if env.platform~=nil then return env.platform or nil end
  if env.windows and env.arch=='x64' then return 'win64' end
  if env.linux and env.arch=='x64' then return 'linux64' end
- if env.linux and env.arch=='x86' then return 'linux' end
 end
 M.PlatformOf=platformOf
 -- A release's record for this platform: the record itself for Windows (the 2.x records are
@@ -160,8 +158,8 @@ function M.EvaluateInstallation(policy,reader,env)
   checks[#checks+1]={'worker','lua/bin/'..files.worker.name,'MOD','imports'}
   -- The worker's own copy of the runtime (Windows; on Linux it is the same file).
   if windows then checks[#checks+1]={'workerRuntime','lua/bin/'..files.runtime.name,'MOD','imports'} end
+  -- A release recorded without CoACD: props get hull collision, and nothing is missing.
   if files.coacd then checks[#checks+1]={'coacd','lua/bin/'..files.coacd.name,'MOD','detailedCollision'}
-  -- 32-bit Linux has no CoACD build: props get hull collision, and nothing is missing.
   else s.features.detailedCollision=false end
  end
  -- The exact bytes checked, for diagnostics.
@@ -221,9 +219,17 @@ function M.EvaluateInstallation(policy,reader,env)
  end
  -- The renderer (bin/win64/d3d9.dll) is reported, never required: the Vulkan
  -- package ships the patched DXVK there, the no-Vulkan package leaves Source's
- -- Direct3D 9, and RTX Remix or other tools may own the file. Linux renders
- -- through OpenGL (ToGL) in every case.
- if not env.server and not windows then s.renderer={kind='opengl'} end
+ -- Direct3D 9, and RTX Remix or other tools may own the file.
+ -- On Linux the game draws through bin/linux64/libtogl_client.so: its own ToGL
+ -- (Direct3D 9 on OpenGL), or the Vulkan package's replacement, which runs
+ -- Direct3D 9 on DXVK. A file no release records is the game's.
+ if not env.server and not windows then
+  local actual=reader('bin/linux64/libtogl_client.so','BASE_PATH',selected and selected.renderer and selected.renderer.size)
+  local function same(record) return actual~=nil and type(record)=='table' and record.size==actual.size and record.sha256==actual.sha256 end
+  s.renderer={kind='opengl'}
+  if selected and same(selected.renderer) then s.renderer={kind='dxvk',release=selected.release,current=true}
+  else for id,release in pairs(releases) do if same(release.renderer) then s.renderer={kind='dxvk',release=id} break end end end
+ end
  if not env.server and windows then
   local actual,err=reader('bin/win64/d3d9.dll','BASE_PATH',selected and selected.renderer and selected.renderer.size)
   local function same(record) return type(record)=='table' and record.size==actual.size and record.sha256==actual.sha256 end

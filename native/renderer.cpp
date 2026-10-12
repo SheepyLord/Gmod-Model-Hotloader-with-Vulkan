@@ -368,7 +368,7 @@ void setupSourceLighting(float x,float y,float z){
         requireOwnedSlots(lightingTools,L"engine.dll",{abi::EngineToolLightingConditions});
         requireAbiRva(L"engine.dll","lighting",reinterpret_cast<uintptr_t>(slots[abi::EngineToolLightingConditions])-base);
     });
-    static_assert(sizeof(LightDesc_t)==88||sizeof(void*)==4);
+    static_assert(sizeof(LightDesc_t)==88);
     Vector ambient[6];LightDesc_t lights[4];std::memset(lights,0,sizeof(lights));
     auto slots=*reinterpret_cast<void***>(lightingTools);
     int count=reinterpret_cast<int(*)(void*,const Vector&,Vector*,int,LightDesc_t*)>(slots[abi::EngineToolLightingConditions])(lightingTools,center,ambient,4,lights);
@@ -493,7 +493,7 @@ public:
     void discard(){delete this;}
 };
 // What GMod's IMatRenderContext::GetCallQueue returns on the queued context
-// (this+0x2B0; this+0x1DC in the 32-bit Linux build): not tier1's virtual ICallQueue but the context's concrete call
+// (this+0x2B0): not tier1's virtual ICallQueue but the context's concrete call
 // list, a singly linked list of {next, functor} elements followed by the bump
 // allocator the elements come from (next pointer, 16 MB buffer). Source's own
 // studiorender.dll appends to it inline exactly as appendCall does; the render

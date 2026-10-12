@@ -32,7 +32,7 @@ const std::map<std::string,std::set<std::string>> guards={
 };
 }
 #ifndef _WIN32
-// The ABI family of this build's profiles: source-linux64-v1 or source-linux-v1.
+// The ABI family of this build's profiles: source-linux64-v1.
 constexpr const char* Family="source-" MMDHL_PLATFORM "-v1";
 namespace {
 // Shared objects found once stay where they are for the game's lifetime.

@@ -38,10 +38,8 @@ const char* Fixture="tests/fixtures/native-cloth21.pmx";
 // manylinux_2_28 container's GCC 14, scripts/build-linux.sh).
 #if defined(_WIN32)
 const char* Golden="tests/fixtures/physics/golden.json";
-#elif defined(__x86_64__)
-const char* Golden="tests/fixtures/physics/golden-linux64.json";
 #else
-const char* Golden="tests/fixtures/physics/golden-linux.json";
+const char* Golden="tests/fixtures/physics/golden-linux64.json";
 #endif
 // Shared with tests/test_physics_editor.py: Lua's P.Canonical and P.CheckPhysics must agree.
 const char* CanonicalCases="tests/fixtures/physics/canonical_cases.json";

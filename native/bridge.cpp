@@ -37,8 +37,7 @@ V subtract(V a,V b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
 bool finite(V v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
 template<typename R,typename... Args> R call(void* object,size_t slot,Args... args){auto table=*reinterpret_cast<void***>(object);auto f=reinterpret_cast<R(*)(void*,Args...)>(table[slot]);return f(object,args...);}
 // A virtual that returns a Vector by value (GetMassCenterLocalSpace, GetInertia). MSVC passes
-// the result's address after this; GCC returns it as a free function would: in registers on
-// x86-64, through a hidden first argument on 32-bit x86.
+// the result's address after this; GCC returns it as a free function would (in registers).
 V vectorCall(void* object,size_t slot){
 #ifdef _WIN32
  V out;call<void>(object,slot,&out);return out;
@@ -53,7 +52,7 @@ void initialize(){if(physics){auto current=call<void*>(physics,activeEnvironment
 
     base=reinterpret_cast<uintptr_t>(module);auto factory=reinterpret_cast<void*(*)(const char*,int*)>(GetProcAddress(module,"CreateInterface"));
 #else
-    // vphysics_client.so (x86-64 client) or vphysics.so (32-bit client, dedicated servers).
+    // vphysics_client.so (client) or vphysics.so (dedicated servers).
     auto factory=reinterpret_cast<void*(*)(const char*,int*)>(gameInterfaceFactory(L"vphysics.dll"));if(!factory)throw std::runtime_error("VPhysics is not loaded");
     fingerprint=requireGameBinary(L"vphysics.dll")["observedSHA256"].get<std::string>();module=true;base=gameLibraryBase(L"vphysics.dll");
 #endif
