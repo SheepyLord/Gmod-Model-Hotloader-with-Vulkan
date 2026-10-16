@@ -252,17 +252,13 @@ is **not** a static-prop test (vanilla `prop_physics` vs a character, from `scri
 
 ## 8. Lineage
 
-- `old-Gmod-Simple-Static-Model-Importer`: Python/tkinter app (FBX via external Blender) writing
-  `data/pmx_static_importer/models/<id>/*.json`; conceptual ancestor only.
-- `old-GModel_Hot_loader` 1.0.6 (`02341db`), standalone addon (`gmodel_hotloader` module,
-  `sent_gmodel_hotloader`, own transfer, cache `data/gmodel_hotloader`): bundle v1, `render_plan`,
-  `material_processing`, `trace`, `image_validation` ported verbatim (namespace `gm`→`props`); core, fast hull,
-  collision, import, pmx, resolver, overrides adapted; Lua render design (proxies, ComputeLighting, 2 ms
-  budget) carried over.
-- Since: PMX scale 1→3.2366; big textures scaled (were rejected); OBJ auto-metres; Blender; CoACD failure →
-  fast hull (old threw); DependencyScope; Linux; mass by volume (old 50 kg); `noclamp`; PBR→Phong; collision
-  levels, attach, presets; character sharing transport; no 4 GiB worker cap or 5-min kill. No migration of
-  `data/gmodel_hotloader`; old bundles should decode (unverified).
+- `Gmod-Simple-Static-Model-Importer` (public): Python/tkinter app (FBX via external Blender)
+  writing `data/pmx_static_importer/models/<id>/*.json`; conceptual ancestor only.
+- `native/props/` was ported from an earlier static-prop loader by the same author, as
+  `THIRD_PARTY.md` credits: the bundle cache format (`GMLHOT1`), fast single-hull collider, material
+  analysis, texture resolver and render plan. The Lua render design (proxies, `ComputeLighting`,
+  2 ms budget) came with it. Blender `.blend`, Zstandard, `DependencyScope`, Linux, collision levels,
+  attach, presets and the character sharing transport were added here.
 
 ## 9. Contradictions / uncertainties
 

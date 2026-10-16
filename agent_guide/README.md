@@ -2,7 +2,7 @@
 
 Reference for AI agents that edit this repository; humans read `README.md` and `docs/`. Nothing
 here is built, packaged or tested: no script, workflow or test reads `agent_guide/`, `AGENTS.md`
-or `CLAUDE.md`. Written from the code, the full git history of this repository and its
+or `CLAUDE.md`. Written from the code, the full git history of this repository and its public
 predecessors, and verified against `main` @ `9e02a27` (release 2.3.0, 2026-10-16). When the code
 and this guide disagree, the code wins: fix the guide in the same commit.
 
@@ -19,7 +19,7 @@ and this guide disagree, the code wins: fix the guide in the same commit.
 | [06 Lua addon](06_lua_addon.md) | load order and installation gate, the `mmdhl` table, entities/hooks, per-file reference, net message and ConVar catalogues, DATA files, i18n, debug bridge, offline lupa tests | any Lua change |
 | [07 Build, test, release](07_build_test_release.md) | CMake, build scripts and commands, files builds rewrite, all CTests, offline tests, CI, release records, publishing | building, testing, CI, releases |
 | [08 Renderer packages](08_renderers_dxvk_togl.md) | DXVK on Windows; the Linux ToGL-ABI shim over DXVK (enum translation, depth bias, adapter identity); shared compute queues | `renderer/`, `patches/dxvk*`, `-vulkan` packages |
-| [09 History and lineage](09_history_and_lineage.md) | predecessor repositories, the re-rooted history, version timeline, catalogue of `docs/*.md` with staleness, decisions and rejected approaches | before redesigning anything, or to judge a `docs/` file |
+| [09 History and lineage](09_history_and_lineage.md) | public predecessors, this repository's history and version timeline, catalogue of `docs/*.md` with staleness, decisions and rejected approaches | before redesigning anything, or to judge a `docs/` file |
 | [10 Debugging and gotchas](10_debugging_and_gotchas.md) | where evidence lives, symptom → cause → fix, traps, known loose ends | something fails |
 | [11 Conventions](11_conventions_and_rules.md) | code style per language, compatibility rules, localization workflow, documentation placement, tests, git | before your first edit |
 
