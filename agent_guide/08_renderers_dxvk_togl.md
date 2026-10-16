@@ -95,7 +95,8 @@ flowchart LR
   the offsets in `togl_abi.hpp` were measured from GMod's binaries (see `docs/LINUX.md`).
 - **Enum and struct translation.** ToGL numbers `D3DFORMAT` sequentially (`A8R8G8B8 = 3`,
   `D24S8 = 2`, `UNKNOWN = 0x31495442`): `d3dFormat()` / `toglFormat()` convert both ways. Texture
-  address modes are 0/1/2; `D3DCOLOR` vertex data is RGBA (decl type 4 → `UBYTE4N`);
+  address modes are 0/1/2; `D3DCOLOR` vertex data is RGBA (decl type 4 → `UBYTE4N`), the order the
+  engine's `OPENGL_SWAP_COLORS` meshes and our client module (same definition) write;
   `D3DUSAGE_TEXTURE_SRGB` (0x80000000) is stripped; `D3DRECT` uses 64-bit `LONG` → converted to
   32-bit for DXVK (`Rect32`).
 - **Depth bias is in OpenGL units.** The game calls `glPolygonOffset(factor, units)` (shadow-map

@@ -16,6 +16,11 @@
 #include <engine/ivmodelinfo.h>
 #include <studio.h>
 #include "sdk_end.hpp"
+#if !defined(_WIN32)&&!defined(OPENGL_SWAP_COLORS)
+// Vertex colours and bone indices go in the Linux engine's byte order (CMakeLists.txt): built
+// without it, hardware skinning exchanges each vertex's first and third bone (issue #15).
+#error "Linux builds of the client module need OPENGL_SWAP_COLORS"
+#endif
 #include "runtime.hpp"
 #include "renderer.hpp"
 #include "validation_once.hpp"
@@ -878,7 +883,8 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         auto& rest=*job.rest;
         auto checkRest=[&]{if(rest.positions.size()!=model.vertices.size()*3||rest.changed.size()!=model.vertices.size())throw std::runtime_error("Hardware skinning rest data is missing");};
         // Rest vertex: morphed MMD position, rest normal and tangent, current UVs,
-        // two stored weights (the third is 1-w0-w1) and three batch-local slots.
+        // two stored weights (the third is 1-w0-w1) and three batch-local slots
+        // (BoneMatrix stores them in the engine's byte order; see the includes).
         constexpr VertexFormat_t skinFormat=commonFormat|VERTEX_BONE_INDEX|VERTEX_BONEWEIGHT(2);
         auto skinVertex=[&](CMeshBuilder& builder,const SkinChunk& chunk,size_t k){
             unsigned i=chunk.vertices[k];const float* p=&rest.positions[size_t(i)*3];const auto& v=model.vertices[i];const auto& d=snapshot->vertices[i];

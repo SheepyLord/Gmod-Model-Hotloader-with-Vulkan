@@ -215,7 +215,11 @@ target_sources(mmdhl_server PRIVATE native/bridge.cpp)
 if(WIN32)
   set(MMDHL_SDK_DEFINITIONS COMPILER_MSVC COMPILER_MSVC64 WIN32 _WIN32 WIN64 _WIN64)
 else()
-  set(MMDHL_SDK_DEFINITIONS COMPILER_GCC POSIX _POSIX LINUX _LINUX GNUC PLATFORM_64BITS)
+  # GMod's Linux engine is built with DX_TO_GL_ABSTRACTION, so its meshes keep D3DCOLOR data
+  # (vertex colours, bone indices) in OpenGL byte order, imesh.h's OPENGL_SWAP_COLORS; ToGL and
+  # the DXVK shim both read it that way. The CMeshBuilder writes compiled into the client module
+  # must use the same order, or hardware skinning exchanges each vertex's first and third bone.
+  set(MMDHL_SDK_DEFINITIONS COMPILER_GCC POSIX _POSIX LINUX _LINUX GNUC PLATFORM_64BITS OPENGL_SWAP_COLORS)
 endif()
 target_include_directories(mmdhl_server PRIVATE vendor/sourcesdk/public vendor/sourcesdk/public/tier0 vendor/sourcesdk/public/tier1 vendor/sourcesdk/common)
 target_compile_definitions(mmdhl_server PRIVATE ${MMDHL_SDK_DEFINITIONS})
