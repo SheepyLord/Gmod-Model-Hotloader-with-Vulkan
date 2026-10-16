@@ -133,8 +133,11 @@ Debt >0.25 s is dropped in whole ticks (`dropped`, no interpolation across the g
 - `ComputeSolver`: `solveGroup` only sets up an island; `allSolved` solves all islands (CPU
   pool or one GPU batch) and `finish`es; kinematic followers with inverse mass force an ordered
   flush. A GPU exception is sticky per world (CPU islands, reported as `cpu_mt`).
-- OpenCL: `clewInit("OpenCL.dll")`, best GPU (+NVIDIA), 3 s timeout → quarantine; the
-  `Coordinator` merges due characters into one launch (≤250 µs wait, count from `PrepareFrame`).
+- OpenCL: clew opens `OpenCL.dll` (Windows) or the ICD loader `libOpenCL.so.1`, then
+  `libOpenCL.so` (Linux); best GPU (+NVIDIA), 3 s timeout → quarantine; the `Coordinator` merges
+  due characters into one launch (≤250 µs wait, count from `PrepareFrame`). On Linux only
+  `shutdownCompute()` releases the device: `~Device` runs after clew's `atexit` hook has
+  dlclosed the loader, so it leaves the objects to process exit (Windows unchanged).
 - Vulkan: SPIR-V is built by CMake (`glslang-standalone` → `build/generated/vulkan_solver_spv.h`;
   `scripts/shaders.py` only builds Source VCS shaders). `Device::init`: `attachShared()` (patched
   DXVK `d3d9.dll`/`libdxvk_d3d9.so.0` exports `DXVK_*SharedComputeQueue`) else standalone device;
@@ -410,6 +413,11 @@ QC/`.phy` import, server permissions/limits/replace/defaults, client preview).
 - Benchmarks' "mode 2" = flags 7 (with map); the default is 6.
 - `gDeactivationTime` facts were checked in a bootstrapped `vendor/` (Bullet sources are not in git);
   unsynchronized same-value writes from concurrent v2 ticks.
-- OpenCL on Linux: `clewInit("OpenCL.dll")` goes to `dlopen` there and cannot find that name, so
-  `gpu_opencl` is unavailable (read from code, not run). (unverified) Linux Vulkan bit-exactness;
-  Linux DXVK shared queues in game; D3D9 device recreation while sharing DXVK queues.
+- OpenCL on Linux, checked outside the game (2026-10-16): `mmdhl_compute_tests gpu_opencl` passes
+  with zero row error on NVIDIA 595.99.02 (RTX 4090 Laptop) and Intel compute-runtime 26.05
+  (RPL-S UHD), and `mmdhl_replay native-chain.pmx` gives the same error as `reference`; Mesa
+  rusticl 26.0.8 lists no device without `RUSTICL_ENABLE=iris` and with it aborts compiling the
+  kernel (LLVM 21 SPIR-V translator assertion), contained by the probe worker → `reference`.
+  (unverified) `gpu_opencl` in game on Linux (loader/ICD visibility inside Steam's runtime or
+  the snap); Linux Vulkan bit-exactness; Linux DXVK shared queues in game; D3D9 device
+  recreation while sharing DXVK queues.

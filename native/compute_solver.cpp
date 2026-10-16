@@ -33,7 +33,13 @@ struct Device {
  // A timed-out driver may still DMA into its host buffers. Quarantine those
  // allocations and the context for the process lifetime, never reuse/free them.
  std::vector<std::shared_ptr<Buffers>>* quarantine=nullptr;
+#ifdef _WIN32
  ~Device(){shutdown();}
+#else
+ // Only exit destroys this static, after clew's atexit hook (registered later, by init)
+ // has dlclosed the loader: its entry points dangle, so leave the objects to process
+ // teardown. shutdownCompute() releases them before that.
+#endif
  void shutdown(){
   if(quarantine)return;
   for(auto& p:memory)if(p){clReleaseMemObject(p);p=nullptr;}capacity.fill(0);
@@ -42,7 +48,13 @@ struct Device {
   initialized=available=false;
  }
  void init(){if(initialized)return;initialized=true;try{
+#ifdef _WIN32
   if(clewInit("OpenCL.dll")!=CLEW_SUCCESS)throw std::runtime_error("OpenCL runtime is not installed");
+#else
+  // clew dlopens the name as given: the system's ICD loader by its soname, else the
+  // unversioned name that only OpenCL development packages install.
+  if(clewInit("libOpenCL.so.1")!=CLEW_SUCCESS&&clewInit("libOpenCL.so")!=CLEW_SUCCESS)throw std::runtime_error("OpenCL runtime (libOpenCL.so.1) is not installed");
+#endif
   cl_uint count=0;check(clGetPlatformIDs(0,nullptr,&count),"Enumerate OpenCL platforms");std::vector<cl_platform_id> platforms(count);check(clGetPlatformIDs(count,platforms.data(),nullptr),"Read OpenCL platforms");
   int best=-1;for(auto platform:platforms){cl_uint n=0;if(clGetDeviceIDs(platform,CL_DEVICE_TYPE_GPU,0,nullptr,&n)!=CL_SUCCESS)continue;std::vector<cl_device_id> devices(n);check(clGetDeviceIDs(platform,CL_DEVICE_TYPE_GPU,n,devices.data(),nullptr),"Read OpenCL devices");
    for(auto d:devices){char vendor[512]={};cl_bool compiler=0;cl_uint units=0;clGetDeviceInfo(d,CL_DEVICE_VENDOR,sizeof(vendor),vendor,nullptr);clGetDeviceInfo(d,CL_DEVICE_COMPILER_AVAILABLE,sizeof(compiler),&compiler,nullptr);clGetDeviceInfo(d,CL_DEVICE_MAX_COMPUTE_UNITS,sizeof(units),&units,nullptr);int score=int(units)+(std::strstr(vendor,"NVIDIA")?10000:0);if(compiler&&score>best){device=d;best=score;}}
