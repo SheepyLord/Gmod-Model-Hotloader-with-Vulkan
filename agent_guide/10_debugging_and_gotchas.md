@@ -41,7 +41,7 @@ files afterwards; never commit or ship them.
 | `test_release_evidence.py` fails on a machine without `pwsh` | it runs `update-native-policy.ps1` with PowerShell 7 (falls back to a Windows-only path) | install PowerShell 7 (`pwsh` on PATH; it passes on Linux then) |
 | `git status` shows `native_policy.lua`, `addon/shaders/fxc/*.vcs`, `tests/fixtures/*`, `licenses/*.txt` changed after a build | `build.ps1` / CMake / `shaders.py` / `fixtures.py` / `package.py` rewrite tracked files | revert them unless the change is the point of the task |
 | `gpu_vulkan` falls behind / `context: standalone` | no DXVK, D3D9 renderer, or a GPU without a compute-only queue family (common on Intel iGPUs); few CPU workers | expected; `cpu_mt_v2` stays the default. Test the shared path with `ANV_QUEUE_OVERRIDE=gc=1,c=2` on Mesa ANV (older Mesa may fail the solver self-test on that emulated family) |
-| `gpu_opencl` never available on Linux | `compute_solver.cpp` calls `clewInit("OpenCL.dll")` on every platform | loose end (below); falls back to `reference` |
+| `gpu_opencl` falls back to `reference` on Linux | `GetSecondaryCapabilities().gpu_opencl.error` (or `mmdhl_worker_linux64 --probe-compute <out.json>`) says why: "disabled by environment" = `MMDHL_DISABLE_OPENCL`; "runtime (libOpenCL.so.1) is not installed" = no ICD loader; "OpenCL -1001" = no ICD in `/etc/OpenCL/vendors`; "No OpenCL GPU with a compiler" = no GPU device (Mesa 26.0.8 rusticl lists no Intel device without `RUSTICL_ENABLE=iris`); "crashed (exit 134)" = the driver died in the probe worker (rusticl with `RUSTICL_ENABLE=iris` aborts compiling the kernel) | expected for an experimental backend; `cpu_mt_v2` stays the default. NVIDIA and Intel compute-runtime work; `OCL_ICD_VENDORS=<empty dir>` fakes a loader without ICDs |
 | Linux: message box "could not start its Vulkan renderer" | no Vulkan 1.3 driver, or `libdxvk_d3d9.so` missing beside the shim | Steam "Verify integrity" restores OpenGL |
 | Linux: clothing torn into shards where three bones meet (shoulders, sleeves of VRoid models), with GPU skinning only; correct with `mmdhl_gpu_skinning 0` | the client module's `CMeshBuilder` writes not in the engine's byte order: without `OPENGL_SWAP_COLORS`, bone slots 0 and 2 swap (issue #15) | keep the definition in `CMakeLists.txt` and the `#error` guard in `renderer.cpp`; test byte-order changes with a model that has three-bone vertices (MMD models with one or two bones per vertex hide them) |
 | Linux Vulkan: projected (lamp/flashlight) shadows missing | `glPolygonOffset` units passed as a D3D bias | fixed in `609ce83` (`applyDepthBias`); keep the conversion |
@@ -72,16 +72,22 @@ files afterwards; never commit or ship them.
 - **`native/render_binaries.hpp` is not a runtime gate.** Its pinned SHA-256 list is used only by
   `render_guard_tests` and `scripts/compatibility_profiles.py`; unknown game binaries are reported
   as warnings, never refused.
+- **OpenCL teardown on Linux.** clew registers `atexit(clewExit)` inside `Device::init`, after
+  the static `Device` was constructed, so at exit it dlcloses `libOpenCL.so.1` before `~Device`
+  runs and clew's entry points dangle (with only the loader name fixed, the probe worker crashed
+  there with exit 139 and `probeWorker` reported OpenCL unavailable with an empty error). The
+  Linux `~Device` releases nothing; `shutdownCompute()` (module close, tests) releases OpenCL
+  objects while the loader is still mapped.
 - **Windows-only scripts:** the in-game harness (`game-start.ps1`, `gamectl.py` sessions),
   `shaders.py`, `package.py`, `publish-native-release.py`'s gmad step. Linux builds must run in the
   manylinux_2_28 container; host-built Linux binaries need the host's glibc and break in Steam.
 - **Linux 32-bit (default branch) is unsupported** and reported as an unsupported platform.
 
-## Known loose ends (found while writing this guide; not fixed)
+## Known loose ends (not fixed)
 
 | Item | Where |
 |---|---|
-| OpenCL loader name is Windows-only (`clewInit("OpenCL.dll")`) | `native/compute_solver.cpp` |
+| Mesa rusticl 26.0.8 with `RUSTICL_ENABLE=iris` aborts compiling the OpenCL solver kernel (`cast<ConstantInt>` assertion in LLVM 21's SPIR-V translator); the probe worker contains it | `native/opencl_solver_kernel.hpp` or the driver |
 | `carrier.lua` Tick hook `MMDHL.NativePose` reads NW2 `MMDHLInstance`, which nothing sets | `addon/lua/mmdhl/carrier.lua` |
 | Natives without Lua callers: `SubmitSourcePose`, `StepSources`, `SubmitPresentationPose`, `GetMaterialState`, `ReadSharedChunk` | `native/module.cpp` |
 | `GetModelAnimationDiagnostics` makes a virtual call without a slot guard | `native/module.cpp` / renderer |
