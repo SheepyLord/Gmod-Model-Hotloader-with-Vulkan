@@ -322,10 +322,17 @@ struct Instance {
     double presentationUpdateInterval=0,presentationFrameInterval=0,presentationDelay=0;
     std::vector<btTransform> presentationSmoothed;
     btVector3 presentationLastRoot{0,0,0};bool presentationHaveRoot=false;
-    std::span<const btTransform> smoothPresentation(std::span<const btTransform> live,double timestamp,double frameDt);
+    std::span<const btTransform> smoothPresentation(std::span<const btTransform> live,double timestamp,double frameDt,bool marked=false);
     double sourceTimestamp=-1;
     double pendingSourceDelta=0;
-    bool sourceTeleport=false;
+    bool sourceTeleport=false,sourceCarry=false;
+    // A jump the animation announced (Lua MarkTeleport: a motion's scene cut, loop
+    // or seek), usually far below the 128-unit teleport test and often split over
+    // several frames by the animation's own blending. The window opens at the next
+    // presented pose and lasts teleportMarkSeconds (negative: none pending); every
+    // pose inside it is carried across, never simulated or smoothed over.
+    double teleportMarkSeconds=-1,teleportMarkUntil=-1;
+    void markTeleport(double seconds);
     std::string sourceError;
     void stepSource();
     void submitSourcePose(std::span<const btTransform> physical,std::span<const btTransform> manipulation,double timestamp,bool defer=false);

@@ -22,6 +22,10 @@ public:
  bool simplified()const{return presentationMode<=0;}
  void stepSimplified(double seconds,bool teleport);
  void reset();
+ // A marked teleport (Instance::markTeleport): bodies keep their pose relative to
+ // their attachments at the current pose and the history restarts, so no step and
+ // no presented frame spans the jump. Unlike reset, the hair keeps its drape.
+ void carry();
  void setCollisionFlags(unsigned flags);
  void setCollisionMode(int level){setCollisionFlags(collisionFlagsForLevel(level));}
  void setQuality(int divisor,bool suspended);
@@ -52,7 +56,7 @@ public:
   std::vector<float> morphs;
   std::shared_ptr<const std::vector<btTransform>> manual;
   btVector3 boundsMinimum{0,0,0},boundsMaximum{0,0,0};
-  bool reset=false;
+  bool reset=false,carry=false;
   bool resumeQuality=false;int qualityDivisor=1;
   std::string resetReason;
  };
@@ -78,13 +82,13 @@ public:
  std::vector<int> drivers;
  double lastMs=0,dropped=0,accumulator=0;
  double physicsMs=0,poseMs=0,sceneMs=0,inputTime=0,simulationTime=0,interpolation=0,lagMs=0;
- uint64_t ticks=0,resets=0;unsigned lastSteps=0,sleepingBodies=0;
+ uint64_t ticks=0,resets=0,carries=0;unsigned lastSteps=0,sleepingBodies=0;
  bool interpolate=true;
  std::string resetReason="initial",asyncError;
  // Clock and timing state as the render thread may read it. Asynchronous
  // worlds report their last presented tick; the members above are then owned
  // by the tick job and must not be read or written from the frame.
- struct FrameStats {double physicsMs=0,sceneMs=0,poseMs=0,lastMs=0,accumulator=0,inputTime=0,simulationTime=0,dropped=0;uint64_t ticks=0,resets=0;unsigned steps=0;int iterations=10;std::string resetReason;double physicsTotalMs=0,tickTotalMs=0,guardTotalMs=0,tickCpuTotalMs=0;};
+ struct FrameStats {double physicsMs=0,sceneMs=0,poseMs=0,lastMs=0,accumulator=0,inputTime=0,simulationTime=0,dropped=0;uint64_t ticks=0,resets=0,carries=0;unsigned steps=0;int iterations=10;std::string resetReason;double physicsTotalMs=0,tickTotalMs=0,guardTotalMs=0,tickCpuTotalMs=0;};
  FrameStats frameStats() const;
 private:
  int presentationMode=1;
@@ -108,7 +112,8 @@ private:
  double qualityBlendStart=-1;
  std::vector<btTransform> qualityBlendPose,qualityBlendAnchors;
  void blendQualityPresentation();
- void resumeQualityPose(const std::vector<btTransform>& skin,const std::vector<btTransform>& pose);
+ // carryLoose: also move dynamic bodies without an animated attachment by the root's jump (a teleport).
+ void resumeQualityPose(const std::vector<btTransform>& skin,const std::vector<btTransform>& pose,bool carryLoose=false);
  struct External;
  struct Filter;
  std::unique_ptr<Filter> filter;
@@ -158,7 +163,7 @@ private:
   int iterations=10;double physicsTotalMs=0,tickTotalMs=0,guardTotalMs=0,tickCpuTotalMs=0;
   std::vector<std::array<float,3>> motion; // speed, spin, Bullet activation state per body
   double simulationTime=0,inputTime=0,accumulator=0,dropped=0,physicsMs=0,sceneMs=0,poseMs=0,lastMs=0,submittedTime=0;
-  uint64_t ticks=0,resets=0,sceneSequence=0;unsigned steps=0,sleeping=0,contacts=0,worldContacts=0,objectContacts=0;size_t mirrors=0;double captureMs=0,syncMs=0;
+  uint64_t ticks=0,resets=0,carries=0,sceneSequence=0;unsigned steps=0,sleeping=0,contacts=0,worldContacts=0,objectContacts=0;size_t mirrors=0;double captureMs=0,syncMs=0;
   std::string resetReason;Json broadphase;
   std::vector<btQuaternion> springPrevious,springCurrent;uint64_t springColliderHits=0,springWorldHits=0,springSteps=0;double springMs=0;
  };
@@ -174,6 +179,7 @@ private:
  void runAsync();
  void tickAsync(const Input&);
  void resetTick(const Input&);
+ void carryTick(const Input&);
  void applyCollisionFlags(unsigned flags);
  unsigned advance(std::vector<btTransform>& sourcePose,const std::function<const std::vector<btTransform>&()>& evaluateSkin);
  void applyImpulses(const std::vector<float>& weights,std::vector<float>& last);

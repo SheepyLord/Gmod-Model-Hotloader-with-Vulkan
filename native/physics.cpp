@@ -367,16 +367,16 @@ void Instance::reset(){if(secondary){
     // The new world is made beside the current one (idle meanwhile) and replaces it
     // only once complete; construction also poses the instance, restored on failure.
     unsigned flags=secondary->collisionFlags;
-    secondary->waitAsyncIdle();auto resets=secondary->resets;
+    secondary->waitAsyncIdle();auto resets=secondary->resets,carries=secondary->carries;
     auto pose=std::make_tuple(local,global,skin,effectiveScratch,lastImpulseWeights,poseDirty);
     std::unique_ptr<Secondary> rebuilt;
     try{evaluate(false);rebuilt=std::make_unique<Secondary>(*this);rebuilt->setCollisionFlags(flags);}
     catch(...){std::tie(local,global,skin,effectiveScratch,lastImpulseWeights,poseDirty)=std::move(pose);throw;}
-    rebuilt->resets=resets+1;rebuilt->resetReason="manual";sourceError.clear();
+    rebuilt->resets=resets+1;rebuilt->carries=carries;rebuilt->resetReason="manual";sourceError.clear();
     secondary=std::move(rebuilt);
     // Construction already initializes bodies at the current Source pose. Do
     // not repeat the reset at the next presentation frame or replay old debt.
-    sourceTeleport=false;pendingSourceDelta=0;presentationDirty=true;poseDirty=true;return;
+    sourceTeleport=sourceCarry=false;pendingSourceDelta=0;presentationDirty=true;poseDirty=true;return;
 }owner->endGrab();applyPose();lastImpulseWeights=expandedMorphs();for(auto& b:bodies){b->rigid->clearForces();b->rigid->activate(true);}}
 void Instance::setSecondaryBackend(const std::string& backend){
     if(!secondary)throw std::runtime_error("This entity has no secondary physics");
@@ -434,11 +434,12 @@ bool poseDiffers(const std::vector<btTransform>& a,std::span<const btTransform> 
 // per tick) and the hair's live anchor steps as well. Such skeletons are shown
 // one update interval behind, interpolated between the last distinct poses.
 // Skeletons that change every frame (ragdolls, players) pass through unchanged.
-std::span<const btTransform> Instance::smoothPresentation(std::span<const btTransform> live,double timestamp,double frameDt){
+std::span<const btTransform> Instance::smoothPresentation(std::span<const btTransform> live,double timestamp,double frameDt,bool marked){
  constexpr double MaxInterval=.06; // slower updates (the 10 Hz unseen-model rate) are not smoothed
  btVector3 root=live[0].getOrigin();
  bool jump=presentationHaveRoot&&(root-presentationLastRoot).length()>128.f;presentationLastRoot=root;presentationHaveRoot=true;
- if(!owner||!owner->poseSmoothing||jump||(sourceTimestamp>=0&&timestamp<sourceTimestamp)){presentationSamples.clear();presentationDelay=0;presentationUpdateInterval=0;return live;}
+ // Blending across a marked jump would turn it back into the slide the mark exists to avoid.
+ if(!owner||!owner->poseSmoothing||jump||marked||(sourceTimestamp>=0&&timestamp<sourceTimestamp)){presentationSamples.clear();presentationDelay=0;presentationUpdateInterval=0;return live;}
  if(frameDt>0)presentationFrameInterval=presentationFrameInterval<=0?frameDt:presentationFrameInterval+(frameDt-presentationFrameInterval)*.1;
  if(presentationSamples.empty()||poseDiffers(presentationSamples.back().bones,live)){
   if(!presentationSamples.empty()){double dt=timestamp-presentationSamples.back().time;if(dt>0)presentationUpdateInterval=presentationUpdateInterval<=0?dt:presentationUpdateInterval+(dt-presentationUpdateInterval)*.2;}
@@ -463,10 +464,18 @@ std::span<const btTransform> Instance::smoothPresentation(std::span<const btTran
  for(size_t k=0;k<live.size();k++)presentationSmoothed[k]=btTransform(a.bones[k].getRotation().slerp(b.bones[k].getRotation(),f).normalized(),a.bones[k].getOrigin().lerp(b.bones[k].getOrigin(),f));
  return presentationSmoothed;
 }
+void Instance::markTeleport(double seconds){
+ if(!std::isfinite(seconds))throw std::runtime_error("Invalid teleport window");
+ teleportMarkSeconds=std::max(teleportMarkSeconds,std::clamp(seconds,0.,1.));
+}
 void Instance::submitPresentationPose(std::span<const btTransform> raw,double timestamp,uint64_t frame){
  if(!sourceRig||!presentationDriven||raw.size()!=sourceRig->bones.size()||!std::isfinite(timestamp))throw std::runtime_error("Invalid presentation pose");
  if(frame==presentationFrame)return;
- auto live=smoothPresentation(raw,timestamp,sourceTimestamp<0?0:std::max(0.,timestamp-sourceTimestamp));
+ // A clock rewind resets anyway; a window left from the old clock must not outlive it.
+ if(sourceTimestamp>=0&&timestamp<sourceTimestamp)teleportMarkUntil=-1;
+ if(teleportMarkSeconds>=0){teleportMarkUntil=std::max(teleportMarkUntil,timestamp+teleportMarkSeconds);teleportMarkSeconds=-1;}
+ bool marked=timestamp<=teleportMarkUntil;
+ auto live=smoothPresentation(raw,timestamp,sourceTimestamp<0?0:std::max(0.,timestamp-sourceTimestamp),marked);
  auto old=sourcePose;auto c=basis();presentationBones.assign(live.begin(),live.end());
  for(size_t i=0;i<live.size();i++){
   auto& bone=sourceRig->bones[i];auto delta=live[i]*bone.rest.inverse()*rigMeshBind(*sourceRig);
@@ -474,6 +483,9 @@ void Instance::submitPresentationPose(std::span<const btTransform> raw,double ti
   drive(bone.mmd);for(int alias:bone.aliases)drive(alias);
  }
  bool teleport=sourceTimestamp<0||timestamp<sourceTimestamp||(sourcePose[sourceRig->bones[0].mmd].getOrigin()-old[sourceRig->bones[0].mmd].getOrigin()).length()*sourceRig->scale>128.f;
+ // Carried whatever this pose jumped by: the jump can arrive a frame or two after
+ // the mark, and in pieces (the bones and the entity origin travel separately).
+ bool carry=marked&&!teleport&&poseDiffers(old,sourcePose);
  if(teleport&&secondary&&!secondary->asynchronous())secondary->resetReason=sourceTimestamp<0?"first_pose":timestamp<sourceTimestamp?"clock_rewind":"teleport";
  double elapsed=sourceTimestamp<0?1./60:std::max(0.,timestamp-sourceTimestamp);
  std::string reason=teleport?(sourceTimestamp<0?"first_pose":timestamp<sourceTimestamp?"clock_rewind":"teleport"):"";
@@ -481,20 +493,20 @@ void Instance::submitPresentationPose(std::span<const btTransform> raw,double ti
  if(secondary)secondary->preparePresentationMode();
  if(secondary&&secondary->asynchronous()){
   // The tick runs on a worker while this frame renders; everything it needs travels with the input.
-  Secondary::Input input;input.time=timestamp;input.elapsed=elapsed;input.pose=sourcePose;input.morphs=expandedMorphs();input.manual=shareManual();input.reset=teleport||sourceTeleport;input.resetReason=sourceTeleport&&reason.empty()?"teleport":reason;
+  Secondary::Input input;input.time=timestamp;input.elapsed=elapsed;input.pose=sourcePose;input.morphs=expandedMorphs();input.manual=shareManual();input.reset=teleport||sourceTeleport;input.carry=carry&&!input.reset;input.resetReason=sourceTeleport&&reason.empty()?"teleport":reason;
   btVector3 lower(1e9f,1e9f,1e9f),upper=-lower;for(auto& bone:presentationBones){lower.setMin(bone.getOrigin());upper.setMax(bone.getOrigin());}if(snapshot){lower.setMin(snapshot->minimum);upper.setMax(snapshot->maximum);}input.boundsMinimum=lower;input.boundsMaximum=upper;
-  secondary->submitAsync(std::move(input));sourceTeleport=false;pendingSourceDelta=0;return;
+  secondary->submitAsync(std::move(input));sourceTeleport=sourceCarry=false;pendingSourceDelta=0;return;
  }
- sourceTeleport=sourceTeleport||teleport;pendingSourceDelta+=elapsed;
+ sourceTeleport=sourceTeleport||teleport;sourceCarry=sourceCarry||carry;pendingSourceDelta+=elapsed;
 }
 void Instance::stepSource(){
  if(!secondary)return;
  secondary->preparePresentationMode();
  if(secondary->simplified()){
   if(!presentationDirty&&pendingSourceDelta<=0)return;
-  secondary->stepSimplified(pendingSourceDelta,sourceTeleport);pendingSourceDelta=0;sourceTeleport=false;presentationDirty=false;poseDirty=true;return;
+  secondary->stepSimplified(pendingSourceDelta,sourceTeleport||sourceCarry);pendingSourceDelta=0;sourceTeleport=sourceCarry=false;presentationDirty=false;poseDirty=true;return;
  }
  if(secondary->asynchronous()){if(!presentationDirty)return;presentationDirty=false;evaluate(false);secondary->presentAsync();evaluate(true);poseDirty=true;return;}
- if(pendingSourceDelta<=0&&!presentationDirty)return;presentationDirty=false;if(sourceTeleport){secondary->reset();sourceTeleport=false;}double elapsed=pendingSourceDelta;pendingSourceDelta=0;secondary->step(elapsed);
+ if(pendingSourceDelta<=0&&!presentationDirty)return;presentationDirty=false;if(sourceTeleport){secondary->reset();sourceTeleport=false;}else if(sourceCarry)secondary->carry();sourceCarry=false;double elapsed=pendingSourceDelta;pendingSourceDelta=0;secondary->step(elapsed);
 }
 } // namespace mmd

@@ -596,7 +596,7 @@ void Secondary::submitAsync(Input&& input){
  std::unique_lock lock(mutex);if(stopping)return;
  // Bound the backlog of a stalled world. The dropped sample's time still counts
  // toward the next input, so the simulation clock does not lose it.
- if(queue.size()>=8){auto dropped=std::move(queue.front());queue.pop_front();queue.front().elapsed+=dropped.elapsed;if(dropped.reset){queue.front().reset=true;queue.front().resetReason=dropped.resetReason;}}
+ if(queue.size()>=8){auto dropped=std::move(queue.front());queue.pop_front();queue.front().elapsed+=dropped.elapsed;if(dropped.reset){queue.front().reset=true;queue.front().resetReason=dropped.resetReason;}else if(dropped.carry)queue.front().carry=true;}
  queue.push_back(std::move(input));
  bool start=!running;if(start)running=true;
  lock.unlock();
@@ -618,12 +618,21 @@ void Secondary::resetTick(const Input& input){
  follow(true,tickPose.skin);nanoemPhysicsWorldReset(world);followSoft(true,tickPose.skin);accumulator=inputTime=simulationTime=0;inputs.clear();inputs.push_back({0,input.pose});
  readSolved(true,root>=0?tickSourcePose[root]:btTransform::getIdentity(),tickPose.skin);if(springs)springs->reset(tickPose.skin);++resets;resetReason=input.resetReason;tickImpulseWeights=input.morphs;
 }
+void Secondary::carryTick(const Input& input){
+ tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective,instance.sourceRig->bones[0].mmd);
+ // A new presentation epoch (presentAsync compares carries as well as resets): no
+ // interpolation between states on either side of the jump. Resets stay a health signal.
+ resumeQualityPose(tickPose.skin,tickSourcePose,true);++carries;
+}
+void Secondary::carry(){
+ instance.evaluate(false);resumeQualityPose(instance.skin,instance.sourcePose,true);++carries;instance.poseDirty=true;
+}
 void Secondary::tickAsync(const Input& input){
  auto start=std::chrono::steady_clock::now();double cpuStart=threadCpuMs();physicsMs=sceneMs=surfaceGuardMs=0;double evaluateMs=0;
  if(!input.manual)throw std::runtime_error("Asynchronous input without a manual pose");
- if(input.reset)resetTick(input);
+ if(input.reset)resetTick(input);else if(input.carry)carryTick(input);
  activeDivisor=input.qualityDivisor;applyTuning();nanoemWorld(world)->getSolverInfo().m_numIterations=std::min(baseIterations,std::max(2,(baseIterations+activeDivisor-1)/activeDivisor));
- if(input.resumeQuality&&!input.reset){
+ if(input.resumeQuality&&!input.reset&&!input.carry){
   tickSourcePose=input.pose;evaluatePose(*instance.model,*input.manual,input.morphs,&instance.sourceControl,&tickSourcePose,nullptr,tickPose.local,tickPose.global,tickPose.skin,tickPose.effective,instance.sourceRig->bones[0].mmd);
   resumeQualityPose(tickPose.skin,tickSourcePose);
  }
@@ -647,7 +656,7 @@ void Secondary::publishSolved(unsigned steps,double totalMs,double evaluateMs,do
  solved->currentAnchors=currentAnchors;solved->previousAnchors=previousAnchors;solved->surfaceCorrections=surfaceCorrections;solved->surfaceRecoveries=surfaceRecoveries;solved->surfaceGuardMs=surfaceGuardMs;
  solved->stretchContactClamps=stretchContactClamps;solved->stretchCorrections=stretchCorrections;solved->stretchGuardMs=stretchGuardMs;solved->iterations=nanoemWorld(world)->getSolverInfo().m_numIterations;
  solved->physicsTotalMs=physicsTotalMs;solved->tickTotalMs=tickTotalMs;solved->guardTotalMs=guardTotalMs;solved->tickCpuTotalMs=tickCpuTotalMs;
- solved->physicsMs=physicsMs;solved->sceneMs=sceneMs;solved->poseMs=evaluateMs;solved->lastMs=totalMs;solved->submittedTime=submittedTime;solved->ticks=ticks;solved->resets=resets;solved->steps=steps;solved->sleeping=sleeping;solved->resetReason=resetReason;
+ solved->physicsMs=physicsMs;solved->sceneMs=sceneMs;solved->poseMs=evaluateMs;solved->lastMs=totalMs;solved->submittedTime=submittedTime;solved->ticks=ticks;solved->resets=resets;solved->carries=carries;solved->steps=steps;solved->sleeping=sleeping;solved->resetReason=resetReason;
  if(external){solved->contacts=external->contacts;solved->worldContacts=external->worldContacts;solved->objectContacts=external->objectContacts;solved->mirrors=external->objects.size();solved->captureMs=external->captureMs;solved->syncMs=external->syncMs;solved->sceneSequence=external->sequence;}
  solved->broadphase=nanoemBroadphaseInfo(world);
  if(springs){solved->springPrevious=springs->previous();solved->springCurrent=springs->current();solved->springColliderHits=springs->colliderHits;solved->springWorldHits=springs->worldHits;solved->springSteps=springs->steps;solved->springMs=springs->stepMs;}
@@ -675,7 +684,7 @@ void Secondary::presentAsync(){
  lagMs=lag*1000;
  // Distinct simulation states of the current reset epoch, newest last. A job
  // without a step republishes the same pair with newer clocks.
- if(!presentHistory.empty()&&(presentHistory.back()->resets!=solved->resets||solved->simulationTime<presentHistory.back()->simulationTime-1e-9))presentHistory.clear();
+ if(!presentHistory.empty()&&(presentHistory.back()->resets!=solved->resets||presentHistory.back()->carries!=solved->carries||solved->simulationTime<presentHistory.back()->simulationTime-1e-9))presentHistory.clear();
  if(presentHistory.empty()||solved->simulationTime>presentHistory.back()->simulationTime+1e-9){presentHistory.push_back(solved);if(presentHistory.size()>PresentHistoryDepth)presentHistory.pop_front();}
  else presentHistory.back()=solved;
  // Render-side input clock: the worker's clock at its last processed input plus
@@ -771,11 +780,11 @@ Json Secondary::diagnostics(bool detailed)const{
  if(qualitySuspended)for(auto key:{"surfaceGuardMs","stretchGuardMs","sceneCaptureMs","sceneSyncMs"})out[key]=0;
  return out;
 }
-Secondary::FrameStats Secondary::statsFrom(const Solved& s)const{FrameStats out;out.physicsMs=s.physicsMs;out.sceneMs=s.sceneMs;out.poseMs=s.poseMs;out.lastMs=s.lastMs;out.accumulator=s.accumulator;out.inputTime=s.inputTime;out.simulationTime=s.simulationTime;out.dropped=s.dropped;out.ticks=s.ticks;out.resets=s.resets;out.steps=s.steps;out.iterations=s.iterations;out.resetReason=s.resetReason;out.physicsTotalMs=s.physicsTotalMs;out.tickTotalMs=s.tickTotalMs;out.guardTotalMs=s.guardTotalMs;out.tickCpuTotalMs=s.tickCpuTotalMs;return out;}
+Secondary::FrameStats Secondary::statsFrom(const Solved& s)const{FrameStats out;out.physicsMs=s.physicsMs;out.sceneMs=s.sceneMs;out.poseMs=s.poseMs;out.lastMs=s.lastMs;out.accumulator=s.accumulator;out.inputTime=s.inputTime;out.simulationTime=s.simulationTime;out.dropped=s.dropped;out.ticks=s.ticks;out.resets=s.resets;out.carries=s.carries;out.steps=s.steps;out.iterations=s.iterations;out.resetReason=s.resetReason;out.physicsTotalMs=s.physicsTotalMs;out.tickTotalMs=s.tickTotalMs;out.guardTotalMs=s.guardTotalMs;out.tickCpuTotalMs=s.tickCpuTotalMs;return out;}
 Secondary::FrameStats Secondary::frameStats()const{
  FrameStats out;
  if(async)out=presented?statsFrom(*presented):FrameStats{};
- else {out.physicsMs=physicsMs;out.sceneMs=sceneMs;out.poseMs=poseMs;out.lastMs=lastMs;out.accumulator=accumulator;out.inputTime=inputTime;out.simulationTime=simulationTime;out.dropped=dropped;out.ticks=ticks;out.resets=resets;out.steps=lastSteps;out.iterations=nanoemWorld(world)->getSolverInfo().m_numIterations;out.resetReason=resetReason;out.physicsTotalMs=physicsTotalMs;out.tickTotalMs=tickTotalMs;out.guardTotalMs=guardTotalMs;out.tickCpuTotalMs=tickCpuTotalMs;}
+ else {out.physicsMs=physicsMs;out.sceneMs=sceneMs;out.poseMs=poseMs;out.lastMs=lastMs;out.accumulator=accumulator;out.inputTime=inputTime;out.simulationTime=simulationTime;out.dropped=dropped;out.ticks=ticks;out.resets=resets;out.carries=carries;out.steps=lastSteps;out.iterations=nanoemWorld(world)->getSolverInfo().m_numIterations;out.resetReason=resetReason;out.physicsTotalMs=physicsTotalMs;out.tickTotalMs=tickTotalMs;out.guardTotalMs=guardTotalMs;out.tickCpuTotalMs=tickCpuTotalMs;}
  if(qualitySuspended){out.physicsMs=out.sceneMs=out.poseMs=out.lastMs=0;out.steps=0;out.iterations=0;out.accumulator=0;}
  if(presentationMode<=0){out.physicsMs=out.sceneMs=0;out.poseMs=out.lastMs=simplifiedMs;out.steps=0;out.iterations=presentationMode;out.accumulator=0;}
  return out;
@@ -812,7 +821,7 @@ Json Secondary::diagnosticsFrom(bool detailed,const std::vector<btTransform>& cu
   }
  }
  Json out=broadphase.is_object()?broadphase:Json::object();
- out.update({{"physicsMs",stats.physicsMs},{"poseMs",stats.poseMs},{"ticks",stats.ticks},{"lastSteps",stats.steps},{"simulationTime",stats.simulationTime},{"inputTime",stats.inputTime},{"debtSeconds",stats.accumulator},{"interpolation",interpolation},{"resets",stats.resets},{"resetReason",stats.resetReason},{"backend","nanoem-30acffaa"},{"bodies",bodies.size()},{"joints",joints.size()},{"authoredJoints",instance.model->joints.size()},{"skippedJoints",instance.model->joints.size()-joints.size()},{"warnings",instance.model->warnings},{"activeJoints",active},{"followers",followers},{"softBodies",soft.size()},{"stepMs",stats.lastMs},{"physicsTotalMs",stats.physicsTotalMs},{"tickTotalMs",stats.tickTotalMs},{"guardTotalMs",stats.guardTotalMs},{"tickCpuTotalMs",stats.tickCpuTotalMs},{"droppedTime",stats.dropped},{"maxJointDistance",maxError},{"maxLinearLimitError",maxLimitError},{"ground",false},{"collisionFlags",collisionFlags},{"effectiveCollisionFlags",effectiveCollisionFlags.load()},{"feedbackApplied",0},{"asynchronous",async},{"lagMs",lagMs},{"presentationDelayMs",presentationDelayMs()},{"sleepingBodies",sleepingBodies},{"asyncError",asyncError},{"bodyList",list}});
+ out.update({{"physicsMs",stats.physicsMs},{"poseMs",stats.poseMs},{"ticks",stats.ticks},{"lastSteps",stats.steps},{"simulationTime",stats.simulationTime},{"inputTime",stats.inputTime},{"debtSeconds",stats.accumulator},{"interpolation",interpolation},{"resets",stats.resets},{"carries",stats.carries},{"resetReason",stats.resetReason},{"backend","nanoem-30acffaa"},{"bodies",bodies.size()},{"joints",joints.size()},{"authoredJoints",instance.model->joints.size()},{"skippedJoints",instance.model->joints.size()-joints.size()},{"warnings",instance.model->warnings},{"activeJoints",active},{"followers",followers},{"softBodies",soft.size()},{"stepMs",stats.lastMs},{"physicsTotalMs",stats.physicsTotalMs},{"tickTotalMs",stats.tickTotalMs},{"guardTotalMs",stats.guardTotalMs},{"tickCpuTotalMs",stats.tickCpuTotalMs},{"droppedTime",stats.dropped},{"maxJointDistance",maxError},{"maxLinearLimitError",maxLimitError},{"ground",false},{"collisionFlags",collisionFlags},{"effectiveCollisionFlags",effectiveCollisionFlags.load()},{"feedbackApplied",0},{"asynchronous",async},{"lagMs",lagMs},{"presentationDelayMs",presentationDelayMs()},{"sleepingBodies",sleepingBodies},{"asyncError",asyncError},{"bodyList",list}});
  out["secondaryBackendRequested"]=instance.secondaryBackend;out["secondaryBackend"]=effectiveBackend;out["secondaryBackendFallback"]=backendFallback;out["broadphaseRequested"]=instance.secondaryBroadphase;out["solverIterations"]=stats.iterations;
  if(detailed){out["maxLinearLimitJoint"]=worstJoint;out["maxLinearLimitBodies"]=worstBodies;out["attachmentJoints"]=std::move(attachments);}
  if(out.contains("compute")&&!out["compute"].value("failure",std::string()).empty()){out["secondaryBackend"]="cpu_mt";out["secondaryBackendFallback"]=out["compute"]["failure"];}

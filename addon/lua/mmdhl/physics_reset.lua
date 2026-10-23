@@ -54,6 +54,19 @@ if CLIENT then
   local ent=LocalPlayer():GetEyeTrace().Entity
   local ok,err=mmdhl.ResetPhysics(ent) if not ok then notification.AddLegacy(err,NOTIFY_HINT,4) end
  end,nil,'Reset secondary physics on the character model ragdoll you aim at. Add all to reset every character model ragdoll.')
+ -- A jump in the animation (a motion's scene cut, a loop, a seek). For `seconds`
+ -- (default 0.1, at most 1) from the next presented pose, the secondary bodies are
+ -- carried with their attachments instead of being simulated or smoothed across the
+ -- jump, which is usually far below the 128-unit teleport test. Call it on the frame
+ -- the jump is applied or shortly before; animation addons can run hook
+ -- MMDVMDNPCPoseCut(ent, seconds) instead. Older native modules lack it: false.
+ function mmdhl.MarkTeleport(ent,seconds)
+  local n=mmdhl.native
+  if not mmdhl.IsMMD(ent) or not n or not isfunction(n.MarkTeleport) then return false end
+  local instance=mmdhl.GetInstance(ent) if instance<1 then return false end
+  return n.MarkTeleport(instance,math.Clamp(tonumber(seconds) or .1,0,1))==true
+ end
+ hook.Add('MMDVMDNPCPoseCut','MMDHL.MarkTeleport',function(ent,seconds) mmdhl.MarkTeleport(ent,seconds) end)
 end
 properties.Add('mmdhl_reset_physics',{
  MenuLabel='#mmdhl.physics_reset.menu',Order=605,MenuIcon='icon16/arrow_refresh.png',

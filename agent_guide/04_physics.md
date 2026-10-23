@@ -85,6 +85,16 @@ Debt >0.25 s is dropped in whole ticks (`dropped`, no interpolation across the g
   pose → async `resetTick`, sync `Secondary::reset` (server `submitSourcePose`: >80 PMX). Mirrors
   jumping >128 units are re-placed. `resetReason`: initial, first_pose, clock_rewind, teleport,
   manual, backend_change.
+- **Marked teleport** (`Instance::markTeleport`, binding `MarkTeleport`, Lua `mmdhl.MarkTeleport` /
+  hook `MMDVMDNPCPoseCut`): an animation announces a jump (scene cut, loop, seek), usually far
+  below 128 units and often blended over frames. The window opens at the next presented pose and
+  lasts the given seconds (≤1, Lua default 0.1); every pose in it skips `smoothPresentation` and
+  is *carried* (async `Input::carry` → `carryTick`, sync `Secondary::carry`, jiggle a teleport):
+  `resumeQualityPose(…,carryLoose)` keeps dynamic bodies' anchor-relative poses (anchor-less,
+  non-world-anchored ones move by the root's jump), zeroes velocities, resets contacts and the
+  input history, then `++carries` (diagnostics `carries`; `presentAsync` starts a new epoch on
+  resets or carries, so it never interpolates across one). Only poses that changed are carried; a
+  real teleport in the window still resets. Dropped async inputs pass `carry` on like `reset`.
 - **Manual reset / backend switch** (`Instance::reset`/`setSecondaryBackend`): wait idle, build a
   new `Secondary` beside the old, swap on success; failure keeps the old world and pose.
 - **Accuracy** `mmdhl_secondary_iterations`: −1 follow animation, 0 jiggle (`stepSimplified`, no
@@ -208,7 +218,8 @@ Carrier bodies follow `CarrierBodyNames` (body i = solid i = PhysObj i; joint i'
   shapes only). Server convars `mmdhl_physics_editor` (0/1/2), `_cooldown`, `_budget`; hooks
   `MMDHLCanEditPhysics`, `MMDHLCanSavePhysicsDefault`, `MMDHLPhysicsApplied`.
 - `physics_reset.lua` (`ResetPhysics`, net `mmdhl_physics_reset`) rebuilds only the
-  *secondary* world; the editor's `reset` op rebuilds the `.phy` (mass 70).
+  *secondary* world; the editor's `reset` op rebuilds the `.phy` (mass 70). Its client
+  `MarkTeleport` (and the `MMDVMDNPCPoseCut` hook) carries the world across an animation jump (§5).
 
 ## 11. Settings and environment
 
@@ -333,7 +344,7 @@ flowchart TD
 | Tick rate / step / debt caps | `secondary.cpp` constants, `advance` | `tuning()` tickRate, `timing_tests`, `async_tests` |
 | Interpolation, display delay, wait budget | `present`, `presentAsync` | `buildAttachments`, `setAsyncWaitBudget`, Lua clamp |
 | Sleep | `applySleepPolicy`, `follow` | sleep convars, `gDeactivationTime` (§5) |
-| Teleport / reset | `Instance::submitPresentationPose`, `resetTick`, `Secondary::reset` | `smoothPresentation`, `timing_tests` |
+| Teleport / reset | `Instance::submitPresentationPose`, `resetTick`, `Secondary::reset`; marked: `Instance::markTeleport`, `carryTick`, `Secondary::carry`, `resumeQualityPose` | `smoothPresentation`, `timing_tests`, `async_tests` |
 | Collision category / capture | `scene.hpp`, `External::sync`, `Filter`, `bridge.cpp` | `secondary_collision.lua`, `scene_sharing.lua`, i18n |
 | New backend | known sets in `Secondary` ctor and `Instance::setSecondaryBackend`, `nanoemCreateSecondaryWorld` | `secondary_backend.lua` + i18n, `GetSecondaryCapabilities` |
 | CPU solver | `compute_solver.cpp`, `ordered_joint_setup.hpp` | `secondary_multicore`, `secondary_async` |
@@ -360,6 +371,7 @@ flowchart TD
 5. Wait budget only chooses which solved state is shown; 0 = never wait.
 6. Bounded work: ≤4 ticks per input, 30 ms job yield, 0.25 s debt cap with `droppedTime`, ≤8 inputs.
 7. Followers integrate previous→target inside the tick; followers and dynamics publish together.
+   Only resets and marked-teleport carries re-place bodies outside a step, each as a new epoch.
 8. One-way contacts: mirrors kinematic, tagged, never feed VPhysics (`feedbackApplied` 0); a
    character never collides with its own entity.
 9. Finite or fail on every input path (presentation, capture, GPU results); errors stop the instance.
@@ -376,10 +388,10 @@ flowchart TD
 | CTest | Binary (fixture) | Covers |
 |---|---|---|
 | `secondary_multicore` | `mmdhl_compute_tests cpu_mt` | `cpu_mt` vs reference, 8 fixtures × 600 frames (0.01 PMX, 0.02 rad, 5 % energy) |
-| `secondary_async` (RUN_SERIAL) | `mmdhl_async_tests` (native-chain) | 24 checks: equivalence, lag, wait budget, teleport, flag timing, backlog, pool resize, teardown, sleep/wake |
+| `secondary_async` (RUN_SERIAL) | `mmdhl_async_tests` (native-chain) | 38 checks: equivalence, lag, wait budget, teleport, marked-teleport carry vs. unmarked drag, flag timing, backlog, pool resize, teardown, sleep/wake |
 | `secondary_midphase` | `mmdhl_midphase_tests` | gate bit-identity, `auto`, SAP v2, margin |
 | `secondary_broadphase` | `mmdhl_broadphase_tests` | `dbvt-fast` pair order, SAP migration, per-thread config |
-| `presentation_timing`, `_control` | `mmdhl_timing` (cloth21) | FPS independence, resets, rewinds, stalls, stepped poses, nested groups |
+| `presentation_timing`, `_control` | `mmdhl_timing` (cloth21) | FPS independence, resets, rewinds, marked teleports, stalls, stepped poses, nested groups |
 | `secondary_motion` | `mmdhl_motion_tests` | attachments, head compensation, buried reset (3 CPU backends) |
 | `secondary_projection{,_unaffected,_mass_ratio,_ground}`, `secondary_stretch{,_ground}` | `mmdhl_projection_tests`, `mmdhl_stretch_tests`, `mmdhl_stretch_ground_tests` | stretch/contact projection, defaults, mode changes |
 | `secondary_heavy_chain` | `mmdhl_heavy_chain_tests` | ~1e8-mass chains anchored |

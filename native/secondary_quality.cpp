@@ -142,13 +142,16 @@ Json Secondary::qualityInfo()const{
  auto t=tuning();int full=t["iterations"];
  return {{"suspended",qualitySuspended||full<0},{"mode",full<0?"disabled":springOnly?"springs":full==0?"jiggle":"full"},{"divisor",requestedDivisor},{"iterations",qualitySuspended?0:std::min(full,std::max(2,(full+requestedDivisor-1)/requestedDivisor))},{"wakes",qualityWakes}};
 }
-void Secondary::resumeQualityPose(const std::vector<btTransform>& skin,const std::vector<btTransform>& pose){
+void Secondary::resumeQualityPose(const std::vector<btTransform>& skin,const std::vector<btTransform>& pose,bool carryLoose){
  std::vector<btTransform> live;live.reserve(anchors.size());
  for(int index:anchors){auto& b=bodies[index];live.push_back(skin[b.bone]*b.initial);}
+ // Components held by the world stay where it holds them.
+ int root=instance.sourceRig->bones[0].mmd;auto loose=carryLoose&&root>=0?pose[root]*currentRoot.inverse():btTransform::getIdentity();
  for(auto& b:bodies){
   auto p=b.current;
   if(b.follower)p=b.bone>=0?skin[b.bone]*b.initial:b.initial;
   else if(b.anchor>=0)p=live[b.anchor]*currentAnchors[b.anchor].inverse()*p;
+  else if(carryLoose&&!b.worldAnchored)p=loose*p;
   auto rigid=nanoemRigidBody(b.value);rigid->setWorldTransform(p);rigid->setInterpolationWorldTransform(p);
   if(rigid->getMotionState())rigid->getMotionState()->setWorldTransform(p);
   rigid->setLinearVelocity({0,0,0});rigid->setAngularVelocity({0,0,0});rigid->clearForces();rigid->activate(true);

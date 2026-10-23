@@ -97,6 +97,8 @@ flowchart TD
   `MMDHLCanSetPlayerModel(p,asset,rig)`: false refuses.
 - SV `MMDHLCanSavePhysicsDefault(p,asset)`: any non-nil return overrides (true allows).
 - CL `MMDHLFullPhysics(ent)`: true means no LOD.
+- CL `MMDVMDNPCPoseCut(ent,seconds)` (run by animation addons such as the MMD VMD NPC player):
+  `mmdhl.MarkTeleport`, the secondary world is carried across the jump instead of simulated.
 - SV `MMDHLActorCreated(ent,rig,opts)`, `MMDHLPhysicsApplied(p,old,new)`.
 
 **Internal events.** `MMDHL.InstallationChanged`, `.LanguageChanged`, `.LibraryChanged`,
@@ -229,7 +231,7 @@ messages, ConVars and DATA files have an owner column in §6–§8.
 **Physics** (chapter 04)
 - `physics_settings` (CL): `PhysicsSettingDefaults`, SetSecondaryTuning.
 - `physics_lod` (CL): pure `PhysicsLODPolicy`.
-- `physics_reset` (SH).
+- `physics_reset` (SH): `ResetPhysics`; CL `MarkTeleport` (hook `MMDVMDNPCPoseCut`).
 - `physics_profile` (SH, pure): `mmdhl.physics`.
 - `physics_editor` (SH): server ops, rate limits; replaces `LoadSavedFit`.
 - `collision_editor` (CL).

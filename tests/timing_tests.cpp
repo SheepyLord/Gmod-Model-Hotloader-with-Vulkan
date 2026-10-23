@@ -66,6 +66,14 @@ int main(int argc,char** argv){try{
   check(p.secondary->dropped==0&&p.secondary->resets==resets&&p.secondary->accumulator<1./60,"irregular frames and a short stall recover their complete simulation time");
   submit(t-1);check(p.secondary->resets==resets+1&&p.secondary->resetReason=="clock_rewind","clock rewinds reset the timeline explicitly");
   submit(t-.99,256);check(p.secondary->resets==resets+2&&p.secondary->resetReason=="teleport","teleporting resets secondary history once");
+  // A marked jump below the 128-unit test (a motion's scene cut) is carried, not
+  // simulated; the window opens at the next pose and a later unmarked jump is simulated.
+  for(int i=1;i<=30;i++)submit(t-.99+i/60.,256);
+  p.markTeleport(.05);submit(t-.99+31/60.,296);
+  check(p.secondary->carries==1&&p.secondary->resets==resets+2&&p.secondary->dropped==0&&p.sourceError.empty(),"a marked jump below the teleport test is carried, not reset");
+  for(int i=32;i<=60;i++)submit(t-.99+i/60.,296);
+  auto carries=p.secondary->carries;submit(t-.99+61/60.,336);
+  check(p.secondary->carries==carries&&p.secondary->resets==resets+2,"the mark window closes and an unmarked jump below 128 units is simulated");
  }
  // Stepped skeletons: a pose that only changes every fourth 240 Hz frame (a
  // 60 Hz networked update) is shown one update behind, interpolated, so the
@@ -82,6 +90,7 @@ int main(int argc,char** argv){try{
   if(variant==0)check(still==0&&worst<.3*median&&p.presentationDelay>1./60&&p.presentationDelay<1.5/60,"a skeleton networked at 60 Hz is interpolated one update behind and moves evenly every frame");
   if(variant==1)check(still==0&&p.presentationDelay==0&&p.presentationSamples.size()>=2,"a skeleton that changes every frame passes through without delay");
   if(variant==2)check(still==steps.size()*3/4&&p.presentationDelay==0,"with smoothing off a 60 Hz skeleton keeps its steps");
+  if(variant==0){p.markTeleport(0);double t=481/240.;p.submitPresentationPose(palette(t),t,++frame);p.stepSource();check(p.presentationDelay==0&&p.presentationSamples.empty(),"a marked pose is presented as it is, never blended with the poses before it");}
  }
  // Compare the optimized palette path against the original scalar definitions.
  World host;auto id=host.create(model,{{"backend","source"},{"secondaryCollision",0}});auto& p=host.get(id);p.secondary.reset();

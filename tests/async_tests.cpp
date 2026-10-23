@@ -102,6 +102,30 @@ int main(int argc,char** argv){try{
   check(held==0&&jerk<.6*median,"presentation stays continuous while a step job outlasts a frame");
   check(delay>1000./60+6&&delay<1000./60*3,"the display margin settles just above the observed lag");
  }
+ // Marked teleports (an animation's scene cut): a 40-unit jump, far below the
+ // 128-unit test, is carried. Every dynamic body keeps its pose relative to its
+ // anchor; the same jump unmarked drags the chain (the control).
+ {
+  World host;auto h=host.create(model,options("cpu_mt_v2"));auto& p=host.get(h);
+  std::vector<std::pair<int,int>> pairs;{auto d=p.secondary->diagnostics(true);for(size_t i=0;i<d["bodyList"].size();i++){auto& b=d["bodyList"][i];if(!b["follower"].get<bool>()&&b["presentationAnchorBody"].get<int>()>=0)pairs.push_back({int(i),b["presentationAnchorBody"].get<int>()});}}
+  check(!pairs.empty(),"the chain fixture has anchored dynamic bodies to carry");
+  auto relative=[&]{std::vector<btTransform> out;auto list=p.secondary->diagnostics(true)["bodyList"];auto at=[&](int i){auto& b=list[size_t(i)];auto u=b["position"],q=b["rotation"];return btTransform(btQuaternion(q[0],q[1],q[2],q[3]),btVector3(u[0],u[1],u[2]));};for(auto [body,anchor]:pairs)out.push_back(at(anchor).inverse()*at(body));return out;};
+  auto change=[](const std::vector<btTransform>& a,const std::vector<btTransform>& b){double m=0;for(size_t i=0;i<a.size();i++)m=std::max(m,double((a[i].getOrigin()-b[i].getOrigin()).length()));return m;};
+  int frame=0;auto submit=[&](double t,float offset){p.submitPresentationPose(palette(*p.sourceRig,t,offset),t,uint64_t(++frame));p.secondary->waitAsyncIdle();p.stepSource();};
+  for(int f=0;f<=60;f++)submit(f/60.,0);
+  auto resets=p.secondary->resets;auto carries=p.secondary->carries;auto before=relative();
+  // Submitted at the previous pose's time, so no step follows: the carry alone.
+  p.markTeleport(.1);submit(1,40);
+  check(p.secondary->carries==carries+1&&p.secondary->resets==resets&&p.sourceError.empty(),"a marked jump below the teleport test is carried, not reset");
+  double carried=change(before,relative());
+  check(carried<1e-3,"a marked jump carries every dynamic body with its anchor");
+  submit(61/60.,80);check(p.secondary->carries==carries+2&&p.sourceError.empty(),"a second piece of the jump inside the window is carried too");
+  for(int f=62;f<=120;f++)submit(f/60.,80);
+  auto settled=p.secondary->carries;auto calm=relative();submit(121/60.,120);
+  double dragged=change(calm,relative());
+  std::cout<<"40-unit jump: anchor-relative change carried "<<carried<<", unmarked "<<dragged<<" PMX units\n";
+  check(p.secondary->carries==settled&&p.secondary->resets==resets&&dragged>.05&&dragged>100*carried,"after the window an unmarked jump below 128 units is simulated and drags the chain");
+ }
  // Repeated teardown catches lifetime races hidden by a single fast fixture.
  for(int trial=0;trial<100;trial++){
   World host;auto h=host.create(model,options("cpu_mt_v2"));auto& p=host.get(h);
