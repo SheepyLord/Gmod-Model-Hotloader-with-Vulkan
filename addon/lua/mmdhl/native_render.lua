@@ -35,19 +35,20 @@ if native.SetGpuSkinning then
  native.SetGpuSkinning(gpuSkinning:GetBool())
  cvars.AddChangeCallback('mmdhl_gpu_skinning',function(_,_,value) native.SetGpuSkinning(tonumber(value)~=0) native.PruneRenderCache(true) end,'MMDHL.GpuSkinning')
 end
--- Soft alpha: MMD blends every material, so texture alpha between clear and the 0.5
--- cutout reference shows partly see-through there (a sheer ribbon's fill, a tulle hem,
--- lenses, blush), while the parts' alpha test removes it. Native builds that classify
--- such triangles draw them again blended (under RTX Remix: only blended). 0 keeps the
--- alpha test alone.
+-- Soft alpha: MMD blends every material, so texture alpha between clear and opaque
+-- shows partly see-through there (a sheer ribbon's fill, a tulle hem, lenses, blush),
+-- while the parts' 0.5 alpha test removes it or draws it opaque. Native builds that
+-- classify such triangles blend them once: Source alpha-tests only their opaque core in
+-- the opaque pass and blends the rest in the translucent pass; RTX Remix blends them in
+-- the opaque pass. 0 keeps the alpha test alone.
 local softAlpha=CreateClientConVar('mmdhl_soft_alpha','1',true,false,'Draw the partly transparent texels that the alpha test cuts from character model parts blended, as MMD shows them')
 if native.SetSoftAlpha then
  native.SetSoftAlpha(softAlpha:GetBool())
  cvars.AddChangeCallback('mmdhl_soft_alpha',function(_,_,value) native.SetSoftAlpha(tonumber(value)~=0) end,'MMDHL.SoftAlpha')
 end
 local directions={Vector(1,0,0),Vector(-1,0,0),Vector(0,1,0),Vector(0,-1,0),Vector(0,0,1),Vector(0,0,-1)}
-if mmdhl.sourceTextureVersion~=9 then
- mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.softMaterials={} mmdhl.sourceTextureVersion=9
+if mmdhl.sourceTextureVersion~=10 then
+ mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.softMaterials={} mmdhl.sourceTextureVersion=10
 end
 mmdhl.sourceMaterials=mmdhl.sourceMaterials or {}
 mmdhl.sourceBlendMaterials=mmdhl.sourceBlendMaterials or {}
@@ -116,11 +117,21 @@ local function materials(id,info,depth,blended)
  materialRetries[kind][id]=nil cache[id]=result return result
 end
 local function softCount(p) return tonumber(p.softTriangles) or 0 end
--- Blended copies of the parts with soft triangles (AssetInfo softTriangles), one name
--- per slot ('' for a part without); nil when the asset has none or comes from a native
--- build that does not classify them. The worker's VMT recipe (assets.cpp
--- prepareSourceMaterials) with the alpha test replaced by blending, bound to the
--- mounted public material's textures.
+-- The worker's VMT recipe (assets.cpp prepareSourceMaterials) without its alpha
+-- settings, which each copy below sets.
+local function softRecipe(texture,twoSided,alpha)
+ local params={['$basetexture']=texture:GetName(),['$model']='1',['$vertexcolor']='1',['$nocull']=twoSided and '1' or '0',['$vertexalpha']='0',
+  ['$bumpmap']='mmdhl/scmi/normal',['$lightwarptexture']='mmdhl/scmi/lightwarptexture',['$halflambert']='0',['$phong']='1',['$phongboost']='24',['$phongalbedotint']='1',
+  ['$phongexponenttexture']='mmdhl/scmi/phong_exp',['$phongfresnelranges']='[0 0 1]',['$rimlight']='1',['$rimlightexponent']='2',['$rimlightboost']='2'}
+ for k,v in pairs(alpha) do params[k]=v end
+ return params
+end
+-- Copies of the parts with soft triangles (AssetInfo softTriangles), one name per slot
+-- ('' for a part without), bound to the mounted public material's textures: soft, the
+-- recipe blended instead of alpha-tested, and outside RTX Remix core, the recipe tested
+-- at 247/255 (the native soft rule's opaque level) without alpha-to-coverage, which
+-- draws the texels the blend must not cover again. nil when the asset has none or comes
+-- from a native build that does not classify them.
 local function softMaterials(id,info)
  local cache=mmdhl.softMaterials
  if cache[id]~=nil then return cache[id] or nil end
@@ -132,18 +143,19 @@ local function softMaterials(id,info)
  for i,p in ipairs(info.materials) do
   if softCount(p)>0 and not baseTexture(source[i]) then return deferMaterial('soft',id,L('render.error.pending_texture',{path=p.path})) end
  end
- local names={}
+ local names={soft={},core=not mmdhl.UsesRemixPreview() and {} or nil}
  for i,p in ipairs(info.materials) do
-  names[i]=''
+  names.soft[i]='' if names.core then names.core[i]='' end
   if softCount(p)>0 then
    local texture=baseTexture(source[i])
-   local mat=CreateMaterial('mmdhl_soft_v1_'..id..'_'..i,'VertexLitGeneric',{
-    ['$basetexture']=texture:GetName(),['$model']='1',['$vertexcolor']='1',['$nocull']=p.twoSided and '1' or '0',
-    ['$translucent']='1',['$vertexalpha']='0',['$alphatest']='0',
-    ['$bumpmap']='mmdhl/scmi/normal',['$lightwarptexture']='mmdhl/scmi/lightwarptexture',['$halflambert']='0',['$phong']='1',['$phongboost']='24',['$phongalbedotint']='1',
-    ['$phongexponenttexture']='mmdhl/scmi/phong_exp',['$phongfresnelranges']='[0 0 1]',['$rimlight']='1',['$rimlightexponent']='2',['$rimlightboost']='2'})
+   local mat=CreateMaterial('mmdhl_soft_v1_'..id..'_'..i,'VertexLitGeneric',softRecipe(texture,p.twoSided,{['$translucent']='1',['$alphatest']='0'}))
    mat:SetTexture('$basetexture',texture)
-   names[i]='!'..mat:GetName()
+   names.soft[i]='!'..mat:GetName()
+   if names.core then
+    local core=CreateMaterial('mmdhl_soft_core_v1_'..id..'_'..i,'VertexLitGeneric',softRecipe(texture,p.twoSided,{['$translucent']='0',['$alphatest']='1',['$alphatestreference']='.97',['$allowalphatocoverage']='0'}))
+    core:SetTexture('$basetexture',texture)
+    names.core[i]='!'..core:GetName()
+   end
   end
  end
  materialRetries.soft[id]=nil cache[id]=names return names
@@ -278,7 +290,7 @@ local function draw(ent,translucent,depth)
   -- entry for every slot; empty depth names stay private to this pending map
   -- and are never drawn. Only a complete registration earns MMDNamesSent.
   if complete or ent.MMDColorNamesSent~=id or ent.MMDNamesVersion~=mmdhl.sourceTextureVersion then
-   local names={color={},depth={},soft=soft}
+   local names={color={},depth={},soft=soft and soft.soft,core=soft and soft.core}
    for i in ipairs(color) do names.color[i]=info.materials[i].path names.depth[i]=depthMats and '!'..depthMats[i]:GetName() or '' end
    local ok,err=native.SetInstanceMaterials(instance,util.TableToJSON(names))
    if not ok then ent.MMDNamesRetry=SysTime()+.25 mmdhl.renderError=err return end

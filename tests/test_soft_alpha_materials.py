@@ -2,10 +2,12 @@
 
 Runs the renderer's material registration and draw passes against Source-like
 materials. Parts the native build reports soft triangles for (AssetInfo
-softTriangles) register a blended VertexLitGeneric copy as their "soft" name; the
-translucent pass then draws for them outside RTX Remix (which draws them in the
-opaque pass natively). Assets without soft triangles, older native builds and the
-mmdhl_soft_alpha 0 setting register and draw exactly as before.
+softTriangles) register a blended VertexLitGeneric copy as their "soft" name and,
+outside RTX Remix, an opaque core (the recipe alpha-tested at 247/255 without
+alpha-to-coverage) as their "core" name; the translucent pass then draws for them
+outside RTX Remix (which draws them in the opaque pass natively). Assets without
+soft triangles, older native builds and the mmdhl_soft_alpha 0 setting register and
+draw exactly as before.
 """
 from pathlib import Path
 from lupa import LuaRuntime
@@ -106,6 +108,14 @@ for i,nocull in pairs({[2]='1',[3]='0'}) do
  assert(mat.params['$phong']=='1' and mat.params['$bumpmap']=='mmdhl/scmi/normal','The copy does not follow the worker recipe')
 end
 assert(not CREATED['mmdhl_soft_v1_asset_1'] and not CREATED['mmdhl_soft_v1_asset_4'],'Parts without soft triangles got a copy')
+local core=BINDINGS[1].core
+assert(core[1]=='' and core[4]=='' and core[2]=='!mmdhl_soft_core_v1_asset_2' and core[3]=='!mmdhl_soft_core_v1_asset_3','Core names are per slot')
+for i,nocull in pairs({[2]='1',[3]='0'}) do
+ local mat=CREATED['mmdhl_soft_core_v1_asset_'..i]
+ assert(mat.shader=='VertexLitGeneric' and mat.params['$translucent']=='0' and mat.params['$alphatest']=='1','The core is not alpha-tested')
+ assert(mat.params['$alphatestreference']=='.97' and mat.params['$allowalphatocoverage']=='0','The core keeps partly transparent texels')
+ assert(mat.params['$nocull']==nocull and mat.texture==SOURCES['fixture/'..i].texture and mat.params['$phong']=='1','The core lost its texture, culling or recipe')
+end
 local before=#DRAWS
 mmdhl.DrawCarrier(ENT,true,0)
 assert(#DRAWS==before+2 and DRAWS[before+1].translucent==true and DRAWS[before+1].depth==false,'The translucent pass did not draw the soft triangles')
@@ -121,6 +131,7 @@ lua = runtime(remix=True, soft_enabled=True, soft_parts={2})
 lua.execute(r'''
 mmdhl.DrawCarrier(ENT,false,0)
 assert(BINDINGS[1].soft[2]=='!mmdhl_soft_v1_asset_2','Remix did not register soft names')
+assert(BINDINGS[1].core==nil and not CREATED['mmdhl_soft_core_v1_asset_2'],'Remix registered an opaque core')
 local before=#DRAWS
 mmdhl.DrawCarrier(ENT,true,0)
 assert(#DRAWS==before,'Remix drew a translucent pass without overrides')
@@ -148,4 +159,4 @@ mmdhl.DrawCarrier(ENT,true,0)
 assert(#DRAWS==before,'A model without soft triangles drew a translucent pass')
 ''')
 
-print('PASS: soft-alpha copies per slot, translucent pass outside Remix only, setting and older builds unchanged')
+print('PASS: soft-alpha copies and Source cores per slot, translucent pass outside Remix only, setting and older builds unchanged')

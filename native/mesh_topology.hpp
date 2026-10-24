@@ -30,4 +30,20 @@ inline BatchedTopology batchTopology(const Model& model,std::span<const uint8_t>
     }
     return out;
 }
+// The index ranges of [first,first+count) one masked draw keeps: triangles both masks keep
+// (an empty mask keeps all), the overlap guard's owners and the draw's soft-alpha subset.
+// ids maps the range's triangles to model triangles (empty: implicitFirst onward). Returns
+// how many of the subset's triangles the owner mask dropped (lit by another copy).
+template<class Range> unsigned keptRanges(std::vector<Range>& out,unsigned first,unsigned count,std::span<const unsigned> ids,unsigned implicitFirst,
+                                          std::span<const uint8_t> owner,std::span<const uint8_t> subset){
+    out.clear();unsigned dropped=0;int start=-1;
+    for(unsigned at=first;at<first+count;at+=3){
+        unsigned triangle=ids.empty()?implicitFirst+at/3:ids[at/3];
+        bool wanted=subset.empty()||subset[triangle]!=0,keep=wanted&&(owner.empty()||owner[triangle]!=0);
+        if(keep&&start<0)start=int(at);
+        if(!keep){if(wanted)dropped++;if(start>=0){out.emplace_back(start,int(at)-start);start=-1;}}
+    }
+    if(start>=0)out.emplace_back(start,int(first+count)-start);
+    return dropped;
+}
 }

@@ -70,7 +70,7 @@ Paths are repo-relative. Target abbreviations: **RT** `mmd_runtime` (shared lib)
 
 **Rendering (client)**
 - `renderer.cpp/.hpp` — native drawing via IMaterialSystem: buffers, render-thread queue, GPU skinning, Source shadows/lighting, stats [CL].
-- `mesh_topology.hpp`, `gpu_topology.hpp`, `vertex_upload.hpp`, `cutout.hpp` (Remix alpha cutouts, soft-alpha texel mask and triangle footprints), `light_overlaps.hpp` (flashlight overlap masks), `sdk_end.hpp` (undo SDK macros under GCC) [hdr].
+- `mesh_topology.hpp` (shared vertex-buffer batching, masked index ranges), `gpu_topology.hpp`, `vertex_upload.hpp`, `cutout.hpp` (Remix alpha cutouts, soft-alpha texel mask and triangle footprints), `light_overlaps.hpp` (flashlight overlap masks), `sdk_end.hpp` (undo SDK macros under GCC) [hdr].
 - `render_binaries.hpp` — pinned render-DLL SHA-256; used only by `tests/render_guard_tests.cpp` and `scripts/compatibility_profiles.py`. `thread_sampler.hpp` — main-thread profiler (Windows client only).
 
 **Physics / secondary motion**

@@ -20,16 +20,20 @@ void drawInstanceNative(Instance&,unsigned,const std::string&,bool,RenderTint ti
 // Draws the listed parts of one instance with a single material bind.
 void drawInstanceNativeParts(Instance&,std::span<const unsigned> parts,const std::string&,bool edges,RenderTint tint,bool perPartColor);
 void drawNative(uint64_t instance,unsigned part,const std::string& material,bool edges,RenderTint tint={});
-// Which triangles of a part one draw covers: all, only its soft ones (Model::softTriangles,
-// drawn blended through the part's soft-alpha material) or all but those (RTX Remix).
+// Which triangles of a part one draw covers: all, only its soft ones (Model::softTriangles)
+// or all but those (Model::firmTriangles, through the part's own material).
 enum class TriangleSubset : uint8_t {All,Soft,Firm};
 struct PartDraw {unsigned part=0;std::string name;TriangleSubset subset=TriangleSubset::All;};
 // Draws each part with its own bind, as one render call.
 void drawInstanceNativeBatch(Instance&,std::span<const PartDraw> parts,RenderTint tint);
 // Soft alpha on (default) or off: whether parts with soft triangles and a registered
-// soft-alpha material draw them blended. softAlphaPass says where: 0 nowhere, 1 in
-// the translucent pass after the part's alpha-tested opaque draw (Source), 2 in the
-// opaque pass, the part's own material then leaving them out (RTX Remix).
+// soft-alpha material draw them blended, once. softAlphaPass says how: 0 not at all;
+// 1 Source: in the opaque pass the part's own material draws its firm triangles and
+// its core (alpha test at 247/255, no alpha-to-coverage) the soft ones, then the soft
+// material blends those in the translucent pass a few depth steps behind, so it adds
+// colour and flashlight only where the core drew nothing (a part without a core keeps
+// its full alpha-tested draw); 2 RTX Remix: the opaque pass draws the firm triangles
+// and blends the soft ones.
 void setSoftAlpha(bool enabled);
 int softAlphaPass();
 // Under Source's queued (multicore) material system native draws run on its

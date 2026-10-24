@@ -30,6 +30,14 @@ int main(int argc,char** argv){try{
  check(mask[0],"Hidden first-person copy suppressed a visible face");
  auto t=batchTopology(*m);
  check(t.chunks[0].triangles==std::vector<unsigned>{0,1},"Batched triangle identities changed");
+ // A masked draw keeps the triangles both the owners and its soft-alpha subset keep (Source
+ // draws a soft part's firm triangles and its core with both), by implicit or listed ids.
+ using Ranges=std::vector<std::pair<int,int>>;Ranges kept;
+ std::vector<uint8_t> owner{1,1,0,1,1,1},subset{1,0,1,1,1,0};std::vector<unsigned> listed{5,4,3,2,1,0};
+ check(keptRanges(kept,0,18,{},0,owner,subset)==1&&kept==Ranges{{0,3},{9,6}},"Owner and subset masks not combined");
+ check(keptRanges(kept,0,18,{},0,{},subset)==0&&kept==Ranges{{0,3},{6,9}},"Subset mask alone not applied");
+ check(keptRanges(kept,3,12,listed,0,owner,subset)==1&&kept==Ranges{{3,6}},"Listed triangle ids not masked");
+ check(keptRanges(kept,0,9,{},3,owner,subset)==0&&kept==Ranges{{0,6}},"Implicit triangle offset not applied");
  std::swap(m->indices[4],m->indices[5]);buildLightOverlaps(*m);
  check(m->lightOverlaps.empty(),"Intentional reverse-wound surface suppressed");
  std::swap(m->indices[4],m->indices[5]);m->materials.resize(2);
@@ -37,5 +45,5 @@ int main(int argc,char** argv){try{
  check(m->lightOverlaps.empty(),"Different material layers must remain complete");
  check(m->lightLayerRanks==std::vector<unsigned>{0,1},"Coplanar material order missing");
  if(argc>2){auto real=parse(readFile(argv[2]));std::cout<<"Real model: "<<real->vertices.size()<<" vertices, "<<real->indices.size()/3<<" triangles, "<<real->lightOverlaps.size()<<" overlap candidate groups\n";}
- std::cout<<"Coincident flashlight surfaces, animation/UV separation, winding and visibility passed\n";return 0;
+ std::cout<<"Coincident flashlight surfaces, animation/UV separation, winding, visibility and masked ranges passed\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

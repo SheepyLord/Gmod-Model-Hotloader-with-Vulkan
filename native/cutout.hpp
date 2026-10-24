@@ -167,6 +167,31 @@ inline bool remixPartBlends(const Material& m){
 // most every remixCutFrames frames, as a new cut rebuilds the part's index lists
 // and buffers on the render thread; the last change is picked up once they settle.
 constexpr uint64_t remixCutFrames=4;
+// Within each part, its soft triangles after its firm ones, each group in authored order:
+// a draw of one subset (Source's firm draw, core and blend) is then one index range per
+// chunk instead of one per run (Lily's alpha part alternated about 150 times). The
+// per-triangle data built so far follows: indices, the soft and cutout masks, overlap
+// candidates and texture-morph cuts (dynamicCutout parts have no soft triangles).
+inline void groupSoftTriangles(Model& m){
+    const size_t n=m.indices.size()/3;
+    if(m.softTriangles.size()!=n)return;
+    std::vector<unsigned> order(n);for(unsigned t=0;t<n;t++)order[t]=t;
+    bool moved=false;
+    for(const auto& material:m.materials){
+        if(!material.softTriangles)continue;
+        std::stable_partition(order.begin()+material.first/3,order.begin()+(material.first+material.count)/3,[&](unsigned t){return !m.softTriangles[t];});
+        moved=true;
+    }
+    if(!moved)return;
+    std::vector<unsigned> where(n),indices(m.indices.size());
+    for(unsigned k=0;k<n;k++){where[order[k]]=k;for(size_t c=0;c<3;c++)indices[size_t(k)*3+c]=m.indices[size_t(order[k])*3+c];}
+    m.indices.swap(indices);
+    auto permute=[&](std::vector<uint8_t>& list){if(list.size()!=n)return;std::vector<uint8_t> out(n);for(size_t k=0;k<n;k++)out[k]=list[order[k]];list.swap(out);};
+    permute(m.softTriangles);permute(m.cutoutTriangles);
+    for(auto& group:m.lightOverlaps)for(auto& t:group)t.primitive=where[t.primitive];
+    for(auto& t:m.uvCutoutTriangles)t=where[t];
+    std::sort(m.uvCutoutTriangles.begin(),m.uvCutoutTriangles.end());
+}
 inline bool remixCutDue(bool made,uint64_t version,uint64_t uvVersion,uint64_t frame,uint64_t madeFrame){
  return !made||(version!=uvVersion&&frame>=madeFrame+remixCutFrames);
 }

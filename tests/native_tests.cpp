@@ -267,6 +267,15 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      const std::array<float,2> o{0,0},u{1,0},v{0,1},uv{1,1};
      check(softSamples(spot.data(),8,8,o,u,v)==0&&softFootprint(mask,o,u,v)&&!softFootprint(mask,u,uv,v)&&softFootprint(mask,{1,0},{2,0},{1,1})&&softFootprint(mask,{-3,5},{-2,5},{-3,6})&&!softFootprint(mask,o,{.5f,.5f},uv),
       "soft alpha: a triangle covers a soft texel anywhere in its UV footprint (UVs wrap), not only at its seven samples");}
+    // Grouping: a part's soft triangles follow its firm ones (each in authored order), and every
+    // per-triangle list built at load follows them; a part without soft triangles keeps its order.
+    {Model m;m.indices={0,1,2,1,2,3,2,3,4,3,4,5,4,5,0};m.materials.resize(2);
+     m.materials[0].first=0;m.materials[0].count=12;m.materials[0].softTriangles=2;m.materials[1].first=12;m.materials[1].count=3;
+     m.softTriangles={0,1,0,1,0};m.cutoutTriangles={1,1,0,1,1};m.lightOverlaps={{{1,{1,2,3},0},{3,{3,4,5},0}}};m.uvCutoutTriangles={4};
+     groupSoftTriangles(m);
+     check(m.indices==std::vector<unsigned>{0,1,2,2,3,4,1,2,3,3,4,5,4,5,0}&&m.softTriangles==std::vector<uint8_t>{0,0,1,1,0}&&m.cutoutTriangles==std::vector<uint8_t>{1,0,1,1,1}
+      &&m.lightOverlaps[0][0].primitive==2&&m.lightOverlaps[0][1].primitive==3&&m.uvCutoutTriangles==std::vector<unsigned>{4},
+      "soft alpha: a part's soft triangles follow its firm ones in their own order, with the masks, overlap candidates and texture-morph cuts");}
     try{auto cache=fs::absolute("test-output/soft-cache");fs::remove_all(cache);auto load=[&](const char* file){auto id=importAsset(fs::absolute(file),cache,Json::object()).at("asset").get<std::string>();return loadAsset(cache,id);};
      auto veil=load("tests/fixtures/native-cutout-none.pmx"),ribbon=load("tests/fixtures/native-cutout-ribbon.pmx"),edge=load("tests/fixtures/native-cutout-edge.pmx");
      auto binary=load("tests/fixtures/native-cutout-quarter.pmx"),opaque=load("tests/fixtures/textured21.pmx"),moved=load("tests/fixtures/native-cutout-uvsoft.pmx"),spot=load("tests/fixtures/native-cutout-sheer.pmx");

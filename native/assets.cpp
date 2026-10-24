@@ -393,8 +393,10 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     // lenses, blush) while the test draws them opaque or removes them. Triangles that
     // cover such a texel away from antialiased cutout edges anywhere in their UV
     // footprint (cutout.hpp softFootprint; softSamples for one smaller than a texel)
-    // are listed in softTriangles at rest UVs; the renderer draws them blended as well
-    // (Source) or instead (RTX Remix). Parts a UV morph moves are left to the test.
+    // are listed in softTriangles at rest UVs and moved after their part's firm ones
+    // (groupSoftTriangles); the renderer blends each of their texels once (Source after
+    // alpha-testing their opaque core, RTX Remix instead of the test). Parts a UV morph
+    // moves are left to the test.
     for(size_t i=0;i<model->materials.size();i++){auto& m=model->materials[i];if(m.alphaTexture&&!m.base.empty())alphaParts[m.base].push_back(i);}
     if(!alphaParts.empty())model->cutoutTriangles.assign(model->indices.size()/3,1);
     std::vector<uint8_t> uvMoved;std::vector<std::vector<std::pair<unsigned,std::array<float,2>>>> uvMorphs;
@@ -442,6 +444,7 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
         }
     }
     std::sort(model->uvCutoutTriangles.begin(),model->uvCutoutTriangles.end());
+    groupSoftTriangles(*model);
     for(auto soft:model->softTriangles)model->firmTriangles.push_back(soft?0:1);
     prepareSourceMaterials(cache,id);prepareModelFit(*model,cache);return model;
 }

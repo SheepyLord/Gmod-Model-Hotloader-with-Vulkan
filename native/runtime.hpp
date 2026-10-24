@@ -139,9 +139,9 @@ struct Model {
     std::vector<std::shared_ptr<const AlphaPassMask>> cutoutMasks;
     // Per triangle, 1 when its UV footprint covers authored partial alpha (cutout.hpp
     // softFootprint; sheer fabric, lenses, blush, soft hair tips), and firmTriangles
-    // its complement. Empty when no part has any. A part's soft triangles draw again
-    // blended (or, under RTX Remix, only blended) through the soft-alpha material Lua
-    // registers for it (Instance::softNames).
+    // its complement. Empty when no part has any. A part's soft triangles are blended once
+    // through the soft-alpha material Lua registers for it (Instance::softNames); on Source
+    // their opaque texels are alpha-tested first through its core (Instance::coreNames).
     std::vector<uint8_t> softTriangles,firmTriangles;
     std::vector<Bone> bones;
     std::vector<unsigned> order;
@@ -309,8 +309,9 @@ struct Instance {
     std::vector<float> previousPalette;std::vector<uint64_t> boneChangedState;uint64_t allChangedState=0,geometryState=0;
     unsigned changedBones=0;bool fullChange=false;uint64_t idleFrames=0;unsigned fullChangeReasons=0;// 1 morph, 2 statics, 4 soft, 8 layout, 16 new buffer
     // Engine material names per part for the native colour and depth passes (set from Lua once per asset),
-    // and the blended copies that draw the parts' soft triangles ('' for a part without; empty: none registered).
-    std::vector<std::string> colorNames,depthNames,softNames;
+    // the blended copies that draw the parts' soft triangles and, outside RTX Remix, the opaque cores
+    // that alpha-test those triangles at 247/255 first ('' for a part without; empty: none registered).
+    std::vector<std::string> colorNames,depthNames,softNames,coreNames;
     std::unordered_map<int,btVector3> scalarMorph;
     uint64_t staticsVersion=1;
     mutable std::vector<float> cachedMorphInputs,cachedMorphWeights;

@@ -102,7 +102,7 @@ static std::map<std::tuple<const Snapshot*,unsigned,bool,VertexFormat_t>,CachedM
 // Draw ranges derived from a mask are kept while its content is unchanged:
 // recomputing them walked every triangle of every draw in every pass.
 struct MaskedRanges {std::vector<CPrimList> ranges;unsigned dropped=0;};
-struct LightMask {std::weak_ptr<const Snapshot> snapshot;uint64_t geometry=0;std::vector<uint8_t> triangles;std::map<std::tuple<const unsigned*,unsigned,unsigned,unsigned>,MaskedRanges> ranges;};
+struct LightMask {std::weak_ptr<const Snapshot> snapshot;uint64_t geometry=0;std::vector<uint8_t> triangles;std::map<std::tuple<const unsigned*,unsigned,unsigned,unsigned,TriangleSubset>,MaskedRanges> ranges;};
 static std::map<std::pair<uint64_t,unsigned>,LightMask> lightMasks;
 // Draw execution and the buffer caches belong to the thread that holds the
 // hardware render context (the caller in mat_queue_mode 0, Source's render
@@ -802,21 +802,29 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
     float layerSeparation=0;
     // Under RTX Remix a part's soft triangles (blended) sit where its own layer does.
     const bool softRemix=remixFixedFunction&&draw.subset==TriangleSubset::Soft;
-    if(lightOverlapGuard&&job.sourceRig&&perPartColor&&parts.size()==1&&part<model.lightLayerRanks.size()&&
-       model.lightLayerRanks[part]&&(softRemix||!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT))&&
-       !engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_ADDITIVE)&&!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_IGNOREZ)){
+    // On Source a part's soft triangles blend after their opaque core (the same triangles
+    // alpha-tested at 247/255 in the opaque pass), a few depth steps behind it: they lose
+    // to the core's own depth wherever it drew, so neither their colour nor their
+    // flashlight passes land twice on its texels, and they still sit above the layers
+    // the part lies on.
+    const bool softBlend=!remixFixedFunction&&draw.subset==TriangleSubset::Soft&&engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT);
+    const bool layered=lightOverlapGuard&&job.sourceRig&&perPartColor&&parts.size()==1&&part<model.lightLayerRanks.size()&&
+       model.lightLayerRanks[part]&&(softRemix||softBlend||!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT))&&
+       !engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_ADDITIVE)&&!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_IGNOREZ);
+    if(layered||softBlend){
         // Break only known coplanar material ties, by a few depth-buffer units.
         // Use exactly the same projection in the base and flashlight passes:
         // the depth buffer then selects the top layer *per covered sample*.
         // Alpha-test holes retain the lower surface, with no stencil ownership
         // conflicts and no edits to world vertices, normals, UVs or physics.
-        const auto layers=*std::max_element(model.lightLayerRanks.begin(),model.lightLayerRanks.end());
+        const unsigned layers=model.lightLayerRanks.empty()?0:*std::max_element(model.lightLayerRanks.begin(),model.lightLayerRanks.end());
+        const unsigned rank=layered?model.lightLayerRanks[part]:0;
         if(remixFixedFunction){
             // Remix infers cameras from projection matrices. Raster depth bias
             // makes these layers look like a different camera and drops them.
             // Separate ONLY the render copies by a fraction of a Source unit
             // along their normals. The PMX, skinning and physics stay unchanged.
-            layerSeparation=remixLayerSeparation(model.lightLayerRanks[part],layers);
+            layerSeparation=remixLayerSeparation(rank,layers);
         }else{
             VMatrix projection;context->GetMatrix(MATERIAL_PROJECTION,&projection);
             Vector camera;context->GetWorldSpaceCameraPosition(&camera);
@@ -827,7 +835,9 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
             // with distance, with only a floating-point precision floor.
             const float step=std::min(.025f,.15f/float(layers+1));
             const float unit=std::max(0x1p-23f,step*std::abs(projection[2][3])/(distance*distance));
-            const float offset=float(model.lightLayerRanks[part])*unit;
+            // The soft blend's push: 16 steps of a 24-bit depth buffer, under half a layer
+            // step, so a ranked overlay's sheer texels stay above the layer below it.
+            const float offset=float(rank)*unit-(softBlend?std::min(0x1p-20f,unit*.5f):0.f);
             for(int j=0;j<4;j++)projection[2][j]-=offset*projection[3][j];
             context->MatrixMode(MATERIAL_PROJECTION);context->PushMatrix();context->LoadMatrix(projection);
             context->MatrixMode(MATERIAL_MODEL);restoreProjection.changed=true;
@@ -855,28 +865,19 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         }
         lightMask=filter.triangles;maskEntry=&filter;
     }
-    // Soft alpha: a part's soft-alpha material draws its soft triangles alone and, under
-    // RTX Remix, its own material all the others (the two never overlap the overlap mask
-    // above, which skips blended materials and Remix). Per-part index lists filter them
-    // when built (one draw per chunk, as Remix needs); the shared paths mask their ranges.
+    // Soft alpha: a draw covers a part's soft triangles alone (its soft-alpha copy, on
+    // Source also its core) or all the others (its own material). Per-part index lists
+    // filter them when built (one draw per chunk, as Remix needs); the shared paths mask
+    // their ranges, by the overlap guard's owners as well in the opaque passes.
     const std::span<const uint8_t> subsetMask=draw.subset==TriangleSubset::Soft?std::span<const uint8_t>(model.softTriangles):
         draw.subset==TriangleSubset::Firm?std::span<const uint8_t>(model.firmTriangles):std::span<const uint8_t>{};
-    if(lightMask.empty())lightMask=subsetMask;
+    std::span<const uint8_t> subsetKeep=subsetMask;
     auto drawRange=[&](IMesh* mesh,unsigned first,unsigned count,std::span<const unsigned> ids,unsigned implicitFirst=0){
-        if(lightMask.empty()){mesh->Draw(int(first),int(count));frameDrawCalls++;return;}
+        if(lightMask.empty()&&subsetKeep.empty()){mesh->Draw(int(first),int(count));frameDrawCalls++;return;}
         MaskedRanges computed;MaskedRanges* cached=nullptr;
-        if(maskEntry){auto key=std::make_tuple(ids.empty()?nullptr:ids.data(),implicitFirst,first,count);auto it=maskEntry->ranges.find(key);if(it!=maskEntry->ranges.end())cached=&it->second;else{cached=&maskEntry->ranges.emplace(key,MaskedRanges{}).first->second;cached->dropped=~0u;}}
+        if(maskEntry){auto key=std::make_tuple(ids.empty()?nullptr:ids.data(),implicitFirst,first,count,subsetKeep.empty()?TriangleSubset::All:draw.subset);auto it=maskEntry->ranges.find(key);if(it!=maskEntry->ranges.end())cached=&it->second;else{cached=&maskEntry->ranges.emplace(key,MaskedRanges{}).first->second;cached->dropped=~0u;}}
         auto& result=cached?*cached:computed;
-        if(!cached||result.dropped==~0u){
-            result.ranges.clear();result.dropped=0;int start=-1;
-            for(unsigned at=first;at<first+count;at+=3){
-                unsigned triangle=ids.empty()?implicitFirst+at/3:ids[at/3];
-                bool keep=lightMask[triangle]!=0;
-                if(keep&&start<0)start=int(at);
-                if(!keep){result.dropped++;if(start>=0){result.ranges.emplace_back(start,int(at)-start);start=-1;}}
-            }
-            if(start>=0)result.ranges.emplace_back(start,int(first+count)-start);
-        }
+        if(!cached||result.dropped==~0u)result.dropped=keptRanges(result.ranges,first,count,ids,implicitFirst,lightMask,subsetKeep);
         if(maskEntry&&context->GetFlashlightMode())flashlightDuplicates+=result.dropped;
         if(!result.ranges.empty()){mesh->Draw(result.ranges.data(),int(result.ranges.size()));frameDrawCalls+=unsigned(result.ranges.size());}
     };
@@ -1003,7 +1004,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
     const auto& keep=dynamicCut?dynamicCut->keep:model.cutoutTriangles;
     // Soft alpha: per-part index lists hold only the triangles this draw covers.
     const bool subsetFilter=!batched&&!subsetMask.empty();
-    if(subsetFilter){cachePart^=draw.subset==TriangleSubset::Soft?0x04000000u:0x02000000u;if(lightMask.data()==subsetMask.data())lightMask={};}
+    if(subsetFilter){cachePart^=draw.subset==TriangleSubset::Soft?0x04000000u:0x02000000u;subsetKeep={};}
     auto topologyKey=std::make_tuple(&model,cachePart,dynamicCut?job.instance:0);auto ti=topology.find(topologyKey);
     if(ti!=topology.end()&&(ti->second.model.expired()||ti->second.cut!=(dynamicCut?dynamicCut->revision:0))){topology.erase(ti);ti=topology.end();}
     if(ti==topology.end()){

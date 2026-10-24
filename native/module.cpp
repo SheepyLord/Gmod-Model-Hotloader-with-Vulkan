@@ -589,13 +589,15 @@ FUNCTION(ClearPreview) {context->preview.reset();return 0;} END_FUNCTION
 FUNCTION(DrawPreview) {if(context->preview)drawInstanceNative(context->preview->get(number(LUA,1)),unsigned(number(LUA,2)),stringArg(LUA,3),LUA->GetBool(4));return 0;} END_FUNCTION
 FUNCTION(Draw) {RenderTint tint;if(LUA->IsType(5,GarrysMod::Lua::Type::Vector)){auto rgb=vector(LUA,5);tint.r=rgb.x();tint.g=rgb.y();tint.b=rgb.z();}if(LUA->IsType(6,GarrysMod::Lua::Type::Number))tint.a=float(LUA->GetNumber(6));for(float v:{tint.r,tint.g,tint.b,tint.a})if(!std::isfinite(v)||v<0||v>1)throw std::runtime_error("Invalid entity render tint");drawNative(number(LUA,1),unsigned(number(LUA,2)),stringArg(LUA,3),LUA->GetBool(4),tint);return 0;} END_FUNCTION
 // Per-part engine material names for the native passes, registered once per asset. "soft"
-// (optional, '' for a part without) names the blended copies that draw the soft triangles.
-FUNCTION(SetInstanceMaterials) {auto& p=world().get(number(LUA,1));auto names=json(LUA,2);p.colorNames=names.value("color",std::vector<std::string>{});p.depthNames=names.value("depth",std::vector<std::string>{});p.softNames=names.value("soft",std::vector<std::string>{});if(p.colorNames.size()!=p.model->materials.size()||p.depthNames.size()!=p.model->materials.size()||(!p.softNames.empty()&&p.softNames.size()!=p.model->materials.size()))throw std::runtime_error("Material names do not match the model");LUA->PushBool(true);return 1;} END_FUNCTION
+// (optional, '' for a part without) names the blended copies that draw the soft triangles,
+// "core" (optional, Source only) the copies alpha-tested at 247/255 that draw their opaque texels.
+FUNCTION(SetInstanceMaterials) {auto& p=world().get(number(LUA,1));auto names=json(LUA,2);p.colorNames=names.value("color",std::vector<std::string>{});p.depthNames=names.value("depth",std::vector<std::string>{});p.softNames=names.value("soft",std::vector<std::string>{});p.coreNames=names.value("core",std::vector<std::string>{});if(p.colorNames.size()!=p.model->materials.size()||p.depthNames.size()!=p.model->materials.size()||(!p.softNames.empty()&&p.softNames.size()!=p.model->materials.size())||(!p.coreNames.empty()&&p.coreNames.size()!=p.model->materials.size()))throw std::runtime_error("Material names do not match the model");LUA->PushBool(true);return 1;} END_FUNCTION
 // One call per entity and pass: (instance, translucent pass, depth pass, override JSON or nil, tint vector, alpha).
 // Default parts belong to the opaque pass; override materials go to the pass their flags select, as the Lua loop did.
-// A default part with soft triangles and a soft-alpha material also draws those blended:
-// in the translucent pass after its alpha-tested opaque draw, or under RTX Remix in the
-// opaque pass instead of it (renderer.hpp softAlphaPass).
+// A default part with soft triangles and a soft-alpha material blends those once
+// (renderer.hpp softAlphaPass): on Source its opaque draw splits into its firm triangles
+// and its soft ones' core, and the translucent pass blends the soft ones; under RTX Remix
+// the opaque pass draws the firm ones and blends the soft ones.
 FUNCTION(DrawInstance) {
  auto& p=world().get(number(LUA,1));bool translucent=LUA->GetBool(2),depth=LUA->GetBool(3);
  struct ViewRestore{Instance& p;~ViewRestore(){p.renderView=0;}} restoreView{p};p.renderView=LUA->GetBool(7)?1:0;
@@ -618,7 +620,8 @@ FUNCTION(DrawInstance) {
   if(!depth){bool translucentPart=false;auto o=overrides.find(i);if(o!=overrides.end()){name=&o->second;translucentPart=materialIsTranslucent(*name);}
    else if(softPass&&!p.softNames[i].empty()&&p.model->materials[i].softTriangles){
     if(softPass==2){if(!translucent){parts.push_back({i,*name,TriangleSubset::Firm});parts.push_back({i,p.softNames[i],TriangleSubset::Soft});}continue;}
-    if(translucent)parts.push_back({i,p.softNames[i],TriangleSubset::Soft});
+    if(translucent){parts.push_back({i,p.softNames[i],TriangleSubset::Soft});continue;}
+    if(i<p.coreNames.size()&&!p.coreNames[i].empty()){parts.push_back({i,*name,TriangleSubset::Firm});parts.push_back({i,p.coreNames[i],TriangleSubset::Soft});continue;}
    }
    if(translucentPart!=translucent)continue;}
   parts.push_back({i,*name});
