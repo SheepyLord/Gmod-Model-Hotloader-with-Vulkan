@@ -388,12 +388,13 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     // still measured at rest, over every triangle, exactly as before. Whether such
     // a part blends is decided once for all instances, so it also weighs the styles
     // its texture morphs show (uvMorphCoverage): one a morph makes opaque keeps the test.
-    // Soft alpha: MMD blends every material, so texels between clear and the 0.5
-    // reference show partly see-through there (a sheer ribbon's fill, a tulle hem,
-    // lenses, blush) while the test removes them. Triangles with such a sample, away
-    // from antialiased cutout edges (cutout.hpp softSamples), are listed in
-    // softTriangles at rest UVs; the renderer draws them blended as well (Source) or
-    // instead (RTX Remix). Parts a UV morph moves are left to the test.
+    // Soft alpha: MMD blends every material, so partly transparent texels show partly
+    // see-through there (a sheer ribbon's fill, a tulle skirt fading out to its hem,
+    // lenses, blush) while the test draws them opaque or removes them. Triangles that
+    // cover such a texel away from antialiased cutout edges anywhere in their UV
+    // footprint (cutout.hpp softFootprint; softSamples for one smaller than a texel)
+    // are listed in softTriangles at rest UVs; the renderer draws them blended as well
+    // (Source) or instead (RTX Remix). Parts a UV morph moves are left to the test.
     for(size_t i=0;i<model->materials.size();i++){auto& m=model->materials[i];if(m.alphaTexture&&!m.base.empty())alphaParts[m.base].push_back(i);}
     if(!alphaParts.empty())model->cutoutTriangles.assign(model->indices.size()/3,1);
     std::vector<uint8_t> uvMoved;std::vector<std::vector<std::pair<unsigned,std::array<float,2>>>> uvMorphs;
@@ -408,6 +409,7 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
         if(!pixels||w<1||h<1)throw std::runtime_error("Cannot inspect cached texture alpha");
         size_t visible=0,soft=0;for(size_t k=3;k<size_t(w)*h*4;k+=4){auto a=pixels.get()[k];visible+=a>8;soft+=a>8&&a<247;}
         auto mask=std::make_shared<const AlphaPassMask>(pixels.get(),w,h);
+        std::optional<SoftMask> softMask;if(soft)softMask.emplace(pixels.get(),w,h);
         for(auto index:parts){
             auto& material=model->materials[index];material.translucentTexture=visible>0&&soft>visible/10;bool dynamic=false;
             material.alphaCoverage=partCoverage(*model,material,*mask,[&](unsigned v){return model->vertices[v].uv;},[&](size_t t,int hits){
@@ -420,7 +422,7 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
                     int shown=0,found=softSamples(pixels.get(),w,h,a.uv,b.uv,d.uv,&shown);
                     double weight=std::max(double((b.position-a.position).cross(d.position-a.position).length())*.5,1e-12);
                     softArea+=weight*found/7;shownArea+=weight*shown/7;
-                    if(!found)continue;
+                    if(!found&&!(softMask&&softFootprint(*softMask,a.uv,b.uv,d.uv)))continue;
                     if(model->softTriangles.empty())model->softTriangles.assign(model->indices.size()/3,0);
                     model->softTriangles[t/3]=1;material.softTriangles++;
                 }

@@ -249,17 +249,27 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      check(hidden(noneModel)&&!hidden(quarterModel)&&blends(quarterModel)&&!hidden(atlasModel)&&!blends(atlasModel)&&!hidden(opaqueModel)&&!blends(opaqueModel),"RTX Remix skips a part with no coverage left and blends one below half, as before");
      fs::remove_all(cache);
     }catch(const std::exception& e){std::cout<<e.what()<<"\n";check(false,"alpha-test coverage of imported textures");}
-    // Soft alpha: a texel between clear and the 0.5 reference that is no antialiased cutout
-    // edge (cutout.hpp softTexel), and the triangles of a part that sample one (loadAsset).
+    // Soft alpha: a partly transparent texel that is no antialiased cutout edge (cutout.hpp
+    // softTexel, SoftMask), and the triangles of a part that cover one (loadAsset).
     {std::vector<unsigned char> veil(8*8*4,0),edge(8*8*4,0);
      for(int i=0;i<64;i++){veil[i*4+3]=100;edge[i*4+3]=i%8<2?0:i%8==2?100:255;}
      auto at=[](int column){return (float(column)+.5f)/8;};
      bool texels=softTexel(veil.data(),8,8,at(5),at(5))&&softTexel(veil.data(),8,8,at(5)+1,at(5)-2)&&!softTexel(edge.data(),8,8,at(2),at(4))&&!softTexel(edge.data(),8,8,at(5),at(4))&&!softTexel(edge.data(),8,8,at(0),at(4));
-     veil[(4*8+4)*4+3]=128;veil[(4*8+5)*4+3]=8;texels&=!softTexel(veil.data(),8,8,at(4),at(4))&&!softTexel(veil.data(),8,8,at(5),at(4))&&softTexel(veil.data(),8,8,at(6),at(4));
-     check(texels,"soft alpha: partial alpha below the reference counts (UVs wrap); antialiased cutout edges, clear and passing texels do not");}
+     // 246 is partly transparent, 247 opaque, 8 clear; the 100 between those two is an antialiased edge, the next one is not.
+     veil[(1*8+4)*4+3]=246;veil[(4*8+4)*4+3]=247;veil[(4*8+5)*4+3]=8;
+     texels&=softTexel(veil.data(),8,8,at(4),at(1))&&!softTexel(veil.data(),8,8,at(4),at(4))&&!softTexel(veil.data(),8,8,at(5),at(4))&&!softTexel(veil.data(),8,8,at(6),at(4))&&softTexel(veil.data(),8,8,at(7),at(4));
+     auto same=[&](const std::vector<unsigned char>& rgba){SoftMask mask(rgba.data(),8,8);bool ok=true,any=false;
+      for(int y=0;y<8;y++)for(int x=0;x<8;x++){bool soft=softTexel(rgba.data(),8,8,at(x),at(y));any|=soft;ok&=mask.span(y,x,x+1)==soft;}return ok&&mask.any==any;};
+     check(texels&&same(veil)&&same(edge),"soft alpha: partly transparent texels count up to 246 (UVs wrap); antialiased cutout edges, clear and opaque texels do not; the texture's mask agrees texel for texel");
+     // An opaque texture with one partly transparent texel (5, 1): the lower-left half of the
+     // UV square covers it although none of its seven samples falls on it; the other half does not.
+     std::vector<unsigned char> spot(8*8*4,255);spot[(1*8+5)*4+3]=200;SoftMask mask(spot.data(),8,8);
+     const std::array<float,2> o{0,0},u{1,0},v{0,1},uv{1,1};
+     check(softSamples(spot.data(),8,8,o,u,v)==0&&softFootprint(mask,o,u,v)&&!softFootprint(mask,u,uv,v)&&softFootprint(mask,{1,0},{2,0},{1,1})&&softFootprint(mask,{-3,5},{-2,5},{-3,6})&&!softFootprint(mask,o,{.5f,.5f},uv),
+      "soft alpha: a triangle covers a soft texel anywhere in its UV footprint (UVs wrap), not only at its seven samples");}
     try{auto cache=fs::absolute("test-output/soft-cache");fs::remove_all(cache);auto load=[&](const char* file){auto id=importAsset(fs::absolute(file),cache,Json::object()).at("asset").get<std::string>();return loadAsset(cache,id);};
      auto veil=load("tests/fixtures/native-cutout-none.pmx"),ribbon=load("tests/fixtures/native-cutout-ribbon.pmx"),edge=load("tests/fixtures/native-cutout-edge.pmx");
-     auto binary=load("tests/fixtures/native-cutout-quarter.pmx"),opaque=load("tests/fixtures/textured21.pmx"),moved=load("tests/fixtures/native-cutout-uvsoft.pmx");
+     auto binary=load("tests/fixtures/native-cutout-quarter.pmx"),opaque=load("tests/fixtures/textured21.pmx"),moved=load("tests/fixtures/native-cutout-uvsoft.pmx"),spot=load("tests/fixtures/native-cutout-sheer.pmx");
      auto whole=[](const Model& m,size_t part){return m.materials[part].softTriangles==m.materials[part].count/3&&m.materials[part].softCoverage==1;};
      bool listed=veil->softTriangles.size()==veil->indices.size()/3&&veil->firmTriangles.size()==veil->softTriangles.size();
      for(size_t t=0;listed&&t<veil->softTriangles.size();t++)listed=veil->softTriangles[t]==1&&veil->firmTriangles[t]==0;
@@ -268,6 +278,8 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
       "soft alpha: a ribbon's sheer fill between opaque lattice lines marks its triangle, and coverage is measured as before");
      check(edge->softTriangles.empty()&&edge->firmTriangles.empty()&&edge->materials[0].softTriangles==0&&binary->softTriangles.empty()&&opaque->softTriangles.empty(),"soft alpha: antialiased cutout edges, binary alpha and opaque textures mark nothing");
      check(moved->materials[1].dynamicCutout&&moved->materials[1].softTriangles==0&&moved->materials[0].softTriangles==1,"soft alpha: a part a UV morph moves is left to the alpha test, the rest of its texture's users are not");
+     check(spot->materials[0].softTriangles==0&&spot->materials[1].softTriangles==1&&std::count(spot->softTriangles.begin(),spot->softTriangles.end(),uint8_t(1))==1,
+      "soft alpha: the one triangle whose footprint covers a partly transparent texel above the reference is soft, though no sample falls on it");
      // The classification stays out of the cached manifest, so the asset's identity is unchanged.
      auto manifest=readJson(cache/L"assets"/wide(veil->id)/L"manifest.json");bool clean=true;for(auto& m:manifest.at("materials"))clean&=!m.contains("softTriangles")&&!m.contains("softCoverage");
      check(clean,"soft alpha is classified at load and never written to the manifest");

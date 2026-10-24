@@ -206,16 +206,20 @@ if __name__=='__main__':
  # by 0.5, so weight 1 shows all of it, 0.5 its last column, 0.25 nothing.
  (out/'cutout-switch.png').write_bytes(png(8,8,b''.join(bytes((40,40,48,255 if 4<=i%8<7 else 0)) for i in range(64))))
  (out/'native-cutout-uvmorph.pmx').write_bytes(make(humanoid=True,texture=True,texture_name='cutout-switch.png',uv_switch=.5))
- # Soft alpha (partial alpha the 0.5 test removes). The Core triangle samples row 0 at u
- # 0-0.5, columns 0-4 of 8. A ribbon: opaque lattice columns over a sheer fill (alpha 120,
- # odd columns), so two of its seven samples are soft. An antialiased cutout edge: its one
- # partial column (2) lies between clear (0-1) and opaque (3-7) texels, so nothing is soft.
- # The sheer layer of cutout-none again with the UV morph: the Fabric it moves keeps the test.
+ # Soft alpha (partial alpha the 0.5 test draws opaque or removes). The Core triangle samples
+ # row 0 at u 0-0.5, columns 0-4 of 8. A ribbon: opaque lattice columns over a sheer fill
+ # (alpha 120, odd columns), so two of its seven samples are soft. An antialiased cutout edge:
+ # its one partial column (2) lies between clear (0-1) and opaque (3-7) texels, so nothing is
+ # soft. The sheer layer of cutout-none again with the UV morph: the Fabric it moves keeps the
+ # test. A sheer spot: one partly transparent texel (5, 1; alpha 200, above the reference) in
+ # an opaque texture, inside the Fabric's fourth triangle only, where no triangle samples.
  (out/'cutout-ribbon.png').write_bytes(png(8,8,b''.join(bytes((240,240,245,255 if i%2==0 else 120)) for i in range(64))))
  (out/'native-cutout-ribbon.pmx').write_bytes(make(texture=True,texture_name='cutout-ribbon.png'))
  (out/'cutout-edge.png').write_bytes(png(8,8,b''.join(bytes((30,30,30,0 if i%8<2 else 100 if i%8==2 else 255)) for i in range(64))))
  (out/'native-cutout-edge.pmx').write_bytes(make(texture=True,texture_name='cutout-edge.png'))
  (out/'native-cutout-uvsoft.pmx').write_bytes(make(humanoid=True,texture=True,texture_name='cutout-none.png',uv_switch=.5))
+ (out/'cutout-sheer.png').write_bytes(png(8,8,b''.join(bytes((90,90,110,200 if i==1*8+5 else 255)) for i in range(64))))
+ (out/'native-cutout-sheer.pmx').write_bytes(make(texture=True,texture_name='cutout-sheer.png'))
  # Nested group morphs: 13 links of coefficient 1000 overflow a float at weight 1, and
  # 40 levels that name their child twice reach 2^40 expansions.
  (out/'native-group-chain.pmx').write_bytes(make(humanoid=True,group_chain=13))

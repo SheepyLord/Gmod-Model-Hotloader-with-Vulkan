@@ -82,9 +82,10 @@ struct Material {
     // texture morph at a quarter, half, three quarters or full weight (0: none
     // shows anything). With the rest value it decides RTX Remix blending, once.
     float alphaCoverage=1,uvMorphCoverage=0;
-    // Soft alpha (loadAsset, at rest; never for a dynamicCutout part): triangles with
-    // authored partial alpha the 0.5 test removes (Model::softTriangles), and their
-    // share of the part's visible sampled area. Not part of the cached manifest.
+    // Soft alpha (loadAsset, at rest; never for a dynamicCutout part): triangles that
+    // cover authored partial alpha, which the 0.5 test draws opaque or removes
+    // (Model::softTriangles), and the share of soft samples in the part's visible
+    // sampled area. Not part of the cached manifest.
     unsigned softTriangles=0;float softCoverage=0;
     std::array<std::array<float,4>,3> textureBlend{{{1,1,1,1},{1,1,1,1},{1,1,1,1}}};
     int sphereMode=0,toonIndex=-1;
@@ -136,11 +137,11 @@ struct Model {
     // of their part's texture (cutoutMasks, set only for Material::dynamicCutout parts).
     std::vector<unsigned> uvCutoutTriangles;
     std::vector<std::shared_ptr<const AlphaPassMask>> cutoutMasks;
-    // Per triangle, 1 when a sample shows authored partial alpha that the 0.5 test
-    // removes (cutout.hpp softSamples; sheer fabric, lenses, blush, soft hair tips),
-    // and firmTriangles its complement. Empty when no part has any. A part's soft
-    // triangles draw again blended (or, under RTX Remix, only blended) through the
-    // soft-alpha material Lua registers for it (Instance::softNames).
+    // Per triangle, 1 when its UV footprint covers authored partial alpha (cutout.hpp
+    // softFootprint; sheer fabric, lenses, blush, soft hair tips), and firmTriangles
+    // its complement. Empty when no part has any. A part's soft triangles draw again
+    // blended (or, under RTX Remix, only blended) through the soft-alpha material Lua
+    // registers for it (Instance::softNames).
     std::vector<uint8_t> softTriangles,firmTriangles;
     std::vector<Bone> bones;
     std::vector<unsigned> order;

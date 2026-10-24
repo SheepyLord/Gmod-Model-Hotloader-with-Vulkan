@@ -30,22 +30,72 @@ inline int cutoutHits(const AlphaPassMask& mask,const std::array<float,2>& a,con
   if((hits+=mask.passes(a[0]*s+b[0]*r+c[0]*q,a[1]*s+b[1]*r+c[1]*q))>=enough)break;
  return hits;
 }
-// Soft alpha: what MMD shows partly see-through but the 0.5 test removes entirely,
-// such as a sheer ribbon's fill, a tulle hem, glasses lenses, blush or soft hair tips.
-// A texel is soft when 8 < alpha < 128 and it is not an antialiased cutout edge, that is
-// not within two texels of both a clear (<= 8) and an opaque (>= 247) texel (the
-// rule props/material_processing.cpp uses). rgba: the decoded base texture, UVs wrap.
+// Soft alpha: what MMD shows partly see-through, as it blends every material, while
+// the 0.5 test draws it opaque or removes it: a sheer ribbon's fill, a tulle skirt
+// fading out to its hem, glasses lenses, blush or soft hair tips. A texel is soft when
+// it is partly transparent (8 < alpha < 247) and not an antialiased cutout edge, that
+// is not within two texels of both a clear (<= 8) and an opaque (>= 247) texel (the
+// rule props/material_processing.cpp blends by). rgba: the decoded base texture, UVs wrap.
 inline bool softTexel(const unsigned char* rgba,int width,int height,float u,float v){
  if(!std::isfinite(u)||!std::isfinite(v))return false;
  if(!(u>=0&&u<1))u-=std::floor(u);if(!(v>=0&&v<1))v-=std::floor(v);
  int x=std::min(width-1,int(u*float(width))),y=std::min(height-1,int(v*float(height)));
  auto alpha=[&](int px,int py){px=(px%width+width)%width;py=(py%height+height)%height;return rgba[(size_t(py)*size_t(width)+size_t(px))*4+3];};
- auto a=alpha(x,y);if(a<=8||a>=128)return false;
+ auto a=alpha(x,y);if(a<=8||a>=247)return false;
  bool clear=false,opaque=false;
  for(int dy=-2;dy<=2;dy++)for(int dx=-2;dx<=2;dx++){auto n=alpha(x+dx,y+dy);clear|=n<=8;opaque|=n>=247;}
  return !(clear&&opaque);
 }
-// Soft samples of a triangle at the seven points cutoutHits uses; visible (optional)
+// One bit per soft texel of a texture (softTexel at every texel, in one pass).
+struct SoftMask {
+ int width=0,height=0;bool any=false;std::vector<uint64_t> bits;
+ SoftMask(const unsigned char* rgba,int w,int h):width(w),height(h),bits((size_t(w)*size_t(h)+63)/64,0){
+  // Per texel: bit 0 a clear, bit 1 an opaque texel within two columns, then within two rows (UVs wrap).
+  std::vector<uint8_t> row(size_t(w)*size_t(h),0);
+  for(int y=0;y<h;y++)for(int x=0;x<w;x++){auto a=rgba[(size_t(y)*size_t(w)+size_t(x))*4+3];uint8_t f=uint8_t((a<=8?1:0)|(a>=247?2:0));
+   if(f)for(int dx=-2;dx<=2;dx++)row[size_t(y)*size_t(w)+size_t(((x+dx)%w+w)%w)]|=f;}
+  for(int y=0;y<h;y++)for(int x=0;x<w;x++){size_t i=size_t(y)*size_t(w)+size_t(x);auto a=rgba[i*4+3];if(a<=8||a>=247)continue;
+   uint8_t around=0;for(int dy=-2;dy<=2;dy++)around|=row[size_t(((y+dy)%h+h)%h)*size_t(w)+size_t(x)];
+   if(around!=3){bits[i>>6]|=uint64_t(1)<<(i&63);any=true;}}
+ }
+ // Any soft texel in row y (wrapped) from column x0 to x1-1 (wrapped; a span of a whole row or more is the row).
+ bool span(long long y,long long x0,long long x1)const{
+  if(x1<=x0)return false;y=(y%height+height)%height;
+  auto range=[&](size_t from,size_t to){ // bits [from, to)
+   for(size_t i=from;i<to;){size_t word=i>>6,bit=i&63,n=std::min<size_t>(64-bit,to-i);
+    uint64_t m=(n==64?~uint64_t(0):((uint64_t(1)<<n)-1))<<bit;if(bits[word]&m)return true;i+=n;}
+   return false;};
+  size_t base=size_t(y)*size_t(width);
+  if(x1-x0>=width)return range(base,base+size_t(width));
+  long long a=(x0%width+width)%width,b=a+(x1-x0);
+  return b<=width?range(base+size_t(a),base+size_t(b)):range(base+size_t(a),base+size_t(width))||range(base,base+size_t(b-width));
+ }
+};
+// Whether a triangle mapped to UVs a, b and c covers a soft texel: any texel whose centre
+// lies in it (edges included), scanned row by row. A triangle that maps over many copies
+// of its texture covers all of it; one smaller than a texel covers no centre (softSamples
+// still finds the texel it falls in).
+inline bool softFootprint(const SoftMask& mask,const std::array<float,2>& a,const std::array<float,2>& b,const std::array<float,2>& c){
+ if(!mask.any)return false;
+ const double w=mask.width,h=mask.height;const double p[3][2]={{a[0]*w,a[1]*h},{b[0]*w,b[1]*h},{c[0]*w,c[1]*h}};
+ for(auto& q:p)if(!std::isfinite(q[0])||!std::isfinite(q[1]))return false;
+ double top=std::min({p[0][1],p[1][1],p[2][1]}),bottom=std::max({p[0][1],p[1][1],p[2][1]});
+ double left=std::min({p[0][0],p[1][0],p[2][0]}),right=std::max({p[0][0],p[1][0],p[2][0]});
+ if((right-left)*(bottom-top)>4*w*h||bottom-top>64*h)return true;
+ for(long long y=(long long)std::ceil(top-.5),last=(long long)std::floor(bottom-.5);y<=last;y++){
+  double centre=double(y)+.5,from=INFINITY,to=-INFINITY;
+  for(int e=0;e<3;e++){const double* s=p[e];const double* t=p[(e+1)%3];
+   if(centre<std::min(s[1],t[1])||centre>std::max(s[1],t[1]))continue;
+   if(s[1]==t[1]){from=std::min({from,s[0],t[0]});to=std::max({to,s[0],t[0]});continue;}
+   double x=s[0]+(centre-s[1])*(t[0]-s[0])/(t[1]-s[1]);from=std::min(from,x);to=std::max(to,x);}
+  if(from>to)continue;
+  long long x0=(long long)std::ceil(from-.5),x1=(long long)std::floor(to-.5)+1;
+  if(mask.span(y,x0,x1))return true;
+ }
+ return false;
+}
+// Soft samples of a triangle at the seven points cutoutHits uses (its share of soft
+// texels, and the texel a triangle smaller than one falls in); visible (optional)
 // receives how many of them show anything (alpha above 8).
 inline int softSamples(const unsigned char* rgba,int width,int height,const std::array<float,2>& a,const std::array<float,2>& b,const std::array<float,2>& c,int* visible=nullptr){
  int soft=0,shown=0;
