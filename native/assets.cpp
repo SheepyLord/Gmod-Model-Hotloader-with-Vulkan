@@ -388,6 +388,12 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     // still measured at rest, over every triangle, exactly as before. Whether such
     // a part blends is decided once for all instances, so it also weighs the styles
     // its texture morphs show (uvMorphCoverage): one a morph makes opaque keeps the test.
+    // Soft alpha: MMD blends every material, so texels between clear and the 0.5
+    // reference show partly see-through there (a sheer ribbon's fill, a tulle hem,
+    // lenses, blush) while the test removes them. Triangles with such a sample, away
+    // from antialiased cutout edges (cutout.hpp softSamples), are listed in
+    // softTriangles at rest UVs; the renderer draws them blended as well (Source) or
+    // instead (RTX Remix). Parts a UV morph moves are left to the test.
     for(size_t i=0;i<model->materials.size();i++){auto& m=model->materials[i];if(m.alphaTexture&&!m.base.empty())alphaParts[m.base].push_back(i);}
     if(!alphaParts.empty())model->cutoutTriangles.assign(model->indices.size()/3,1);
     std::vector<uint8_t> uvMoved;std::vector<std::vector<std::pair<unsigned,std::array<float,2>>>> uvMorphs;
@@ -401,13 +407,26 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
         std::unique_ptr<unsigned char,decltype(&stbi_image_free)> pixels(stbi_load_from_memory(png.data(),int(png.size()),&w,&h,&c,4),stbi_image_free);
         if(!pixels||w<1||h<1)throw std::runtime_error("Cannot inspect cached texture alpha");
         size_t visible=0,soft=0;for(size_t k=3;k<size_t(w)*h*4;k+=4){auto a=pixels.get()[k];visible+=a>8;soft+=a>8&&a<247;}
-        auto mask=std::make_shared<const AlphaPassMask>(pixels.get(),w,h);pixels.reset();
+        auto mask=std::make_shared<const AlphaPassMask>(pixels.get(),w,h);
         for(auto index:parts){
             auto& material=model->materials[index];material.translucentTexture=visible>0&&soft>visible/10;bool dynamic=false;
             material.alphaCoverage=partCoverage(*model,material,*mask,[&](unsigned v){return model->vertices[v].uv;},[&](size_t t,int hits){
                 bool moved=!uvMoved.empty()&&(uvMoved[model->indices[t*3]]||uvMoved[model->indices[t*3+1]]||uvMoved[model->indices[t*3+2]]);
                 if(moved){model->uvCutoutTriangles.push_back(unsigned(t));dynamic=true;}else if(!hits)model->cutoutTriangles[t]=0;});
-            if(!dynamic)continue;
+            if(!dynamic){
+                double softArea=0,shownArea=0;
+                for(size_t t=material.first;t+2<size_t(material.first)+material.count&&t+2<model->indices.size();t+=3){
+                    const auto& a=model->vertices[model->indices[t]];const auto& b=model->vertices[model->indices[t+1]];const auto& d=model->vertices[model->indices[t+2]];
+                    int shown=0,found=softSamples(pixels.get(),w,h,a.uv,b.uv,d.uv,&shown);
+                    double weight=std::max(double((b.position-a.position).cross(d.position-a.position).length())*.5,1e-12);
+                    softArea+=weight*found/7;shownArea+=weight*shown/7;
+                    if(!found)continue;
+                    if(model->softTriangles.empty())model->softTriangles.assign(model->indices.size()/3,0);
+                    model->softTriangles[t/3]=1;material.softTriangles++;
+                }
+                material.softCoverage=shownArea>0?float(softArea/shownArea):0.f;
+                continue;
+            }
             material.dynamicCutout=true;model->cutoutMasks.resize(model->materials.size());model->cutoutMasks[index]=mask;
             // One texture morph at a time, at quarter steps (an atlas slide shows a style per step).
             if(offset.empty())offset.assign(model->vertices.size(),{0.f,0.f});
@@ -421,6 +440,7 @@ std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
         }
     }
     std::sort(model->uvCutoutTriangles.begin(),model->uvCutoutTriangles.end());
+    for(auto soft:model->softTriangles)model->firmTriangles.push_back(soft?0:1);
     prepareSourceMaterials(cache,id);prepareModelFit(*model,cache);return model;
 }
 #ifdef _WIN32

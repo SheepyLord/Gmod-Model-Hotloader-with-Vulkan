@@ -82,6 +82,10 @@ struct Material {
     // texture morph at a quarter, half, three quarters or full weight (0: none
     // shows anything). With the rest value it decides RTX Remix blending, once.
     float alphaCoverage=1,uvMorphCoverage=0;
+    // Soft alpha (loadAsset, at rest; never for a dynamicCutout part): triangles with
+    // authored partial alpha the 0.5 test removes (Model::softTriangles), and their
+    // share of the part's visible sampled area. Not part of the cached manifest.
+    unsigned softTriangles=0;float softCoverage=0;
     std::array<std::array<float,4>,3> textureBlend{{{1,1,1,1},{1,1,1,1},{1,1,1,1}}};
     int sphereMode=0,toonIndex=-1;
     bool twoSided=false,edge=false,shadow=true,alphaTexture=false,translucentTexture=false;
@@ -132,6 +136,12 @@ struct Model {
     // of their part's texture (cutoutMasks, set only for Material::dynamicCutout parts).
     std::vector<unsigned> uvCutoutTriangles;
     std::vector<std::shared_ptr<const AlphaPassMask>> cutoutMasks;
+    // Per triangle, 1 when a sample shows authored partial alpha that the 0.5 test
+    // removes (cutout.hpp softSamples; sheer fabric, lenses, blush, soft hair tips),
+    // and firmTriangles its complement. Empty when no part has any. A part's soft
+    // triangles draw again blended (or, under RTX Remix, only blended) through the
+    // soft-alpha material Lua registers for it (Instance::softNames).
+    std::vector<uint8_t> softTriangles,firmTriangles;
     std::vector<Bone> bones;
     std::vector<unsigned> order;
     std::vector<Material> materials;
@@ -297,8 +307,9 @@ struct Instance {
     std::shared_ptr<const Model::SkinLayout> morphLayout;
     std::vector<float> previousPalette;std::vector<uint64_t> boneChangedState;uint64_t allChangedState=0,geometryState=0;
     unsigned changedBones=0;bool fullChange=false;uint64_t idleFrames=0;unsigned fullChangeReasons=0;// 1 morph, 2 statics, 4 soft, 8 layout, 16 new buffer
-    // Engine material names per part for the native colour and depth passes (set from Lua once per asset).
-    std::vector<std::string> colorNames,depthNames;
+    // Engine material names per part for the native colour and depth passes (set from Lua once per asset),
+    // and the blended copies that draw the parts' soft triangles ('' for a part without; empty: none registered).
+    std::vector<std::string> colorNames,depthNames,softNames;
     std::unordered_map<int,btVector3> scalarMorph;
     uint64_t staticsVersion=1;
     mutable std::vector<float> cachedMorphInputs,cachedMorphWeights;

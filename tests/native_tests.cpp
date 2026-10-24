@@ -249,6 +249,30 @@ int main(int argc,char** argv){int failed=0,passed=0;auto check=[&](bool ok,cons
      check(hidden(noneModel)&&!hidden(quarterModel)&&blends(quarterModel)&&!hidden(atlasModel)&&!blends(atlasModel)&&!hidden(opaqueModel)&&!blends(opaqueModel),"RTX Remix skips a part with no coverage left and blends one below half, as before");
      fs::remove_all(cache);
     }catch(const std::exception& e){std::cout<<e.what()<<"\n";check(false,"alpha-test coverage of imported textures");}
+    // Soft alpha: a texel between clear and the 0.5 reference that is no antialiased cutout
+    // edge (cutout.hpp softTexel), and the triangles of a part that sample one (loadAsset).
+    {std::vector<unsigned char> veil(8*8*4,0),edge(8*8*4,0);
+     for(int i=0;i<64;i++){veil[i*4+3]=100;edge[i*4+3]=i%8<2?0:i%8==2?100:255;}
+     auto at=[](int column){return (float(column)+.5f)/8;};
+     bool texels=softTexel(veil.data(),8,8,at(5),at(5))&&softTexel(veil.data(),8,8,at(5)+1,at(5)-2)&&!softTexel(edge.data(),8,8,at(2),at(4))&&!softTexel(edge.data(),8,8,at(5),at(4))&&!softTexel(edge.data(),8,8,at(0),at(4));
+     veil[(4*8+4)*4+3]=128;veil[(4*8+5)*4+3]=8;texels&=!softTexel(veil.data(),8,8,at(4),at(4))&&!softTexel(veil.data(),8,8,at(5),at(4))&&softTexel(veil.data(),8,8,at(6),at(4));
+     check(texels,"soft alpha: partial alpha below the reference counts (UVs wrap); antialiased cutout edges, clear and passing texels do not");}
+    try{auto cache=fs::absolute("test-output/soft-cache");fs::remove_all(cache);auto load=[&](const char* file){auto id=importAsset(fs::absolute(file),cache,Json::object()).at("asset").get<std::string>();return loadAsset(cache,id);};
+     auto veil=load("tests/fixtures/native-cutout-none.pmx"),ribbon=load("tests/fixtures/native-cutout-ribbon.pmx"),edge=load("tests/fixtures/native-cutout-edge.pmx");
+     auto binary=load("tests/fixtures/native-cutout-quarter.pmx"),opaque=load("tests/fixtures/textured21.pmx"),moved=load("tests/fixtures/native-cutout-uvsoft.pmx");
+     auto whole=[](const Model& m,size_t part){return m.materials[part].softTriangles==m.materials[part].count/3&&m.materials[part].softCoverage==1;};
+     bool listed=veil->softTriangles.size()==veil->indices.size()/3&&veil->firmTriangles.size()==veil->softTriangles.size();
+     for(size_t t=0;listed&&t<veil->softTriangles.size();t++)listed=veil->softTriangles[t]==1&&veil->firmTriangles[t]==0;
+     check(listed&&whole(*veil,0)&&whole(*veil,1)&&veil->materials[0].alphaCoverage==0,"soft alpha: every triangle of a sheer layer below the reference is soft, where the test alone keeps none");
+     check(ribbon->materials[0].softTriangles==1&&std::abs(ribbon->materials[0].softCoverage-2.f/7)<1e-6f&&std::abs(ribbon->materials[0].alphaCoverage-5.f/7)<1e-6f&&ribbon->softTriangles.at(0)==1&&ribbon->firmTriangles.at(0)==0,
+      "soft alpha: a ribbon's sheer fill between opaque lattice lines marks its triangle, and coverage is measured as before");
+     check(edge->softTriangles.empty()&&edge->firmTriangles.empty()&&edge->materials[0].softTriangles==0&&binary->softTriangles.empty()&&opaque->softTriangles.empty(),"soft alpha: antialiased cutout edges, binary alpha and opaque textures mark nothing");
+     check(moved->materials[1].dynamicCutout&&moved->materials[1].softTriangles==0&&moved->materials[0].softTriangles==1,"soft alpha: a part a UV morph moves is left to the alpha test, the rest of its texture's users are not");
+     // The classification stays out of the cached manifest, so the asset's identity is unchanged.
+     auto manifest=readJson(cache/L"assets"/wide(veil->id)/L"manifest.json");bool clean=true;for(auto& m:manifest.at("materials"))clean&=!m.contains("softTriangles")&&!m.contains("softCoverage");
+     check(clean,"soft alpha is classified at load and never written to the manifest");
+     fs::remove_all(cache);
+    }catch(const std::exception& e){std::cout<<e.what()<<"\n";check(false,"soft alpha classification of imported textures");}
     // A texture (UV) morph switches what an alpha-tested atlas shows (Ruan Mei's stockings).
     // Its triangles stay in the static cut and are cut again at an instance's current UVs:
     // the Fabric grid is transparent at rest, shows its last column at 0.5 and all at 1.

@@ -35,19 +35,30 @@ if native.SetGpuSkinning then
  native.SetGpuSkinning(gpuSkinning:GetBool())
  cvars.AddChangeCallback('mmdhl_gpu_skinning',function(_,_,value) native.SetGpuSkinning(tonumber(value)~=0) native.PruneRenderCache(true) end,'MMDHL.GpuSkinning')
 end
+-- Soft alpha: MMD blends every material, so texture alpha between clear and the 0.5
+-- cutout reference shows partly see-through there (a sheer ribbon's fill, a tulle hem,
+-- lenses, blush), while the parts' alpha test removes it. Native builds that classify
+-- such triangles draw them again blended (under RTX Remix: only blended). 0 keeps the
+-- alpha test alone.
+local softAlpha=CreateClientConVar('mmdhl_soft_alpha','1',true,false,'Draw the partly transparent texels that the alpha test cuts from character model parts blended, as MMD shows them')
+if native.SetSoftAlpha then
+ native.SetSoftAlpha(softAlpha:GetBool())
+ cvars.AddChangeCallback('mmdhl_soft_alpha',function(_,_,value) native.SetSoftAlpha(tonumber(value)~=0) end,'MMDHL.SoftAlpha')
+end
 local directions={Vector(1,0,0),Vector(-1,0,0),Vector(0,1,0),Vector(0,-1,0),Vector(0,0,1),Vector(0,0,-1)}
-if mmdhl.sourceTextureVersion~=8 then
- mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.sourceTextureVersion=8
+if mmdhl.sourceTextureVersion~=9 then
+ mmdhl.sourceMaterials={} mmdhl.sourceBlendMaterials={} mmdhl.depthMaterials={} mmdhl.shadowMaterials={} mmdhl.softMaterials={} mmdhl.sourceTextureVersion=9
 end
 mmdhl.sourceMaterials=mmdhl.sourceMaterials or {}
 mmdhl.sourceBlendMaterials=mmdhl.sourceBlendMaterials or {}
 mmdhl.depthMaterials=mmdhl.depthMaterials or {}
 mmdhl.shadowMaterials=mmdhl.shadowMaterials or {}
+mmdhl.softMaterials=mmdhl.softMaterials or {}
 -- A mounted VMT can precede its texture upload, especially for large uncompressed
 -- VTFs. Missing resources are retryable, never a completed material cache. Share
 -- the retry deadline across entities and views so shadows/flashlights cannot turn
 -- one upload into hundreds of material lookups per frame.
-local materialRetries={color={},blend={},depth={},shadow={}}
+local materialRetries={color={},blend={},depth={},shadow={},soft={}}
 local function pendingMaterial(kind,id)
  local pending=materialRetries[kind][id]
  return pending and SysTime()<pending.at and pending.err or nil
@@ -103,6 +114,39 @@ local function materials(id,info,depth,blended)
   result[i]=mat
  end end
  materialRetries[kind][id]=nil cache[id]=result return result
+end
+local function softCount(p) return tonumber(p.softTriangles) or 0 end
+-- Blended copies of the parts with soft triangles (AssetInfo softTriangles), one name
+-- per slot ('' for a part without); nil when the asset has none or comes from a native
+-- build that does not classify them. The worker's VMT recipe (assets.cpp
+-- prepareSourceMaterials) with the alpha test replaced by blending, bound to the
+-- mounted public material's textures.
+local function softMaterials(id,info)
+ local cache=mmdhl.softMaterials
+ if cache[id]~=nil then return cache[id] or nil end
+ local any=false for _,p in ipairs(info.materials) do any=any or softCount(p)>0 end
+ if not any then cache[id]=false return nil end
+ local pending=pendingMaterial('soft',id) if pending then return nil,pending end
+ local source,err=materials(id,info,false)
+ if not source then return deferMaterial('soft',id,err) end
+ for i,p in ipairs(info.materials) do
+  if softCount(p)>0 and not baseTexture(source[i]) then return deferMaterial('soft',id,L('render.error.pending_texture',{path=p.path})) end
+ end
+ local names={}
+ for i,p in ipairs(info.materials) do
+  names[i]=''
+  if softCount(p)>0 then
+   local texture=baseTexture(source[i])
+   local mat=CreateMaterial('mmdhl_soft_v1_'..id..'_'..i,'VertexLitGeneric',{
+    ['$basetexture']=texture:GetName(),['$model']='1',['$vertexcolor']='1',['$nocull']=p.twoSided and '1' or '0',
+    ['$translucent']='1',['$vertexalpha']='0',['$alphatest']='0',
+    ['$bumpmap']='mmdhl/scmi/normal',['$lightwarptexture']='mmdhl/scmi/lightwarptexture',['$halflambert']='0',['$phong']='1',['$phongboost']='24',['$phongalbedotint']='1',
+    ['$phongexponenttexture']='mmdhl/scmi/phong_exp',['$phongfresnelranges']='[0 0 1]',['$rimlight']='1',['$rimlightexponent']='2',['$rimlightboost']='2'})
+   mat:SetTexture('$basetexture',texture)
+   names[i]='!'..mat:GetName()
+  end
+ end
+ materialRetries.soft[id]=nil cache[id]=names return names
 end
 local function ready(ent)
  local id=mmdhl.GetAsset(ent)
@@ -226,16 +270,20 @@ local function draw(ent,translucent,depth)
   local color,err=materials(id,info,false) if not color then mmdhl.renderError=err return end
   local depthMats,depthError=materials(id,info,true)
   if not depthMats then mmdhl.renderError=depthError if depth then return end end
+  -- Soft-alpha copies are optional: an asset without soft triangles (or an older
+  -- native build) has none, and pending ones only delay the complete registration.
+  local soft,softPending=softMaterials(id,info)
+  local complete=depthMats and not softPending
   -- Colour can draw while depth textures upload. The native API requires an
   -- entry for every slot; empty depth names stay private to this pending map
   -- and are never drawn. Only a complete registration earns MMDNamesSent.
-  if depthMats or ent.MMDColorNamesSent~=id or ent.MMDNamesVersion~=mmdhl.sourceTextureVersion then
-   local names={color={},depth={}}
+  if complete or ent.MMDColorNamesSent~=id or ent.MMDNamesVersion~=mmdhl.sourceTextureVersion then
+   local names={color={},depth={},soft=soft}
    for i in ipairs(color) do names.color[i]=info.materials[i].path names.depth[i]=depthMats and '!'..depthMats[i]:GetName() or '' end
    local ok,err=native.SetInstanceMaterials(instance,util.TableToJSON(names))
    if not ok then ent.MMDNamesRetry=SysTime()+.25 mmdhl.renderError=err return end
    ent.MMDNamesRetry=nil ent.MMDColorNamesSent=id ent.MMDNamesVersion=mmdhl.sourceTextureVersion
-   ent.MMDNamesSent=depthMats and id or nil
+   ent.MMDNamesSent=complete and id or nil ent.MMDSoftNamesSent=soft and id or nil
   end
  end
  if not depth then
@@ -263,9 +311,11 @@ local function draw(ent,translucent,depth)
   -- Another addon's copy turns with that addon's camera, not the player: world up.
   local up=ent.MMDHLCopyOf and Vector(0,0,1) or ent:GetUp() render.PushCustomClipPlane(-up,-up:Dot(EyePos()-up*12))
  end
- -- Default parts draw in the opaque pass only; the translucent pass has work only for override materials.
+ -- Default parts draw in the opaque pass; the translucent pass has work for override materials
+ -- and, outside RTX Remix (which draws them in the opaque pass), for soft triangles.
  -- 'mask': the first-person mask alone, for a body whose own addon sets the clip planes.
- if not (translucent and not depth and not ent.MMDOverrideJson) then
+ local softPass=ent.MMDSoftNamesSent==id and softAlpha:GetBool() and not mmdhl.UsesRemixPreview()
+ if not (translucent and not depth and not ent.MMDOverrideJson and not softPass) then
   local _,err=native.DrawInstance(instance,translucent,depth,ent.MMDOverrideJson,Vector(color.r/255,color.g/255,color.b/255),color.a/255,firstPerson==true or firstPerson=='mask')
   if err then mmdhl.renderError=err end
  end

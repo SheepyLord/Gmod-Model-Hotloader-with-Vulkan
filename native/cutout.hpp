@@ -30,6 +30,33 @@ inline int cutoutHits(const AlphaPassMask& mask,const std::array<float,2>& a,con
   if((hits+=mask.passes(a[0]*s+b[0]*r+c[0]*q,a[1]*s+b[1]*r+c[1]*q))>=enough)break;
  return hits;
 }
+// Soft alpha: what MMD shows partly see-through but the 0.5 test removes entirely,
+// such as a sheer ribbon's fill, a tulle hem, glasses lenses, blush or soft hair tips.
+// A texel is soft when 8 < alpha < 128 and it is not an antialiased cutout edge, that is
+// not within two texels of both a clear (<= 8) and an opaque (>= 247) texel (the
+// rule props/material_processing.cpp uses). rgba: the decoded base texture, UVs wrap.
+inline bool softTexel(const unsigned char* rgba,int width,int height,float u,float v){
+ if(!std::isfinite(u)||!std::isfinite(v))return false;
+ if(!(u>=0&&u<1))u-=std::floor(u);if(!(v>=0&&v<1))v-=std::floor(v);
+ int x=std::min(width-1,int(u*float(width))),y=std::min(height-1,int(v*float(height)));
+ auto alpha=[&](int px,int py){px=(px%width+width)%width;py=(py%height+height)%height;return rgba[(size_t(py)*size_t(width)+size_t(px))*4+3];};
+ auto a=alpha(x,y);if(a<=8||a>=128)return false;
+ bool clear=false,opaque=false;
+ for(int dy=-2;dy<=2;dy++)for(int dx=-2;dx<=2;dx++){auto n=alpha(x+dx,y+dy);clear|=n<=8;opaque|=n>=247;}
+ return !(clear&&opaque);
+}
+// Soft samples of a triangle at the seven points cutoutHits uses; visible (optional)
+// receives how many of them show anything (alpha above 8).
+inline int softSamples(const unsigned char* rgba,int width,int height,const std::array<float,2>& a,const std::array<float,2>& b,const std::array<float,2>& c,int* visible=nullptr){
+ int soft=0,shown=0;
+ for(auto [s,r,q]:{std::array<float,3>{1,0,0},{0,1,0},{0,0,1},{.5f,.5f,0},{0,.5f,.5f},{.5f,0,.5f},{1/3.f,1/3.f,1/3.f}}){
+  float u=a[0]*s+b[0]*r+c[0]*q,v=a[1]*s+b[1]*r+c[1]*q;soft+=softTexel(rgba,width,height,u,v);
+  if(visible&&std::isfinite(u)&&std::isfinite(v)){u-=std::floor(u);v-=std::floor(v);
+   shown+=rgba[(size_t(std::min(height-1,int(v*float(height))))*size_t(width)+size_t(std::min(width-1,int(u*float(width)))))*4+3]>8;}
+ }
+ if(visible)*visible=shown;
+ return soft;
+}
 // Material::alphaCoverage of a part with UVs uv(vertex): the area-weighted share
 // (rest positions) of passing samples over its triangles that have any, 0 when
 // none has, 1 without triangles. Each triangle's hits go to seen(triangle,hits).

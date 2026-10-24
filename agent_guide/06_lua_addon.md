@@ -312,7 +312,7 @@ Flags: A archived, U userinfo. Help texts are English.
 | Area (owner) | ConVars (default) |
 |---|---|
 | Language (i18n) | `language` '' (follows `gmod_language`); `i18n_debug` 0 (not archived) |
-| Rendering (client, native_render) | `force_immediate_rendering` 0; `flashlight_overlap_fix`, `vertex_cache`, `compact_vertices`, `smooth_stepped_poses`, `gpu_skinning` all 1; `update_lod` 1 |
+| Rendering (client, native_render) | `force_immediate_rendering` 0; `flashlight_overlap_fix`, `vertex_cache`, `compact_vertices`, `smooth_stepped_poses`, `gpu_skinning`, `soft_alpha` all 1; `update_lod` 1 |
 | Physics (physics_settings) | `secondary_iterations` 10 (−1 off, 0 jiggle); `secondary_gravity` 1, `secondary_damping` 1; `secondary_stretch` 0, `secondary_stretch_tolerance` 1; `vrm_relative_damping` 1; `workers` 0 |
 | LOD (physics_lod) | `lod_{enabled,near,full,middle,cutoff,hidden_seconds,speed,angular_speed}` = 1, 300, 1000, 2000, 4000, 2, 120, 90 |
 | Sleep (secondary_backend) | `secondary_{sleep,sleep_linear,sleep_angular,sleep_seconds,wake_drift,wait_ms}` = 1, .5, .35, 1.5, .02, 0 |

@@ -62,7 +62,7 @@ Realm: B both, C client, S server, B\* both but restricted at run time.
 | Instances | `CreateInstance`, `DestroyInstance`, `RebindSourceEntity`, `SetMorph`, `SetMorphs`, `GetMorphWeights`, `SetBonePose`, `GetBoneTransform`, `SetMaterialVisibility`, `GetMaterialState`, `GetBounds`, `GetBoundsValues`, `GetState`, `GetDiagnostics`, `ResetPhysics`, `Raycast`, `Clear` | B | instances, carrier, materials, physics_reset, server, mmdhl_ragdoll, compat |
 | Legacy sim | `Step`, `SetFrozen`, `SetState`, `{Begin,Update,End}Grab`, `{Begin,Update}Physgun`, `SetMirror`, `RemoveMirror`, `TakeImpulses`, `SubmitSourcePose`, `StepSources` (B\* server); `CapturePhysics`, `ProbePhysics`, `ProbeCarrierCollisions` (S) | B\*/S | server Tick (SP `mmdhl_ragdoll`), compat, weapon_mmdhl |
 | Frame/draw | `SubmitPresentationMatrixBatch` (older `SubmitPresentationBatch`, `SubmitPresentationPose`), `MarkTeleport`, `PrepareFrame`, `SetInstanceMaterials`, `DrawInstance`, `Draw`, `SetupSourceLighting`, `{Register,Remove}SourceShadow`, `CheckRenderer` | C | native_render, client, instances |
-| Render config/diag | `SetNativeVertexCache`, `SetCompactVertices`, `SetGpuSkinning`, `SetFlashlightOverlapGuard`, `SetPoseSmoothing`, `SetRenderSuspended`, `PruneRenderCache`, `RenderStatus`, `RenderStats`, `RenderFrameStats`, `GetLightingState`, `GetDrawAge`, `GetAlignmentProbe`, `GetModelAnimationDiagnostics`, `StartMainThreadSampling`, `ReadMainThreadSamples` (Windows) | C | native_render (convars), performance, first_person |
+| Render config/diag | `SetNativeVertexCache`, `SetCompactVertices`, `SetGpuSkinning`, `SetFlashlightOverlapGuard`, `SetSoftAlpha`, `SetPoseSmoothing`, `SetRenderSuspended`, `PruneRenderCache`, `RenderStatus`, `RenderStats`, `RenderFrameStats`, `GetLightingState`, `GetDrawAge`, `GetAlignmentProbe`, `GetModelAnimationDiagnostics`, `StartMainThreadSampling`, `ReadMainThreadSamples` (Windows) | C | native_render (convars), performance, first_person |
 | Previews | `{Create,Draw,Clear}Preview`, `{Create,Draw,Destroy}EditorPreview`, `GetEditorPreviewBounds`, `GetMaterialMesh`, `GetMaterialPositions` | C | ui, bodygroups, materials |
 | Secondary | `{Get,Set}SecondaryBackend`, `SetSecondaryCollision{Mode,Flags}`, `GetSecondaryCapabilities`, `SetVulkanSolverOrdering` (B); `SetSecondary{Quality,Tuning,WaitBudget,Midphase,Sleep,Broadphase}`, `SetSpringRelativeDamping`, `SetWorkers`, `GetWorkerCapabilities` (C) | B/C | secondary_backend, physics_settings, physics_lod |
 | Scene | `CaptureSecondaryScene`, `SceneInterest` (S); `ExportSecondaryScene`, `ReadSceneChunk`, `AcceptSceneGeometry`, `PublishRemoteScene`, `ClearRemoteScene` | S/B | secondary_collision, scene_sharing |
@@ -93,7 +93,8 @@ The client.lua PreRender hook `MMDHL.Shadows` runs, in order: `UpdateClientInsta
 - **`AttachPresentation`** (instances.lua): skips hidden/dormant entities (a local hide releases after 5 s); needs `RenderAvailable()`; reads `rig.json` or calls `RequestSharedRig`; mounts, then `CreateInstance{backend='source',presentationDriven=true,rigManifest}`; re-`SetModel`s entities stuck on `error.mdl`; failure → wireframe placeholder; on death `TransferPresentation` hands the world to the corpse.
 - **`PrepareNativePresentation`** (native_render.lua): `SetupBones` + `GetBoneMatrix` for all bones → one `SubmitPresentationMatrixBatch` (one bad matrix rejects the batch); syncs morphs (flex or NW2 `MMDHLMorph<i>`), manual poses, visibility; `mmdhl_update_lod`.
 - **`UpdateNativeVisuals`**: one `mmdhl_native_visual` proxy per character (bounds from `GetBoundsValues`) + RTT shadow registration.
-- **`draw()`**: `SetInstanceMaterials` once per asset (color = VMT paths, depth = `DepthWrite` clones); `SetupSourceLighting`; entity color and sub-material overrides; first person = clip plane + triangle mask; `DrawCarrier` maps depth flags and draws flashlights.
+- **`draw()`**: `SetInstanceMaterials` once per asset (color = VMT paths, depth = `DepthWrite` clones, soft = blended `VertexLitGeneric` copies `mmdhl_soft_v1_<id>_<slot>` for parts whose `AssetInfo` reports `softTriangles`, '' otherwise; old builds ignore the key); `SetupSourceLighting`; entity color and sub-material overrides; first person = clip plane + triangle mask; `DrawCarrier` maps depth flags and draws flashlights. The translucent pass calls `DrawInstance` for override materials and, outside Remix, for soft triangles.
+- **Soft alpha** (`mmdhl_soft_alpha`, `SetSoftAlpha`): MMD blends every material, so texels with 8 < alpha < 128 show partly see-through there (a ribbon's sheer fill, a tulle hem, lenses, blush) while the parts' 0.5 alpha test removes them. `loadAsset` lists the triangles that sample such a texel away from antialiased cutout edges (`Model::softTriangles`, `cutout.hpp softSamples`; not for UV-morphed parts; never in the manifest). `DrawInstance` (`renderer.hpp softAlphaPass`) draws them with the part's soft copy: raster after the part's untouched alpha-tested opaque draw, in the translucent pass (GPU/batched/frozen paths mask ranges); Remix in the opaque pass instead, the part's own material leaving them out (`TriangleSubset::Firm`; per-part index lists filter both, one draw per chunk). A sub-material override replaces both.
 - **Materials**: VMTs `mmd/<16hex>/<name>_<slot+1>` from `materials-v5.gma`; missing ones retry after 0.25 s (no cached fallback).
 - **Related**: bodygroups.lua (group i+1 = material slot i; past 31 via `mmdhl_material_visibility`), faceposer.lua (past 96 flexes), first_person.lua (hides own body), player_copies.lua (adopts other addons' `DrawModel` copies), client_ragdolls.lua (suspends sleeping corpses).
 
@@ -129,7 +130,7 @@ To queue: `GetCallQueue()` must be context+`abi::CallListOffset` (0x2B0); `appen
 - **Layers** (`light_overlaps.hpp`): raster uses a per-rank depth bias and a duplicate-triangle mask; Remix offsets copies along normals by less than 0.05 units.
 - **Lighting:** `SetupLighting` (slot 21), then `GetLightingConditions` (slot 77+Dtor, guard `lighting`), then `SetLight(0..3)`.
 - **Shadows:** hook `VEngineModel016` slots 12/13 only if they are engine code. Unregistered renderables keep the originals. Unhook after the last registration. Key = entindex, or 1048576+instance.
-- **RTX Remix** (Windows): detected when `stdshader_dx6.dll` is loaded. Parts draw separately, alpha cuts come from `cutout.hpp`, and previews use `vgui/` materials. Linux has no Remix.
+- **RTX Remix** (Windows): detected when `stdshader_dx6.dll` is loaded. Parts draw separately, alpha cuts come from `cutout.hpp`, and previews use `vgui/` materials. Its fixed-function alpha test always cuts at 0.5 (`$alphatestreference` has no effect), so soft triangles can only show blended (stochastic, and darker than path-traced opaque surfaces under the stock `rtx.stochasticAlphaBlendOpacityThreshold`). Linux has no Remix.
 
 ## 5. VPhysics bridge (server, `bridge.cpp`)
 
@@ -253,7 +254,7 @@ sequenceDiagram
 |---|---|---|---|
 | New native function | `module.cpp` `FUNCTION`+`REGISTER` | feature-detect; `workerCalls` | CTest |
 | New engine call by slot | `engine_abi.hpp`, `requireOwnedSlots`, `checkInterfaces` | — | both vtables |
-| Passes / binds | `addDrawItem`, `executeItem` | native_render `draw` | test_material_readiness |
+| Passes / binds | `addDrawItem`, `executeItem` | native_render `draw` | test_material_readiness, test_soft_alpha_materials |
 | Queued rendering | `submit`, `appendCall`, `drainRenderQueue` | client.lua `RenderMode` | test-performance.py |
 | GPU skinning | `GpuSkin`, `gpu_topology.hpp` | `mmdhl_gpu_skinning` | `gpu_skinning*` |
 | Vertex layout | `vertex_upload.hpp` | `mmdhl_compact_vertices` | `presentation_timing` |
@@ -296,7 +297,7 @@ Commands:
 | Area | CTest | tests/test_*.py | In game |
 |---|---|---|---|
 | ABI / install | `native_runtime`, `installation_and_abi_evidence` (Windows), `render_binary_validation_cache` | test_installation\*, test_native_update_\*, test_server_installation_requests | test-installation-game/failures.py, validate-render-abi.py |
-| Rendering | `gpu_skinning*`, `flashlight_overlaps`, `presentation_timing` | test_material_readiness, test_render_readiness, test_remix_preview, test_mirror_reflection, test_player_copies | render-proxy-probe, renderer-compare, lighting probes, test-presentation.py |
+| Rendering | `gpu_skinning*`, `flashlight_overlaps`, `presentation_timing`, `native_runtime` (soft alpha) | test_material_readiness, test_soft_alpha_materials, test_render_readiness, test_remix_preview, test_mirror_reflection, test_player_copies | render-proxy-probe, renderer-compare, lighting probes, test-presentation.py |
 | Carriers / saves | `animated_carriers_and_sharing`, `torso`, `physics_profiles` | test_carrier_spawns, test_carrier_generations, test_actor_profiles, test_input_hardening | persistence-probe, test-native-migration.py |
 | Bridge / scene | `native_runtime` | test_scene_sharing | native-self-contact, scene-measure |
 | Sharing / Workshop | `animated_carriers_and_sharing`, `windows_packed_models` (Linux), `workshop_packages` | test_sharing_transport, test_sharing_requests, test_workshop_packages | test-multiplayer.py |

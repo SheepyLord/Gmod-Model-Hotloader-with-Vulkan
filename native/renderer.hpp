@@ -20,8 +20,18 @@ void drawInstanceNative(Instance&,unsigned,const std::string&,bool,RenderTint ti
 // Draws the listed parts of one instance with a single material bind.
 void drawInstanceNativeParts(Instance&,std::span<const unsigned> parts,const std::string&,bool edges,RenderTint tint,bool perPartColor);
 void drawNative(uint64_t instance,unsigned part,const std::string& material,bool edges,RenderTint tint={});
-// Draws each (part, material) pair with its own bind, as one render call.
-void drawInstanceNativeBatch(Instance&,std::span<const std::pair<unsigned,std::string>> parts,RenderTint tint);
+// Which triangles of a part one draw covers: all, only its soft ones (Model::softTriangles,
+// drawn blended through the part's soft-alpha material) or all but those (RTX Remix).
+enum class TriangleSubset : uint8_t {All,Soft,Firm};
+struct PartDraw {unsigned part=0;std::string name;TriangleSubset subset=TriangleSubset::All;};
+// Draws each part with its own bind, as one render call.
+void drawInstanceNativeBatch(Instance&,std::span<const PartDraw> parts,RenderTint tint);
+// Soft alpha on (default) or off: whether parts with soft triangles and a registered
+// soft-alpha material draw them blended. softAlphaPass says where: 0 nowhere, 1 in
+// the translucent pass after the part's alpha-tested opaque draw (Source), 2 in the
+// opaque pass, the part's own material then leaving them out (RTX Remix).
+void setSoftAlpha(bool enabled);
+int softAlphaPass();
 // Under Source's queued (multicore) material system native draws run on its
 // render thread. drainRenderQueue leaves no call of this module queued (before
 // the worker pool or the render buffers go away): the render thread finishes

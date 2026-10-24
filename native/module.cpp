@@ -234,7 +234,8 @@ FUNCTION(CancelJob) {auto it=context->jobs.find(number(LUA,1));if(it!=context->j
 j.result={{"state","cancelled"}};retireJob(j);}LUA->PushBool(true);return 1;} END_FUNCTION
 FUNCTION(RequestAsset) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid asset ID");if(!fs::exists(context->cache/L"assets"/wide(id)/L"manifest.json"))throw std::runtime_error("Model was deleted; import it again");if(!context->assets.contains(id)&&!context->loading.contains(id)){auto cache=context->cache;context->loading[id]=std::async(std::launch::async,[cache,id]{return loadAsset(cache,id);});}LUA->PushBool(true);return 1;} END_FUNCTION
 std::shared_ptr<Model> asset(const std::string& id){if(context->assets.contains(id))return context->assets.at(id);auto it=context->loading.find(id);if(it!=context->loading.end()&&it->second.wait_for(std::chrono::seconds(0))==std::future_status::ready){auto pending=std::move(it->second);context->loading.erase(it);auto m=pending.get();for(auto old=context->assets.begin();old!=context->assets.end()&&context->assets.size()>=8;)if(old->second.use_count()==1)old=context->assets.erase(old);else ++old;context->assets[id]=m;return m;}return {};}
-FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}push(LUA,m->info());return 1;} END_FUNCTION
+// Plus each part's soft triangles (classified at load, so outside the manifest and the asset's identity).
+FUNCTION(AssetInfo) {auto m=asset(stringArg(LUA,1));if(!m){LUA->PushNil();return 1;}auto info=m->info();for(size_t i=0;i<m->materials.size()&&i<info["materials"].size();i++)info["materials"][i]["softTriangles"]=m->materials[i].softTriangles;push(LUA,info);return 1;} END_FUNCTION
 // A Workshop item's files all match their hashes; whether they make up the model the package
 // names is checked as using it would: a character as loadAsset reads it (manifest version and
 // identity, model and texture checksums, the model itself), a prop's bundle as decode reads it.
@@ -587,10 +588,14 @@ FUNCTION(CreatePreview) {auto m=asset(stringArg(LUA,1));if(!m)throw std::runtime
 FUNCTION(ClearPreview) {context->preview.reset();return 0;} END_FUNCTION
 FUNCTION(DrawPreview) {if(context->preview)drawInstanceNative(context->preview->get(number(LUA,1)),unsigned(number(LUA,2)),stringArg(LUA,3),LUA->GetBool(4));return 0;} END_FUNCTION
 FUNCTION(Draw) {RenderTint tint;if(LUA->IsType(5,GarrysMod::Lua::Type::Vector)){auto rgb=vector(LUA,5);tint.r=rgb.x();tint.g=rgb.y();tint.b=rgb.z();}if(LUA->IsType(6,GarrysMod::Lua::Type::Number))tint.a=float(LUA->GetNumber(6));for(float v:{tint.r,tint.g,tint.b,tint.a})if(!std::isfinite(v)||v<0||v>1)throw std::runtime_error("Invalid entity render tint");drawNative(number(LUA,1),unsigned(number(LUA,2)),stringArg(LUA,3),LUA->GetBool(4),tint);return 0;} END_FUNCTION
-// Per-part engine material names for the native passes, registered once per asset.
-FUNCTION(SetInstanceMaterials) {auto& p=world().get(number(LUA,1));auto names=json(LUA,2);p.colorNames=names.value("color",std::vector<std::string>{});p.depthNames=names.value("depth",std::vector<std::string>{});if(p.colorNames.size()!=p.model->materials.size()||p.depthNames.size()!=p.model->materials.size())throw std::runtime_error("Material names do not match the model");LUA->PushBool(true);return 1;} END_FUNCTION
+// Per-part engine material names for the native passes, registered once per asset. "soft"
+// (optional, '' for a part without) names the blended copies that draw the soft triangles.
+FUNCTION(SetInstanceMaterials) {auto& p=world().get(number(LUA,1));auto names=json(LUA,2);p.colorNames=names.value("color",std::vector<std::string>{});p.depthNames=names.value("depth",std::vector<std::string>{});p.softNames=names.value("soft",std::vector<std::string>{});if(p.colorNames.size()!=p.model->materials.size()||p.depthNames.size()!=p.model->materials.size()||(!p.softNames.empty()&&p.softNames.size()!=p.model->materials.size()))throw std::runtime_error("Material names do not match the model");LUA->PushBool(true);return 1;} END_FUNCTION
 // One call per entity and pass: (instance, translucent pass, depth pass, override JSON or nil, tint vector, alpha).
 // Default parts belong to the opaque pass; override materials go to the pass their flags select, as the Lua loop did.
+// A default part with soft triangles and a soft-alpha material also draws those blended:
+// in the translucent pass after its alpha-tested opaque draw, or under RTX Remix in the
+// opaque pass instead of it (renderer.hpp softAlphaPass).
 FUNCTION(DrawInstance) {
  auto& p=world().get(number(LUA,1));bool translucent=LUA->GetBool(2),depth=LUA->GetBool(3);
  struct ViewRestore{Instance& p;~ViewRestore(){p.renderView=0;}} restoreView{p};p.renderView=LUA->GetBool(7)?1:0;
@@ -605,12 +610,18 @@ FUNCTION(DrawInstance) {
  for(float v:{tint.r,tint.g,tint.b,tint.a})if(!std::isfinite(v)||v<0||v>1)throw std::runtime_error("Invalid entity render tint");
  if(tint.a<=0)return 0;
  auto& names=depth?p.depthNames:p.colorNames;if(names.size()!=p.model->materials.size())throw std::runtime_error("Material names are not registered for this instance");
- std::vector<std::pair<unsigned,std::string>> parts;parts.reserve(names.size());
+ const int softPass=depth||p.softNames.size()!=names.size()?0:softAlphaPass();
+ std::vector<PartDraw> parts;parts.reserve(names.size());
  for(unsigned i=0;i<names.size();i++){
   if(i<p.materialVisible.size()&&!p.materialVisible[i])continue;
   const std::string* name=&names[i];
-  if(!depth){bool translucentPart=false;auto o=overrides.find(i);if(o!=overrides.end()){name=&o->second;translucentPart=materialIsTranslucent(*name);}if(translucentPart!=translucent)continue;}
-  parts.emplace_back(i,*name);
+  if(!depth){bool translucentPart=false;auto o=overrides.find(i);if(o!=overrides.end()){name=&o->second;translucentPart=materialIsTranslucent(*name);}
+   else if(softPass&&!p.softNames[i].empty()&&p.model->materials[i].softTriangles){
+    if(softPass==2){if(!translucent){parts.push_back({i,*name,TriangleSubset::Firm});parts.push_back({i,p.softNames[i],TriangleSubset::Soft});}continue;}
+    if(translucent)parts.push_back({i,p.softNames[i],TriangleSubset::Soft});
+   }
+   if(translucentPart!=translucent)continue;}
+  parts.push_back({i,*name});
  }
  drawInstanceNativeBatch(p,parts,tint);
  // An error raised by an earlier draw on Source's render thread (queued mode).
@@ -622,6 +633,7 @@ FUNCTION(CheckRenderer) {checkRenderer();LUA->PushBool(true);return 1;} END_FUNC
 FUNCTION(RenderStats) {LUA->PushString(rendererStats().c_str());return 1;} END_FUNCTION
 FUNCTION(GetLightingState) {LUA->PushString(renderLightingState().c_str());return 1;} END_FUNCTION
 FUNCTION(SetFlashlightOverlapGuard) {setLightOverlapGuard(LUA->GetBool(1));return 0;} END_FUNCTION
+FUNCTION(SetSoftAlpha) {setSoftAlpha(LUA->GetBool(1));return 0;} END_FUNCTION
 FUNCTION(RenderFrameStats) {LUA->PushString(renderFrameStats().c_str());return 1;} END_FUNCTION
 FUNCTION(SetNativeVertexCache) {setNativeVertexCache(LUA->GetBool(1));return 0;} END_FUNCTION
 FUNCTION(SetCompactVertices) {setCompactVertices(LUA->GetBool(1));return 0;} END_FUNCTION
@@ -729,7 +741,7 @@ GMOD_MODULE_OPEN(){
 #endif
 #ifndef MMDHL_SERVER
         REGISTER(SetSecondaryTuning);REGISTER(SetSpringRelativeDamping);
-        REGISTER(GetModelAnimationDiagnostics);REGISTER(DeleteAssets);REGISTER(PropReload);REGISTER(PropDerive);REGISTER(SubmitPresentationPose);REGISTER(SubmitPresentationBatch);REGISTER(SubmitPresentationMatrixBatch);REGISTER(MarkTeleport);REGISTER(GetAlignmentProbe);REGISTER(Draw);REGISTER(RenderStatus);REGISTER(CheckRenderer);REGISTER(RenderStats);REGISTER(GetLightingState);REGISTER(SetFlashlightOverlapGuard);REGISTER(RenderFrameStats);REGISTER(SetNativeVertexCache);REGISTER(SetCompactVertices);REGISTER(SetGpuSkinning);REGISTER(SetPoseSmoothing);REGISTER(GetDrawAge);REGISTER(SetupSourceLighting);REGISTER(RegisterSourceShadow);REGISTER(RemoveSourceShadow);REGISTER(SetWorkers);REGISTER(GetWorkerCapabilities);REGISTER(SetSecondaryQuality);REGISTER(SetSecondaryWaitBudget);REGISTER(SetSecondaryMidphase);REGISTER(SetSecondarySleep);REGISTER(SetRenderSuspended);REGISTER(SetInstanceMaterials);REGISTER(DrawInstance);REGISTER(SetSecondaryBroadphase);REGISTER(PrepareFrame);REGISTER(PruneRenderCache);REGISTER(StartMainThreadSampling);REGISTER(ReadMainThreadSamples);REGISTER(CreateEditorPreview);REGISTER(DestroyEditorPreview);REGISTER(GetEditorPreviewBounds);REGISTER(DrawEditorPreview);REGISTER(GetMaterialMesh);REGISTER(GetMaterialPositions);REGISTER(CreatePreview);REGISTER(ClearPreview);REGISTER(DrawPreview);
+        REGISTER(GetModelAnimationDiagnostics);REGISTER(DeleteAssets);REGISTER(PropReload);REGISTER(PropDerive);REGISTER(SubmitPresentationPose);REGISTER(SubmitPresentationBatch);REGISTER(SubmitPresentationMatrixBatch);REGISTER(MarkTeleport);REGISTER(GetAlignmentProbe);REGISTER(Draw);REGISTER(RenderStatus);REGISTER(CheckRenderer);REGISTER(RenderStats);REGISTER(GetLightingState);REGISTER(SetFlashlightOverlapGuard);REGISTER(SetSoftAlpha);REGISTER(RenderFrameStats);REGISTER(SetNativeVertexCache);REGISTER(SetCompactVertices);REGISTER(SetGpuSkinning);REGISTER(SetPoseSmoothing);REGISTER(GetDrawAge);REGISTER(SetupSourceLighting);REGISTER(RegisterSourceShadow);REGISTER(RemoveSourceShadow);REGISTER(SetWorkers);REGISTER(GetWorkerCapabilities);REGISTER(SetSecondaryQuality);REGISTER(SetSecondaryWaitBudget);REGISTER(SetSecondaryMidphase);REGISTER(SetSecondarySleep);REGISTER(SetRenderSuspended);REGISTER(SetInstanceMaterials);REGISTER(DrawInstance);REGISTER(SetSecondaryBroadphase);REGISTER(PrepareFrame);REGISTER(PruneRenderCache);REGISTER(StartMainThreadSampling);REGISTER(ReadMainThreadSamples);REGISTER(CreateEditorPreview);REGISTER(DestroyEditorPreview);REGISTER(GetEditorPreviewBounds);REGISTER(DrawEditorPreview);REGISTER(GetMaterialMesh);REGISTER(GetMaterialPositions);REGISTER(CreatePreview);REGISTER(ClearPreview);REGISTER(DrawPreview);
         REGISTER(FileAccessInfo);REGISTER(FileAccessPick);REGISTER(FileAccessRequest);REGISTER(FileAccessPoll);REGISTER(FileAccessRead);REGISTER(FileAccessPollRead);REGISTER(FileAccessList);REGISTER(FileAccessPollList);REGISTER(FileAccessRelease);REGISTER(FileAccessCancel);REGISTER(FileAccessGrants);REGISTER(FileAccessRevoke);REGISTER(FileAccessSetEnabled);
 #endif
         registerPropFunctions(LUA,context->cache);

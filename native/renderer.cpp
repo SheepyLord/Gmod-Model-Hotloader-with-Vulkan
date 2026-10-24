@@ -116,6 +116,9 @@ static std::atomic<uint64_t> flashlightDuplicates{0};
 static std::atomic<double> overlapMs{0};
 static std::atomic<bool> lightOverlapGuard{true};
 void setLightOverlapGuard(bool enabled){lightOverlapGuard=enabled;}
+static std::atomic<bool> softAlpha{true};
+void setSoftAlpha(bool enabled){softAlpha=enabled;}
+int softAlphaPass(){return !softAlpha?0:remixFixedFunction?2:1;}
 static std::atomic<uint64_t> cacheBuilds{0},cacheDraws{0},streamDraws{0},uploadedBytes{0};
 static std::atomic<uint64_t> shadowDraws{0};
 static std::atomic<double> nativeMs{0},uploadMs{0},drawMs{0},shadowMs{0},lockMs{0},fillMs{0},unlockMs{0},prepareMs{0};
@@ -456,8 +459,8 @@ namespace {
 // already prepares the next frame, so it reads only this: the immutable model
 // and snapshot, the rest data (under its lock) and copied instance state.
 // cutout: RTX Remix draws only the triangles the alpha test leaves (Model::cutoutTriangles,
-// and remixCut for parts a UV morph moves).
-struct DrawItem {std::vector<unsigned> parts;IMaterial* material=nullptr;std::string name;bool perPartColor=true,cutout=false;};
+// and remixCut for parts a UV morph moves). subset: the soft triangles alone, or all but them.
+struct DrawItem {std::vector<unsigned> parts;IMaterial* material=nullptr;std::string name;bool perPartColor=true,cutout=false;TriangleSubset subset=TriangleSubset::All;};
 struct DrawJob {
     uint64_t instance=0;std::shared_ptr<Model> model;std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<GpuRest> rest;std::shared_ptr<const std::vector<uint8_t>> firstPerson;std::shared_ptr<const RemixCutout> remixCut;
@@ -690,10 +693,13 @@ static bool prepareDraw(Instance& instance,DrawJob& job,bool edges,RenderTint ti
 static bool generatedMaterial(const Instance& instance,unsigned part,const std::string& name){
     return (part<instance.colorNames.size()&&instance.colorNames[part]==name)||(part<instance.depthNames.size()&&instance.depthNames[part]==name);
 }
-static void addDrawItem(Instance& instance,DrawJob& job,std::span<const unsigned> requested,const std::string& name,bool perPartColor){
+static void addDrawItem(Instance& instance,DrawJob& job,std::span<const unsigned> requested,const std::string& name,bool perPartColor,TriangleSubset subset=TriangleSubset::All){
     auto& model=*job.model;DrawItem item;item.name=name;item.perPartColor=perPartColor;item.parts.reserve(requested.size());
+    // A model without soft triangles has nothing to split: Firm draws everything.
+    item.subset=model.softTriangles.size()*3==model.indices.size()?subset:TriangleSubset::All;
     for(auto candidate:requested){if(candidate>=model.materials.size())throw std::runtime_error("Invalid material index");if(candidate<instance.materialVisible.size()&&!instance.materialVisible[candidate])continue;auto& m=job.snapshot->materials[candidate];if((job.edges&&!m.edge)||m.alpha<=.0001f)continue;
         if(remixFixedFunction&&remixPartHidden(model.materials[candidate],job.remixCut.get(),candidate)&&generatedMaterial(instance,candidate,name))continue;
+        if(subset==TriangleSubset::Soft&&(item.subset!=subset||!model.materials[candidate].softTriangles))continue;
         item.parts.push_back(candidate);}
     if(item.parts.empty())return;
     item.material=findMaterial(name);
@@ -735,8 +741,8 @@ void drawInstanceNative(Instance& instance,unsigned part,const std::string& name
 void drawInstanceNativeParts(Instance& instance,std::span<const unsigned> requested,const std::string& name,bool edges,RenderTint tint,bool perPartColor){
     drawPrepared(instance,edges,tint,false,1.f,[&](DrawJob& job){addDrawItem(instance,job,requested,name,perPartColor);});
 }
-void drawInstanceNativeBatch(Instance& instance,std::span<const std::pair<unsigned,std::string>> parts,RenderTint tint){
-    drawPrepared(instance,false,tint,false,1.f,[&](DrawJob& job){for(auto& [part,name]:parts){unsigned one[]={part};addDrawItem(instance,job,one,name,true);if(!job.snapshot)return;}});
+void drawInstanceNativeBatch(Instance& instance,std::span<const PartDraw> parts,RenderTint tint){
+    drawPrepared(instance,false,tint,false,1.f,[&](DrawJob& job){for(auto& draw:parts){unsigned one[]={draw.part};addDrawItem(instance,job,one,draw.name,true,draw.subset);if(!job.snapshot)return;}});
 }
 namespace {
 void shadowDraw(void* self,IClientRenderable* renderable,const void* info,matrix3x4_t* custom){
@@ -794,8 +800,10 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         ~RestoreProjection(){if(changed){context->MatrixMode(MATERIAL_PROJECTION);context->PopMatrix();context->MatrixMode(MATERIAL_MODEL);}}
     } restoreProjection{context};
     float layerSeparation=0;
+    // Under RTX Remix a part's soft triangles (blended) sit where its own layer does.
+    const bool softRemix=remixFixedFunction&&draw.subset==TriangleSubset::Soft;
     if(lightOverlapGuard&&job.sourceRig&&perPartColor&&parts.size()==1&&part<model.lightLayerRanks.size()&&
-       model.lightLayerRanks[part]&&!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT)&&
+       model.lightLayerRanks[part]&&(softRemix||!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_TRANSLUCENT))&&
        !engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_ADDITIVE)&&!engineMaterial->GetMaterialVarFlag(MATERIAL_VAR_IGNOREZ)){
         // Break only known coplanar material ties, by a few depth-buffer units.
         // Use exactly the same projection in the base and flashlight passes:
@@ -847,6 +855,13 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         }
         lightMask=filter.triangles;maskEntry=&filter;
     }
+    // Soft alpha: a part's soft-alpha material draws its soft triangles alone and, under
+    // RTX Remix, its own material all the others (the two never overlap the overlap mask
+    // above, which skips blended materials and Remix). Per-part index lists filter them
+    // when built (one draw per chunk, as Remix needs); the shared paths mask their ranges.
+    const std::span<const uint8_t> subsetMask=draw.subset==TriangleSubset::Soft?std::span<const uint8_t>(model.softTriangles):
+        draw.subset==TriangleSubset::Firm?std::span<const uint8_t>(model.firmTriangles):std::span<const uint8_t>{};
+    if(lightMask.empty())lightMask=subsetMask;
     auto drawRange=[&](IMesh* mesh,unsigned first,unsigned count,std::span<const unsigned> ids,unsigned implicitFirst=0){
         if(lightMask.empty()){mesh->Draw(int(first),int(count));frameDrawCalls++;return;}
         MaskedRanges computed;MaskedRanges* cached=nullptr;
@@ -862,7 +877,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
             }
             if(start>=0)result.ranges.emplace_back(start,int(first+count)-start);
         }
-        if(context->GetFlashlightMode())flashlightDuplicates+=result.dropped;
+        if(maskEntry&&context->GetFlashlightMode())flashlightDuplicates+=result.dropped;
         if(!result.ranges.empty()){mesh->Draw(result.ranges.data(),int(result.ranges.size()));frameDrawCalls+=unsigned(result.ranges.size());}
     };
     unsigned end=material.first+material.count;
@@ -986,6 +1001,9 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
     const bool cutout=draw.cutout&&!batched&&model.cutoutTriangles.size()*3==model.indices.size();
     if(cutout)cachePart^=0x08000000u;
     const auto& keep=dynamicCut?dynamicCut->keep:model.cutoutTriangles;
+    // Soft alpha: per-part index lists hold only the triangles this draw covers.
+    const bool subsetFilter=!batched&&!subsetMask.empty();
+    if(subsetFilter){cachePart^=draw.subset==TriangleSubset::Soft?0x04000000u:0x02000000u;if(lightMask.data()==subsetMask.data())lightMask={};}
     auto topologyKey=std::make_tuple(&model,cachePart,dynamicCut?job.instance:0);auto ti=topology.find(topologyKey);
     if(ti!=topology.end()&&(ti->second.model.expired()||ti->second.cut!=(dynamicCut?dynamicCut->revision:0))){topology.erase(ti);ti=topology.end();}
     if(ti==topology.end()){
@@ -994,7 +1012,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         if(cpuRemainder){remainder=model.gpuSkin()->cpuTriangle;if(job.renderView&&!firstPerson.empty())for(size_t t=0;t<remainder.size();t++)remainder[t]&=firstPerson[t];}
         if(batched)static_cast<BatchedTopology&>(item)=batchTopology(model,cpuRemainder?std::span<const uint8_t>(remainder):job.renderView?firstPerson:std::span<const uint8_t>{});
         else for(unsigned first=material.first;first<end;first+=18000){DrawChunk chunk;std::unordered_map<unsigned,unsigned short> remap;unsigned count=std::min(18000u,end-first);
-            for(unsigned k=0;k<count;k++){if(job.renderView&&!firstPerson.empty()&&!firstPerson[(first+k)/3])continue;if(cutout&&!keep[(first+k)/3])continue;if(k%3==0)chunk.triangles.push_back((first+k)/3);auto index=model.indices[first+k];auto [entry,inserted]=remap.emplace(index,static_cast<unsigned short>(chunk.vertices.size()));if(inserted)chunk.vertices.push_back(index);chunk.indices.push_back(entry->second);}if(!chunk.indices.empty())item.chunks.push_back(std::move(chunk));
+            for(unsigned k=0;k<count;k++){if(job.renderView&&!firstPerson.empty()&&!firstPerson[(first+k)/3])continue;if(cutout&&!keep[(first+k)/3])continue;if(subsetFilter&&!subsetMask[(first+k)/3])continue;if(k%3==0)chunk.triangles.push_back((first+k)/3);auto index=model.indices[first+k];auto [entry,inserted]=remap.emplace(index,static_cast<unsigned short>(chunk.vertices.size()));if(inserted)chunk.vertices.push_back(index);chunk.indices.push_back(entry->second);}if(!chunk.indices.empty())item.chunks.push_back(std::move(chunk));
         }
         // Bones influencing each 8192-vertex span of a chunk, for partial uploads.
         for(auto& chunk:item.chunks){std::vector<std::vector<unsigned>> spans;
@@ -1126,7 +1144,7 @@ static void executeItem(const DrawJob& job,const DrawItem& draw,std::span<const 
         std::span<const unsigned short> indices=chunk.indices;
         if(!lightMask.empty()){
             for(size_t k=0;k<chunk.indices.size();k+=3){
-                if(!lightMask[chunk.triangles[k/3]]){if(context->GetFlashlightMode())flashlightDuplicates++;continue;}
+                if(!lightMask[chunk.triangles[k/3]]){if(maskEntry&&context->GetFlashlightMode())flashlightDuplicates++;continue;}
                 filtered.insert(filtered.end(),chunk.indices.begin()+k,chunk.indices.begin()+k+3);
             }
             indices=filtered;
