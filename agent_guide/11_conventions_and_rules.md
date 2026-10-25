@@ -25,8 +25,9 @@ keeps the zlib notice with alterations marked. Keep it that way when you edit th
   the native modules (GitHub releases) update independently, players mix versions, servers and
   clients mix versions. Add optional fields; never change the meaning of an existing one; gate
   new behaviour by feature detection: `isfunction(mmdhl.native.X)` or `GetCapabilities()` fields
-  (`api`, `rigVersion`, `rigGenerator`, `rigGeneratorMin`, `physicsEditor`, `version`), and tell the
-  player with `ShowNativeUpdateNeeded(feature, '<release>')`. `mmdhl.NativeReleaseAtLeast` exists
+  (`api`, `rigVersion`, `rigGenerator`, `rigGeneratorMin`, `physicsEditor`, `fullTextures`, `version`), and
+  tell the player with `ShowNativeUpdateNeeded(feature, '<release>')`, or without a release for a
+  feature of the next, unlabelled release (`install.update.needed_newer`). `mmdhl.NativeReleaseAtLeast` exists
   (its ordering is tested) but the addon does not call it.
 - Content identities: carriers, fits, prop bundles and textures are named by hashes of their
   bytes or inputs. A change to what is written changes identities; old ones must keep loading

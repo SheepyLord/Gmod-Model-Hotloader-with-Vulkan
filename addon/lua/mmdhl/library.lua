@@ -184,6 +184,29 @@ function library.StartError(err)
  if code then return mmdhl.ImportCause({errorCode=code,error=tostring(err)}),code end
  return tostring(err or L'library.import.start_failed')
 end
+-- Character imports may keep textures larger than 4096 pixels at full size: the player's
+-- choice, when the binary module can (GetCapabilities().fullTextures, the largest edge it keeps).
+local fullTextures=CreateClientConVar('mmdhl_import_full_textures','0',true,false,'Keep textures larger than 4096 pixels at full size when importing character models (more memory, slower loading)',0,1)
+function library.FullTexturesEdge()
+ local caps=isfunction(native.GetCapabilities) and mmdhl.Decode(native.GetCapabilities())
+ return istable(caps) and isnumber(caps.fullTextures) and caps.fullTextures or nil
+end
+local function needsUpdate() if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'library.full_textures.feature') end end
+-- The options of a character import job: its own (kind, the bone window's request) and the
+-- player's import settings; '{}' without any, as before. A binary module that cannot keep
+-- full-size textures imports as before, and the player hears why once.
+function library.CharacterImportOptions(options)
+ if fullTextures:GetBool() then
+  if library.FullTexturesEdge() then options=options or {} options.fullTextures=true
+  elseif not library.fullTexturesNoticed then library.fullTexturesNoticed=true needsUpdate() end
+ end
+ return options and util.TableToJSON(options) or '{}'
+end
+-- Turned on with a binary module that cannot keep full-size textures: it stays off.
+cvars.AddChangeCallback('mmdhl_import_full_textures',function(_,_,value)
+ if (tonumber(value) or 0)==0 or library.FullTexturesEdge() then return end
+ RunConsoleCommand('mmdhl_import_full_textures','0') needsUpdate()
+end,'MMDHL.FullTextures')
 -- kind is nil for characters and 'static' for props; both share one worker.
 function library.StartImport(handle,err,kind)
  if not handle then
@@ -231,10 +254,11 @@ end
 -- Reload a character from its recorded source (the entity editor's Reload). The new
 -- revision keeps the terms record of the one it replaces when the source's readmes cannot
 -- be read again (on a server this game does not host, only beside a file picked in this
--- session). Keyed by source: a changed file goes through the bone window first.
+-- session). Keyed by source: a changed file goes through the bone window first. The
+-- player's current import settings replace the recorded ones (binary modules after 2.3.0).
 library.reloadOf=library.reloadOf or {}
 function library.ReloadCharacter(id)
- local handle,err=native.Reload(id)
+ local handle,err=native.Reload(id,library.CharacterImportOptions())
  if not library.StartImport(handle,err) then return false,(library.StartError(err)) end
  local entry=istable(library.entries) and library.entries[id]
  if entry and isstring(entry.source) and entry.source~='' then library.reloadOf[entry.source]=id end
@@ -472,7 +496,7 @@ local function startImport(kind,source)
  -- The bone window may be missing or partly loaded (its files did not arrive): imports work without it.
  local BM=mmdhl.boneMapper
  if istable(BM) and isfunction(BM.Convertible) and isfunction(BM.Probe) and BM.Convertible(source) then return BM.Probe(source) end
- return library.StartImport(native.BeginImport(source,'{}'))
+ return library.StartImport(native.BeginImport(source,library.CharacterImportOptions()))
 end
 -- Wrapped text height in a label this wide: each line's measured width wraps, plus breaks.
 local function textHeight(text,font,width)
@@ -698,7 +722,7 @@ hook.Add('Think','MMDHL.LibraryImport',function()
    if library.job then library.status=L'library.import.busy' hook.Run('MMDHL.ImportChanged') return end
    if kind=='static' then library.StartStaticImport(source)
    elseif istable(BM) and isfunction(BM.Convertible) and isfunction(BM.Probe) and BM.Convertible(source) then BM.Probe(source)
-   else library.StartImport(native.BeginImport(source,'{}')) library.status=L'library.import.importing_model' end
+   else library.StartImport(native.BeginImport(source,library.CharacterImportOptions())) library.status=L'library.import.importing_model' end
    hook.Run('MMDHL.ImportChanged')
   end
   if mmdhl.terms then

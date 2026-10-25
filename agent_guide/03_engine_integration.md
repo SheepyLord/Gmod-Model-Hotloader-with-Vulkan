@@ -55,7 +55,7 @@ Realm: B both, C client, S server, B\* both but restricted at run time.
 
 | Group | Functions | Realm | Lua callers |
 |---|---|---|---|
-| Install | `GetCapabilities` (api 1, rigVersion 3, rigGenerator 31, rigGeneratorMin 30, physicsEditor 1, sharingVersion 2), `GetInstallationInfo`, `ConfigureCompatibility`, `CheckCompatibility`; `{Start,Poll}InstallationProbe` (C, worker self-test) | B/C | installation; capabilities also actors, physics_editor, bone_mapper_ui |
+| Install | `GetCapabilities` (api 1, rigVersion 3, rigGenerator 31, rigGeneratorMin 30, physicsEditor 1, sharingVersion 2, fullTextures 16384 after 2.3.0), `GetInstallationInfo`, `ConfigureCompatibility`, `CheckCompatibility`; `{Start,Poll}InstallationProbe` (C, worker self-test) | B/C | installation; capabilities also actors, physics_editor, bone_mapper_ui |
 | Imports | `Browse`, `BeginImport`, `Reload`, `PollJob`, `CancelJob` (one worker job); `PropDerive`, `PropReload`, `DeleteAssets`, `InspectModelNotes` (C) | B\*/C | library, props/library, bone_mapper_ui, terms |
 | Assets/fit | `RequestAsset`+`AssetInfo` (async load), `{Start,Poll}AssetCheck`, `ForgetAssets`, `GetBoneMapProposal`, `InspectBoneMap`, `PreviewCarrierFit` | B | server, instances, native_render, workshop, bone_mapper, physics_editor |
 | Carriers | `RequestCarrierFit` (async; false until done), `PrepareCarrier` (sync: `.phy` via bridge, writes `rigs/<key>`, returns manifest), `ReadAnimationModel` | S | server, carrier, actors, persistence |

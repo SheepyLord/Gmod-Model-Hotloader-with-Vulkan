@@ -112,7 +112,7 @@ function BM.RunQueued() local open=BM.queued BM.queued=nil if open then timer.Si
 function BM.Probe(source,opts)
  local library=mmdhl.library
  if library.job then library.status=L'library.import.busy' hook.Run('MMDHL.ImportChanged') return false end
- local handle,err=native.BeginImport(source,util.TableToJSON({kind='character_probe'}))
+ local handle,err=native.BeginImport(source,library.CharacterImportOptions({kind='character_probe'}))
  if not library.StartImport(handle,err,'character_probe') then return false,err end
  BM.pending[source]=opts or {}
  library.status=L'library.import.reading_skeleton' hook.Run('MMDHL.ImportChanged')
@@ -120,7 +120,7 @@ function BM.Probe(source,opts)
 end
 local function startConversion(state)
  local library=mmdhl.library
- local handle,err=native.BeginImport(state.source,util.TableToJSON(BM.Request(state)))
+ local handle,err=native.BeginImport(state.source,library.CharacterImportOptions(BM.Request(state)))
  if not library.StartImport(handle,err) then return false,err end
  library.status=L'library.import.importing_model' hook.Run('MMDHL.ImportChanged') return true
 end

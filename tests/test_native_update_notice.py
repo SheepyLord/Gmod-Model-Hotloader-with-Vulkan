@@ -447,6 +447,9 @@ assert not lua.eval('rawequal')(again, dialog) and len(g.QUERIES) == 2, 'a close
 lua, g = session(status(installed='2.3.0', recommended='2.3.0'))
 g.mmdhl.ShowNativeUpdateNeeded(L(g, 'bonemap.feature'), '2.4.0').query.click()
 assert len(windows(g, L(g, 'install.window_title'))) == 1, 'without a known update the dialog should open the installation window'
+# A feature of a release not labelled yet names no release.
+unlabelled = g.mmdhl.ShowNativeUpdateNeeded(L(g, 'library.full_textures.feature'))
+assert unlabelled.query.text == L(g, 'install.update.needed_newer', feature=L(g, 'library.full_textures.feature')) and unlabelled.query.text.startswith(L(g, 'library.full_textures.feature') + '\n'), unlabelled.query.text
 print('PASS: ShowNativeUpdateNeeded shows one dialog per feature that opens the update or installation window')
 
 

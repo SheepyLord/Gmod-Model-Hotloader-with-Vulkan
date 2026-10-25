@@ -220,6 +220,10 @@ Json readJson(const fs::path&);
 std::string hash(std::span<const unsigned char>);
 bool validId(std::string_view);
 struct CharacterConversion;
+// Longest texture edge a character import keeps: larger textures are scaled down to it,
+// keeping the ratio. With the import option fullTextures, FullTextureEdge, the largest
+// texture Direct3D 9 creates.
+constexpr int MaxTextureEdge=4096,FullTextureEdge=16384;
 // character: a model the worker converted from another format (assets.hpp).
 Json importAsset(const fs::path& source,const fs::path& cache,const Json& options,const fs::path& progress={},CharacterConversion* character=nullptr);
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id);

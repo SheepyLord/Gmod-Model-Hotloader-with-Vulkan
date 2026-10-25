@@ -63,6 +63,8 @@ NOTES={} notification={AddLegacy=function(text) NOTES[#NOTES+1]=text end,AddProg
 HOOKS={} hook={Add=function(event,name,fn) HOOKS[event..'/'..name]=fn end,Run=function() end}
 net={Receive=function() end} chat={AddText=function() end} surface={PlaySound=function() end}
 system={IsWindowed=function() return true end}
+CONVARS={} CreateClientConVar=function(name,default) CONVARS[name]=CONVARS[name] or default return {GetBool=function() return (tonumber(CONVARS[name]) or 0)~=0 end} end
+CALLBACKS={} cvars={AddChangeCallback=function(name,fn) CALLBACKS[name]=fn end} RunConsoleCommand=function(name,value) CONVARS[name]=value end
 game={SinglePlayer=function() return true end}
 NOW=0 RealTime=function() NOW=NOW+1 return NOW end
 CLIPBOARD=nil SetClipboardText=function(t) CLIPBOARD=t end
@@ -403,3 +405,30 @@ assert(named and named[1]==NEW and named[2]=='D:/model.pmx' and named[3]==OLD,'a
 assert(termed and termed[4]==OLD and mmdhl.library.reloadOf['D:/model.pmx']==nil and mmdhl.library.job==nil)
 ''')
 print('PASS: a reloaded character passes the model it replaces to its names and terms of use')
+
+# ---- full-size textures: the player's choice reaches the importer only through a binary module that keeps them ----
+lua.execute(r'''
+local L=mmdhl.L local library=mmdhl.library
+local caps={} mmdhl.native.GetCapabilities=function() return py_encode(caps) end
+local NOTICES={} mmdhl.ShowNativeUpdateNeeded=function(feature,release) NOTICES[#NOTICES+1]={feature,release} end
+CALLS={} mmdhl.native.BeginImport=function(source,options) CALLS[#CALLS+1]={source=source,options=options} return 50+#CALLS end
+local RELOADS={} mmdhl.native.Reload=function(id,settings) RELOADS[#RELOADS+1]={id=id,settings=settings} return 60 end
+mmdhl.boneMapper=nil mmdhl.terms=nil library.Refresh=function() end library.entries={}
+local function pick(source) library.job=7 library.nextPoll=0 mmdhl.native.PollJob=function() return py_encode({state='selected',source=source}) end HOOKS['Think/MMDHL.LibraryImport']() end
+-- Off (the default): '{}' as before, for a picked model and a reload alike.
+pick('C:/m/hero.pmx') assert(CALLS[#CALLS].options=='{}')
+library.job=nil assert(library.ReloadCharacter(string.rep('a',64)) and RELOADS[#RELOADS].settings=='{}')
+-- On, with a binary module that cannot: imports as before and says why once; turned on, the setting goes off again.
+CONVARS.mmdhl_import_full_textures='1'
+library.job=nil pick('C:/m/hero.pmx') assert(CALLS[#CALLS].options=='{}' and #NOTICES==1 and NOTICES[1][1]==L'library.full_textures.feature' and NOTICES[1][2]==nil)
+library.job=nil pick('C:/m/hero.pmx') assert(#NOTICES==1,'the update notice repeats on every import')
+CALLBACKS.mmdhl_import_full_textures('mmdhl_import_full_textures','0','1') assert(CONVARS.mmdhl_import_full_textures=='0' and #NOTICES==2)
+-- With one that keeps them (GetCapabilities().fullTextures): the import and the reload ask for them.
+caps={fullTextures=16384} CONVARS.mmdhl_import_full_textures='1'
+CALLBACKS.mmdhl_import_full_textures('mmdhl_import_full_textures','0','1') assert(CONVARS.mmdhl_import_full_textures=='1' and #NOTICES==2)
+library.job=nil pick('C:/m/hero.pmx') assert(py_decode(CALLS[#CALLS].options).fullTextures==true)
+library.job=nil assert(library.ReloadCharacter(string.rep('a',64)) and py_decode(RELOADS[#RELOADS].settings).fullTextures==true)
+local probe=py_decode(library.CharacterImportOptions({kind='character_probe'})) assert(probe.kind=='character_probe' and probe.fullTextures==true and library.FullTexturesEdge()==16384)
+CONVARS.mmdhl_import_full_textures='0' library.job=nil mmdhl.ShowNativeUpdateNeeded=nil
+''')
+print('PASS: full-size textures reach the importer and Reload only through a binary module that keeps them; an older one imports as before and says why once')

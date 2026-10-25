@@ -259,6 +259,44 @@ int main(int argc,char** argv){try{
   check(e.code=="texture.derivative"&&!fs::exists(rollback/L"assets"/wide(id)/L"manifest.json")&&!fs::exists(rollback/L"assets"/wide(id)),"a failed import leaves no catalog entry and removes the model data it wrote");
   auto registry=rollback/L"sources.local.json";check(!fs::exists(registry)||!readJson(registry).contains(id),"a failed import records no source to reload");}
 
+ // ---- textures past 4096: scaled down by default, kept at full size with fullTextures ----
+ {auto folder=temp/L"large";fs::create_directories(folder);
+  // An uncompressed 32-bit TGA with a top-left origin: past the limit on one edge, small in memory.
+  auto tga=[](const fs::path& path,int w,int h){Bytes b(18,0);b[2]=2;b[12]=uint8_t(w);b[13]=uint8_t(w>>8);b[14]=uint8_t(h);b[15]=uint8_t(h>>8);b[16]=32;b[17]=0x28;
+   for(int i=0;i<w*h;i++){b.push_back(uint8_t(i*7));b.push_back(uint8_t(i*13));b.push_back(uint8_t(i*29));b.push_back(255);}writeAtomic(path,b);};
+  auto pngSize=[](const fs::path& path){auto b=readFile(path);auto be=[&](size_t at){return uint32_t(b[at])<<24|uint32_t(b[at+1])<<16|uint32_t(b[at+2])<<8|uint32_t(b[at+3]);};return std::pair<uint32_t,uint32_t>{be(16),be(20)};};
+  auto vtfWidth=[](const fs::path& path){auto b=readFile(path);uint16_t w=0;std::memcpy(&w,b.data()+16,2);return w;};
+  auto packageHas=[](const fs::path& gma,const std::string& name){auto b=readFile(gma);return std::search(b.begin(),b.end(),name.begin(),name.end())!=b.end();};
+  auto noted=[](const Json& info,const std::string& text){for(auto& w:info["warnings"])if(w.get<std::string>()==text)return true;return false;};
+  tga(folder/L"wide.tga",4100,8);tga(folder/L"small.tga",8,8);
+  PmxSpec s;s.textures={"wide.tga"};s.materialTexture={0,0};writeAtomic(folder/L"model.pmx",pmx(s));
+  auto cache=temp/L"cache-large";
+  auto plain=importAsset(folder/L"model.pmx",cache,Json::object(),{});auto plainId=plain["asset"].get<std::string>();auto plainTexture=plain["info"]["textures"][0].value("base","");
+  check(!plain["info"].contains("fullTextures")&&pngSize(cache/L"textures"/wide(plainTexture+".png"))==std::pair<uint32_t,uint32_t>{4096,8}&&noted(plain["info"],"Large texture wide.tga (4100 x 8) was scaled down to 4096 x 8; the game shows no more detail than that."),"by default a texture past 4096 is scaled down, with 2.2's note");
+  check(vtfWidth(cache/L"textures"/wide(plainTexture+".vtf"))==4096&&packageHas(cache/L"assets"/wide(plainId)/L"materials-v5.gma","materials/mmd/t/"+plainTexture.substr(0,16)+".vtf"),"the scaled texture's Source derivative is 4096 wide, at its 2.2 engine path");
+  auto full=importAsset(folder/L"model.pmx",cache,Json{{"fullTextures",true}},{});auto fullId=full["asset"].get<std::string>();auto fullTexture=full["info"]["textures"][0].value("base","");
+  check(fullId!=plainId&&full["info"].value("fullTextures",false)&&fullTexture!=plainTexture&&pngSize(cache/L"textures"/wide(fullTexture+".png"))==std::pair<uint32_t,uint32_t>{4100,8},"fullTextures keeps the texture at full size, in an asset of its own that says so");
+  check(noted(full["info"],"Large texture wide.tga (4100 x 8) was kept at full size; memory use and loading time are higher.")&&!noted(full["info"],"Large texture wide.tga (4100 x 8) was scaled down to 4096 x 8; the game shows no more detail than that."),"a texture kept at full size is noted as such");
+  auto derivative=cache/L"textures"/wide(fullTexture+".full.vtf"),package=cache/L"assets"/wide(fullId)/L"materials-v5.gma";
+  check(vtfWidth(derivative)==4100&&!fs::exists(cache/L"textures"/wide(fullTexture+".vtf"))&&packageHas(package,"materials/mmd/tf/"+fullTexture.substr(0,16)+".vtf"),"the full-size texture has its own Source derivative and engine path");
+  check(readJson(cache/L"sources.local.json")[fullId]["options"]==Json{{"fullTextures",true}},"Reload replays the full-size import");
+  // Peers build the package from the manifest and the image: the same bytes.
+  auto built=readFile(package);fs::remove(package);fs::remove(derivative);prepareSourceMaterials(cache,fullId);check(readFile(package)==built,"the full-size package builds again byte for byte");
+  check(loadAsset(cache,fullId)->id==fullId,"an asset with full-size textures loads");
+  // A model whose textures all fit is the same asset with or without the option.
+  PmxSpec small;small.textures={"small.tga"};small.materialTexture={0,0};writeAtomic(folder/L"small.pmx",pmx(small));
+  auto a=importAsset(folder/L"small.pmx",cache,Json::object(),{}),b=importAsset(folder/L"small.pmx",cache,Json{{"fullTextures",true}},{});
+  check(a["asset"]==b["asset"]&&!b["info"].contains("fullTextures"),"fullTextures changes nothing for textures within 4096");
+  // The option is checked like any cached field: a manifest may only say true.
+  auto manifest=readJson(cache/L"assets"/wide(fullId)/L"manifest.json");manifest["fullTextures"]="yes";auto identity=manifest;identity["id"]=manifest["sourceHash"];auto encoded=identity.dump();
+  auto forged=hash(std::span(reinterpret_cast<const unsigned char*>(encoded.data()),encoded.size()));manifest["id"]=forged;
+  writeJson(cache/L"assets"/wide(forged)/L"manifest.json",manifest);fs::copy_file(cache/L"assets"/wide(fullId)/L"model.bin",cache/L"assets"/wide(forged)/L"model.bin");
+  bool refused=false;try{loadAsset(cache,forged);}catch(const std::exception& e){refused=has(e.what(),"texture size option");}
+  check(refused,"a manifest whose fullTextures is not true is refused");
+  // Deleting the asset removes the full-size derivative with its image; the scaled one stays with its asset.
+  deleteAssets(cache,{fullId,forged});
+  check(!fs::exists(derivative)&&!fs::exists(cache/L"textures"/wide(fullTexture+".png"))&&fs::exists(cache/L"textures"/wide(plainTexture+".vtf")),"deletion removes the full-size derivative of an unused texture");}
+
  // ---- a PMX character's textures (dependency_scope.hpp, Reach::Local) ----
  // As in 2.2 a texture may climb out of the model's folder or lie behind a junction (artists'
  // working folders keep textures beside the model); a root-relative one or one in a denied

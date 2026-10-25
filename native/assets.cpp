@@ -136,13 +136,13 @@ void registerShortName(const fs::path& cache,const std::string& kind,const std::
  retainCacheFiles(cache,{path.lexically_relative(cache)});writeJson(path,{{"id",id}});
 }
 bool validId(std::string_view s){return s.size()==64&&std::all_of(s.begin(),s.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
-// Texels past 4096 on an edge cost four times the memory and import time and
-// look the same in game, so larger textures are scaled down, keeping the ratio.
-constexpr int MaxTextureEdge=4096;
-static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes& scaled){
-    if(width<=MaxTextureEdge&&height<=MaxTextureEdge)return false;
-    double factor=double(MaxTextureEdge)/std::max(width,height);
-    int w=std::clamp(int(std::lround(width*factor)),1,MaxTextureEdge),h=std::clamp(int(std::lround(height*factor)),1,MaxTextureEdge);
+// Texels past 4096 on an edge cost four times the memory and import time, so larger
+// textures are scaled down, keeping the ratio (runtime.hpp MaxTextureEdge). The import
+// option fullTextures keeps them, up to FullTextureEdge.
+static bool fitTexture(const unsigned char* pixels,int& width,int& height,Bytes& scaled,int edge=MaxTextureEdge){
+    if(width<=edge&&height<=edge)return false;
+    double factor=double(edge)/std::max(width,height);
+    int w=std::clamp(int(std::lround(width*factor)),1,edge),h=std::clamp(int(std::lround(height*factor)),1,edge);
     scaled.resize(size_t(w)*h*4);
     if(!stbir_resize_uint8_srgb(pixels,width,height,0,scaled.data(),w,h,0,STBIR_RGBA))throw std::runtime_error("Cannot scale down a large texture");
     width=w;height=h;return true;
@@ -172,7 +172,8 @@ static fs::path resolveTexture(const DependencyScope& scope,std::string path,boo
     return file;
 }
 static std::string outsideTexture(std::string path){std::replace(path.begin(),path.end(),'\\','/');return "Texture in a protected location: "+path;}
-static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings){
+// full: keep textures past 4096 (the fullTextures option); `large` is set when one is kept.
+static std::string normalizeTexture(const Bytes& bytes,const std::string& name,const fs::path& cache,bool& alpha,std::vector<std::string>& warnings,bool full,bool& large){
     int width=0,height=0,channels=0;
     if(bytes.size()>INT_MAX)throw std::runtime_error("Texture exceeds the decoder's signed 32-bit input format: "+name);
     Bytes decoded;unsigned char* pixels=nullptr;
@@ -193,21 +194,34 @@ static std::string normalizeTexture(const Bytes& bytes,const std::string& name,c
     }
     for(size_t i=3;i<size_t(width)*height*4;i+=4)if(pixels[i]<255){alpha=true;break;}
     Bytes scaled;const int sourceWidth=width,sourceHeight=height;
-    if(fitTexture(pixels,width,height,scaled)){
+    if(fitTexture(pixels,width,height,scaled,full?FullTextureEdge:MaxTextureEdge)){
         guard.reset();decoded=Bytes();pixels=scaled.data();
         warnings.push_back("Large texture "+name+" ("+std::to_string(sourceWidth)+" x "+std::to_string(sourceHeight)+") was scaled down to "+std::to_string(width)+" x "+std::to_string(height)+"; the game shows no more detail than that.");
-    }else if(bytes.size()>(64ull<<20))warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+"). Import continues; memory use and loading time may be high.");
+    }else if(std::max(width,height)>MaxTextureEdge)warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+") was kept at full size; memory use and loading time are higher.");
+    else if(bytes.size()>(64ull<<20))warnings.push_back("Large texture "+name+" ("+std::to_string(width)+" x "+std::to_string(height)+"). Import continues; memory use and loading time may be high.");
+    // Only possible with `full`: without it every texture now fits in 4096.
+    if(std::max(width,height)>MaxTextureEdge)large=true;
     Bytes png;auto callback=[](void* context,void* p,int n){auto& b=*static_cast<Bytes*>(context);auto src=static_cast<unsigned char*>(p);b.insert(b.end(),src,src+n);};
     if(!stbi_write_png_to_func(callback,&png,width,height,4,pixels,width*4))throw std::runtime_error("Texture encoding failed");auto id=hash(png);auto path=cache/L"textures"/wide(id+".png");if(!fs::exists(path))writeAtomic(path,png);return id;
 }
+// The size in a cached PNG's header (stb_image_write writes IHDR first), without decoding it.
+static bool pngSize(const fs::path& path,int& width,int& height){
+ std::ifstream in(ioPath(path),std::ios::binary);unsigned char h[24]{};
+ if(!in.read(reinterpret_cast<char*>(h),24)||std::memcmp(h,"\x89PNG\r\n\x1a\n",8)||std::memcmp(h+12,"IHDR",4))return false;
+ auto be=[&](int at){return uint32_t(h[at])<<24|uint32_t(h[at+1])<<16|uint32_t(h[at+2])<<8|uint32_t(h[at+3]);};
+ uint32_t w=be(16),v=be(20);if(!w||!v||w>INT_MAX||v>INT_MAX)return false;width=int(w);height=int(v);return true;
+}
+// An asset imported with fullTextures that kept a texture past 4096 (importAsset).
+static bool fullTextures(const Json& manifest){auto it=manifest.find("fullTextures");return it!=manifest.end()&&*it==true;}
 // Source-readable derivatives allow normal IMaterial/VMT editor workflows.
 void prepareSourceMaterials(const fs::path& cache,const std::string& id){prepareSourceMaterials(cache,id,readJson(cache/L"assets"/wide(id)/L"manifest.json"));}
 void prepareSourceMaterials(const fs::path& cache,const std::string& id,const Json& manifest){
  auto directory=cache/L"assets"/wide(id),package=directory/L"materials-v5.gma";
  registerShortName(cache,"assets",id);
  std::vector<fs::path> retained={fs::path(L"assets")/wide(id)};
- for(auto& t:manifest["textures"])for(auto kind:{"base","sphere","toon"}){auto h=t.value(kind,"");if(validId(h))for(auto ext:{".png",".vtf"})retained.push_back(fs::path(L"textures")/wide(h+ext));}
+ for(auto& t:manifest["textures"])for(auto kind:{"base","sphere","toon"}){auto h=t.value(kind,"");if(validId(h))for(auto ext:{".png",".vtf",".full.vtf"})retained.push_back(fs::path(L"textures")/wide(h+ext));}
  retainCacheFiles(cache,retained);if(fs::is_regular_file(package))return;
+ const bool keepFull=fullTextures(manifest);
  // Textures stay on disk until the package streams them: a model with dozens of
  // 4096 textures never holds them all, plus a packed copy, in memory.
  std::map<std::string,GmaEntry> files;
@@ -215,13 +229,16 @@ void prepareSourceMaterials(const fs::path& cache,const std::string& id,const Js
   auto& material=manifest["materials"][i];auto& texture=manifest["textures"][i];std::string base=texture.value("base","");auto at=place("material",int64_t(i),material.value("name",""));
   std::string texturePath="models/debug/debugwhite";
   if(validId(base)){
-   registerShortName(cache,"textures",base);texturePath="mmd/t/"+base.substr(0,16);auto derivative=cache/L"textures"/wide(base+".vtf");
+   // A texture an asset keeps past 4096 has its own derivative and engine path: a cache
+   // from before 2.2 may hold the same image, whose derivative is scaled to 4096.
+   int pngWidth=0,pngHeight=0;const bool full=keepFull&&pngSize(cache/L"textures"/wide(base+".png"),pngWidth,pngHeight)&&std::max(pngWidth,pngHeight)>MaxTextureEdge;
+   registerShortName(cache,"textures",base);texturePath=(full?"mmd/tf/":"mmd/t/")+base.substr(0,16);auto derivative=cache/L"textures"/wide(base+(full?".full.vtf":".vtf"));
    if(!fs::is_regular_file(derivative)){
     int width,height,channels;std::unique_ptr<unsigned char,decltype(&stbi_image_free)> decoded(nullptr,stbi_image_free);
     {auto png=readFile(cache/L"textures"/wide(base+".png"));decoded.reset(stbi_load_from_memory(png.data(),int(png.size()),&width,&height,&channels,4));}
     if(!decoded)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its cached image "+base.substr(0,16)+".png cannot be decoded",{{"where",Json::array({at})},{"texture",base},{"path",utf8((cache/L"textures"/wide(base+".png")).wstring())}});
     // Caches from before 2.2 hold textures larger than 4096.
-    Bytes scaled;const unsigned char* pixels=decoded.get();if(fitTexture(pixels,width,height,scaled))pixels=scaled.data();
+    Bytes scaled;const unsigned char* pixels=decoded.get();if(fitTexture(pixels,width,height,scaled,full?FullTextureEdge:MaxTextureEdge))pixels=scaled.data();
     if(width>65535||height>65535)importFail("texture.derivative","Cannot create the Source texture of "+placeText(at)+": its image is "+std::to_string(width)+" x "+std::to_string(height)+" pixels, more than the VTF format holds",{{"where",Json::array({at})},{"texture",base}});
     // Mip levels follow the 80-byte header smallest first; each level is a 2x2
     // box filter of the one above, built in place.
@@ -304,13 +321,15 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
     if(character){model->springs=SpringSetup::fromManifest(conversion,*model);auto map=conversion.value("boneMap",Json::object());for(auto& [key,value]:map.items())model->conversionBoneMap[key]=value.get<int>();}
     Json manifest=model->info();manifest["version"]=2;if(vrmSource)manifest["vrm"]=vrm;if(character)manifest["conversion"]=conversion;for(auto& material:manifest["materials"])material.erase("path");manifest["sourceHash"]=hash(raw);manifest["textures"]=Json::array();
     std::map<std::wstring,std::pair<std::string,bool>> prepared;const DependencyScope scope(source.parent_path(),true,DependencyScope::Reach::Local);
+    // The fullTextures option keeps textures past 4096 at full size, up to FullTextureEdge.
+    auto fullOption=options.find("fullTextures");const bool full=fullOption!=options.end()&&*fullOption==true;bool largeKept=false;
     for(size_t i=0;i<model->materials.size();i++){auto& material=model->materials[i];Json textures;bool alpha=false;
         auto image=material.base.substr(material.base.find_last_of("/\\")+1);
         report("Preparing textures","textures",.1f+.8f*float(i)/std::max<size_t>(1,model->materials.size()),"Material "+std::to_string(i+1)+" of "+std::to_string(model->materials.size())+(material.name.empty()?std::string():" “"+cleanText(material.name)+"”")+(image.empty()?std::string():": "+cleanText(image)),i+1,model->materials.size());
         for(auto entry:std::array<std::pair<const char*,std::string>,3>{{{"base",material.base},{"sphere",material.sphere},{"toon",material.toon}}}){
             std::string id;bool localAlpha=false;if(!entry.second.empty())try{
                 if(embeddedSource){auto found=embedded.find(entry.second);if(found==embedded.end())throw std::runtime_error("Missing embedded VRM texture "+entry.second);
-                    auto key=L"vrm:"+wide(entry.second);auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(found->second,entry.second,cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
+                    auto key=L"vrm:"+wide(entry.second);auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(found->second,entry.second,cache,localAlpha,model->warnings,full,largeKept);prepared[key]={id,localAlpha};}
                     textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;continue;}
                 bool refused=false;auto file=resolveTexture(scope,entry.second,refused);
                 if((refused||!fs::exists(file))&&std::string(entry.first)=="toon"){
@@ -321,13 +340,16 @@ Json importAsset(const fs::path& source,const fs::path& cache,const Json& option
                     else if(entry.second.starts_with("toon")){textures[entry.first]="";continue;}
                 }
                 if(refused)throw std::runtime_error(outsideTexture(entry.second));
-                auto key=file.wstring();auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(readFile(file),utf8(file.filename().wstring()),cache,localAlpha,model->warnings);prepared[key]={id,localAlpha};}
+                auto key=file.wstring();auto existing=prepared.find(key);if(existing!=prepared.end()){id=existing->second.first;localAlpha=existing->second.second;}else{id=normalizeTexture(readFile(file),utf8(file.filename().wstring()),cache,localAlpha,model->warnings,full,largeKept);prepared[key]={id,localAlpha};}
             }catch(const std::exception& e){model->warnings.push_back(e.what());}
             textures[entry.first]=id;if(std::string(entry.first)=="base")alpha=localAlpha;
         }
         textures["alpha"]=alpha;manifest["textures"].push_back(textures);
     }
     report("Saving to the cache","cache",.9f);
+    // Only an asset that kept a texture past 4096 says so (prepareSourceMaterials keeps it at
+    // full size): a model whose textures all fit has the same identity with or without the option.
+    if(largeKept)manifest["fullTextures"]=true;
     manifest["warnings"]=model->warnings;auto identity=manifest.dump();auto id=hash(std::span(reinterpret_cast<const unsigned char*>(identity.data()),identity.size()));manifest["id"]=id;
     // The library lists a model by its manifest: written last, once every other step worked, so a
     // failed import leaves nothing to list. What this import created before failing goes again.
@@ -356,6 +378,7 @@ Json importConverted(const fs::path& source,const fs::path& cache,const Json& op
 std::shared_ptr<Model> loadAsset(const fs::path& cache,const std::string& id){
     if(!validId(id))throw std::runtime_error("Invalid asset ID");auto directory=cache/L"assets"/wide(id);auto manifest=readJson(directory/L"manifest.json");if((manifest.value("version",0)!=1&&manifest.value("version",0)!=2)||manifest.value("id",std::string())!=id)throw std::runtime_error("Cache version or ID mismatch");
     auto identity=manifest;identity["id"]=manifest.at("sourceHash");auto encoded=identity.dump();if(hash(std::span(reinterpret_cast<const unsigned char*>(encoded.data()),encoded.size()))!=id)throw std::runtime_error("Cached manifest checksum mismatch");
+    if(manifest.contains("fullTextures")&&manifest["fullTextures"]!=true)throw std::runtime_error("Cached texture size option is invalid");
     auto raw=readFile(directory/L"model.bin");if(hash(raw)!=manifest.at("sourceHash"))throw std::runtime_error("Cached model checksum mismatch");auto model=parse(raw);model->id=id;for(auto& warning:manifest.value("warnings",std::vector<std::string>{}))if(std::find(model->warnings.begin(),model->warnings.end(),warning)==model->warnings.end())model->warnings.push_back(warning);
     if(manifest.contains("vrm"))model->springs=SpringSetup::fromManifest(manifest["vrm"],*model);
     else if(manifest.contains("conversion")){
@@ -493,7 +516,7 @@ Json deleteAssets(const fs::path& cache,const std::vector<std::string>& ids){
   (selected.contains(id)?textures:used).insert(refs.begin(),refs.end());
  }
  for(auto& id:selected){collect(fs::path(L"assets")/wide(id));collect(fs::path(L"library")/wide(id+".json"));collect(fs::path(L"fit_overrides")/wide(id+".json"));collect(fs::path(L"names/assets")/wide(id.substr(0,16)+".json"));collect(fs::path(L"names/assets")/wide(id.substr(0,16)+"-materials-v5.gma"));}
- for(auto& id:textures)if(!used.contains(id)){for(auto ext:{".png",".vtf",".png.share2"})collect(fs::path(L"textures")/wide(id+ext));collect(fs::path(L"names/textures")/wide(id.substr(0,16)+".json"));}
+ for(auto& id:textures)if(!used.contains(id)){for(auto ext:{".png",".vtf",".full.vtf",".png.share2"})collect(fs::path(L"textures")/wide(id+ext));collect(fs::path(L"names/textures")/wide(id.substr(0,16)+".json"));}
  for(auto dir:{L"fits",L"rigs",L"jobs"})if(fs::exists(cache/dir))for(auto& entry:fs::directory_iterator(cache/dir)){
   auto path=entry.is_directory()?entry.path()/(std::wstring(dir)==L"rigs"?L"rig.json":L"status.json"):entry.path();if(path.extension()!=L".json"||!fs::exists(path))continue;
   Json metadata;try{metadata=readJson(path);}catch(...){continue;}auto asset=metadata.contains("fit")?metadata["fit"].value("asset",""):metadata.value("asset","");if(selected.contains(asset)){collect(fs::path(dir)/entry.path().filename());if(std::wstring(dir)==L"rigs"){collect(fs::path(L"names/rigs")/wide(metadata.value("key","").substr(0,16)+".json"));collect(fs::path(L"names/rigs")/wide(metadata.value("key","").substr(0,16)+"-carrier.gma"));}}

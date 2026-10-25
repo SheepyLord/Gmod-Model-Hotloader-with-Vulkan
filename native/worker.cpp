@@ -322,6 +322,9 @@ int wmain(int argc,wchar_t** argv){
             auto report=[&](const char* code){return [&,code](const char* stage,float progress){setImportStage(code);writeJson(status,{{"state","running"},{"stage",stage},{"stageCode",code},{"progress",progress},{"filename",filename}});};};
             auto extension=source.extension().wstring();for(auto& c:extension)c=wchar_t(towlower(c));
             bool mmdFile=extension==L".pmx"||extension==L".pmd"||isVrmPath(source);
+            // A PMX, PMD or VRM character keeps only the import settings of a probe's or
+            // converter's request (recorded for Reload): textures at full size.
+            Json settings=Json::object();if(auto full=options.find("fullTextures");full!=options.end()&&*full==true)settings["fullTextures"]=true;
             Json result;
             // Characters in other formats: the probe reads the skeleton for the bone
             // window; the import converts with the player's assignment. PMX, PMD and VRM
@@ -329,11 +332,11 @@ int wmain(int argc,wchar_t** argv){
             if(kind=="character_probe"){
                 if(extension==L".obj")importFail("character.format","OBJ files have no skeleton. Characters must be PMX, PMD, VRM, FBX, glTF or DAE files.",{{"format","obj"}});
                 if(extension==L".blend")importFail("character.blend","Blender files cannot be imported as characters. In Blender, export FBX or glTF with the armature and import that file.");
-                if(mmdFile||!convertibleCharacter(source))result=importAsset(source,cache,Json::object(),status);
+                if(mmdFile||!convertibleCharacter(source))result=importAsset(source,cache,settings,status);
                 else result={{"state","complete"},{"kind","bone_map"},{"progress",1},{"stage","Reading the skeleton"},{"filename",filename},{"probe",probeCharacter(source,options,report("probe"))}};
             }
             else if((kind=="character"||kind.empty())&&convertibleCharacter(source)&&!mmdFile)result=importConverted(source,cache,options,status,convertCharacter(source,options,report("convert_character")));
-            else if(kind=="character")result=importAsset(source,cache,Json::object(),status);
+            else if(kind=="character")result=importAsset(source,cache,settings,status);
             else result=kind=="derive"?deriveProp(cache,options,status):kind=="blend_scene"?listBlend(source,options,status):kind=="static"?importProp(source,cache,options,status):importAsset(source,cache,options,status);
             if(kind!="derive")result["source"]=requestSource;writeJson(status,result);return 0;}
         std::cerr<<"mmdhl_worker --inspect model.pmx | --request request.json [cache-folder] | --pick job-directory [static]\n";return 2;

@@ -1,6 +1,7 @@
 # Next release
 
 - **Jumps in an animation no longer tangle hair and clothing.** When a dance moves the character to another spot in one frame (the scene cuts of Project Diva and other PV motions), loops or restarts, an animation addon can now say so, and hair, skirts and other swinging parts jump with the body and keep their shape instead of being dragged across the gap. MMD VMD NPC does this for its motions; other addons call `mmdhl.MarkTeleport(ent)` or run the hook `MMDVMDNPCPoseCut`. Jumps of more than 128 units between two frames were already caught; smaller ones were simulated. Needs the new binary module. [API](docs/API.md#instances).
+- **Keep full texture resolution when importing.** Character imports still scale textures larger than 4096 pixels down to 4096 by default. The new option **Keep full texture resolution (no 4096 limit)**, under **Q → External Models → Character Models → Import options** and in **Utilities → Character Models**, keeps them at full size, up to 16384, for the next import and for **Reload original file**. A texture twice as wide takes four times the memory and disk space, and the model loads more slowly; a model whose Source materials pass 4 GiB cannot be shared with a server. Models imported earlier keep their textures, and a model whose textures all fit in 4096 imports exactly as before with or without the option. Static props keep the 4096 limit. Needs the new binary module.
 
 # Model Hotloader 2.3.0
 

@@ -335,6 +335,10 @@ function PANEL:BuildCharacterActions()
  self.ActorGender=content:Add('DComboBox') self.ActorGender:Dock(TOP) self.ActorGender:SetTall(s(30)) styleChoices(self.ActorGender,s,f.Body) self.ActorGender:SetValue(L'ui.character.animation_female') self.actorGender='female'
  self.ActorGender:AddChoice(L'ui.character.animation_female','female') self.ActorGender:AddChoice(L'ui.character.animation_male','male') self.ActorGender.OnSelect=function(_,_,_,value) self.actorGender=value end
  local armsButton=button(content,L'ui.character.arms',function() if self.selected then mmdhl.OpenArmsEditor(self.selected,self.actorGender) end end,s(30),f.Body) armsButton:Dock(TOP) armsButton:DockMargin(0,s(4),0,0)
+ -- How new imports and Reload treat textures larger than 4096 (library.CharacterImportOptions).
+ local _,importContent=expander(actions,L'ui.character.import_options',s,f,function() actions:SetTall(stackHeight(actions)) end)
+ self.FullTextures=checkbox(importContent,L'library.full_textures.setting','mmdhl_import_full_textures',f.Body,s(28)) self.FullTextures:Dock(TOP)
+ self.FullTextures:SetTooltip(L'library.full_textures.help')
  local publish=button(actions,L'ui.character.share',function()
   if not self.selected then return end
   local id=self.selected local entry=self:Lib().entries[id]
@@ -1016,6 +1020,8 @@ hook.Add('PopulateToolMenu','MMDHL.Menu',function()
   panel:CheckBox(L'terms.setting_import','mmdhl_terms_warning_import')
   panel:CheckBox(L'terms.setting_export','mmdhl_terms_warning_export')
   panel:ControlHelp(L'terms.setting_help')
+  panel:CheckBox(L'library.full_textures.setting','mmdhl_import_full_textures')
+  panel:ControlHelp(L'library.full_textures.help')
   panel:Button(L'file_access.manage.button','mmdhl_file_access')
   panel:Help(L'ui.toolmenu.settings_help')
   panel:CheckBox(L'ui.toolmenu.spawn_frozen','mmdhl_spawn_frozen')

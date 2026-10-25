@@ -114,16 +114,17 @@ sequenceDiagram
 ## 4. Entry points and job protocol
 
 ### 4.1 Lua
-- `ui.lua` button → `library.BrowseImport()`; right-click **Assign bones…** (`BM.OpenFit`), **Import again with the bone window…** (`BM.Probe(source)`); `entity_editor.lua` **Reload** → `library.ReloadCharacter` → `native.Reload(id)`.
-- `library.lua` hook `Think 'MMDHL.LibraryImport'` polls `PollJob` every 0.1 s, gives the status to `BM.OnJobStatus` first, then: `selected` → `terms.BeforeImport` → `proceed` (static → `StartStaticImport`; `BM.Convertible` → `BM.Probe`; else `BeginImport(source,'{}')`); `complete` → `terms.Imported`, `names.Imported` (carry-over via `library.reloadOf`), `Refresh`, `BM.AfterImport`, `ExplainFit`; `failed` → `ShowImportFailure`. `library.job` = the single job.
-- `bone_mapper_ui.lua`: `BM.Probe` → `BeginImport(src,{kind='character_probe'})`; `kind=='bone_map'` → `BM.OpenConvert` (or auto-import with `mmdhl_bonemap_autoskip`); **Import character** → `BeginImport(src, BM.Request(state))`; `character.bone_map`/`character.jiggle` failures reopen the window (reason `missing` → re-probe).
+- `ui.lua` button → `library.BrowseImport()`; right-click **Assign bones…** (`BM.OpenFit`), **Import again with the bone window…** (`BM.Probe(source)`); `entity_editor.lua` **Reload** → `library.ReloadCharacter` → `native.Reload(id, library.CharacterImportOptions())`.
+- Every character job's options go through `library.CharacterImportOptions(options)`: the job's own table plus `fullTextures=true` when ConVar `mmdhl_import_full_textures` is on and `GetCapabilities().fullTextures` exists (else one `ShowNativeUpdateNeeded`, no release label); `'{}'` when there is nothing, byte for byte as before (tests pin it).
+- `library.lua` hook `Think 'MMDHL.LibraryImport'` polls `PollJob` every 0.1 s, gives the status to `BM.OnJobStatus` first, then: `selected` → `terms.BeforeImport` → `proceed` (static → `StartStaticImport`; `BM.Convertible` → `BM.Probe`; else `BeginImport(source,CharacterImportOptions())`); `complete` → `terms.Imported`, `names.Imported` (carry-over via `library.reloadOf`), `Refresh`, `BM.AfterImport`, `ExplainFit`; `failed` → `ShowImportFailure`. `library.job` = the single job.
+- `bone_mapper_ui.lua`: `BM.Probe` → `BeginImport(src,CharacterImportOptions({kind='character_probe'}))`; `kind=='bone_map'` → `BM.OpenConvert` (or auto-import with `mmdhl_bonemap_autoskip`); **Import character** → `BeginImport(src, CharacterImportOptions(BM.Request(state)))`; `character.bone_map`/`character.jiggle` failures reopen the window (reason `missing` → re-probe).
 - `file_access.lua` is the addon file API (`--fa-pick`/`--fa-consent`), not the model picker.
 
 ### 4.2 Native functions (`module.cpp`)
 | Function | Realm | Notes |
 |---|---|---|
-| `GetCapabilities()` | both | `characterImport` (formats), `boneMap`, `rigVersion`, `rigGenerator`, `rigGeneratorMin` (§8) |
-| `Browse([kind])`, `BeginImport(path, optionsJSON)`, `Reload(id)`, `PollJob`, `CancelJob` | client (server throws "Imports must be started locally…") | `Reload` replays `sources.local.json[id]` |
+| `GetCapabilities()` | both | `characterImport` (formats), `boneMap`, `rigVersion`, `rigGenerator`, `rigGeneratorMin` (§8), `fullTextures` (16384, the largest edge the option keeps; absent in 2.3.0) |
+| `Browse([kind])`, `BeginImport(path, optionsJSON)`, `Reload(id[, settingsJSON])`, `PollJob`, `CancelJob` | client (server throws "Imports must be started locally…") | `Reload` replays `sources.local.json[id]`; the settings' `fullTextures` replaces the recorded one (2.3.0 ignores argument 2) |
 | `InspectModelNotes(path)`, `DeleteAssets(json)` | client | terms texts; deletion (`'[]'` at startup finishes pending) |
 | `RequestAsset`/`AssetInfo` | both | async `loadAsset`; `AssetInfo` = `Model::info()` |
 | `InspectBoneMap`, `GetBoneMapProposal`, `PreviewCarrierFit` | both | need a loaded asset; write nothing |
@@ -148,7 +149,8 @@ Model-reading modes call `guardDependencies()` (dependency denylist = `FilePolic
 **`request.json`** = `{"source":"<absolute UTF-8>","options":{…}}` (`cache` honoured only without argv[3]). Routing on `options.kind`:
 - `character_probe`: `.obj` → `character.format`, `.blend` → `character.blend`; PMX/PMD/VRM (also `.glb` with `VRM`/`VRMC_vrm`) → `importAsset`; FBX/GLB/glTF/DAE → `probeCharacter`.
 - `character` or absent, convertible, not VRM → `importConverted(convertCharacter(...))`; no `boneMap` = automatic map, which must be certain (required parts ≥0.85, no `checkBoneMap` error) else `character.needs_mapping`.
-- otherwise → `importAsset` with the options (`{}` for kind `character`); `static`, `blend_scene`, `derive` → props.
+- otherwise → `importAsset` with the options (for kind `character` and PMX/PMD/VRM probes only the import settings: `{}` or `{fullTextures:true}`); `static`, `blend_scene`, `derive` → props.
+- `fullTextures:true` (any character kind): keep textures past `MaxTextureEdge` (4096) up to `FullTextureEdge` (16384, `runtime.hpp`).
 - `BM.Request` schema: `{kind:"character",requestVersion:1,boneMap:{<ValveBiped key>:"<bone name>"|""},eyes:{L,R},jiggle:{version:1,groups:[{kind,enabled,swing,custom,collide,values{stiffness,dragForce,gravityPower,hitRadius},chains[{root,enabled}]}]}}`, ≤64 KiB.
 
 **`status.json`** (atomic writes):
@@ -162,7 +164,7 @@ Model-reading modes call `guardDependencies()` (dependency denylist = `FilePolic
 - **PMX/PMD** — `parse()` (`native/model.cpp`) via nanoem (`ext/mbwc.c` on Windows; `native/nanoem_unicode.c` + Microsoft CP932 table on Linux, so names match Windows). Wrong magic → `notCharacterFile` (`format.*`, `character.format`, `io.empty`); load failure → `loadFailed` (`pmx.version`, `pmx.text`, `pmx.truncated` if <1 KiB from end, `pmx.section_corrupt`, `memory`). `repairModel` fixes NaN/absurd values in place (one `Repaired …` warning per kind); bone loops cut with warnings; `pmx.number`/`pmx.reference`/`pmx.materials` checks; zero normals rebuilt; invalid joints skipped with a warning; `m->id = sha256(bytes)`.
 - **VRM** — `convertVrm` (`native/vrm.cpp`) → PMX via `writePmx` (`pmx_writer.cpp`: UTF-8, 4-byte indices, BDEF1/2/4, no rigid bodies); MMD axes, 12.5 units/m, humanoid → MMD names from `humanoid_slots.hpp`, expressions → group/material/UV morphs, alpha baked into texture copies; springs, colliders, licence, humanoid map → `vrm` JSON. Errors `vrm.*`, `spring.data`.
 - **FBX/glTF/DAE** — `native/character_import.cpp`: `load()` (Assimp, `LocalIO` confined by `DependencyScope`, pivots/animations off, FBX unit/axis metadata), `collect()` (armature moving most distinct vertices; other meshes rebound if ≥90 % names match, else dropped), `analyse()` → `SkeletonView` → `classifyBones`/`guessHumanoid`. `convertCharacter`: `resolveRequest` (names → indices, `checkBoneMap`, jiggle checks), frame from assigned hips/head/arms/thighs, height outside 0.3–3 m → 1.6 m, probe bone order kept, assigned bones get MMD names (chest → `上半身2` without middle spine), others keep source names (`_src`, ` #n`; `sourceNames`), viseme/blink group morphs, ≤128 materials, textures via `TextureResolver` (`Reach::Confined`), `springBones()` JSON. Limits 4096 bones, 4 M triangles, ≥15 usable bones.
-- **Textures** — `normalizeTexture` (`assets.cpp`): stb_image (DDS: WIC / Linux `dds.cpp`), `alpha` = any texel <255, edges >4096 downscaled (warning), re-encoded PNG → `textures/<sha256(png)>.png`. PMX/PMD paths: `resolveTexture` with `Reach::Local` (2.2 reach; denied or root-relative refused); toon fallback `<model folder>/../../Data/<name>`. Texture problems are **warnings**.
+- **Textures** — `normalizeTexture` (`assets.cpp`): stb_image (DDS: WIC / Linux `dds.cpp`), `alpha` = any texel <255, edges >4096 downscaled (note `Large texture … was scaled down …`), with the `fullTextures` option only edges >16384 (others noted `Large texture … was kept at full size …`), re-encoded PNG → `textures/<sha256(png)>.png`. PMX/PMD paths: `resolveTexture` with `Reach::Local` (2.2 reach; denied or root-relative refused); toon fallback `<model folder>/../../Data/<name>`. Texture problems are **warnings**.
 - **Names** — engine paths: `readableName` (ICU `Any-Latin; Latin-ASCII`, static ICU on Linux via `scripts/build-icu.py`) and `materialPath` (CJK terms → `mmd/<id16>/<slug>_<slot+1>`), `native/naming.cpp`; morph IDs: SCMI `flexNames` + `englishMorph` (`mmd_names.hpp`); foreign bone names: `sanitizeBoneName`/`parseBoneName` (`humanoid_map.cpp`). `names.lua` translations are display-only.
 - **Terms** — `inspectModelNotes` (`model_notes.cpp`): embedded texts + ≤8 readmes; Lua saves `terms/<id>.json`; not identity.
 
@@ -170,10 +172,10 @@ Model-reading modes call `guardDependencies()` (dependency denylist = `FilePolic
 
 1. Read source; VRM → `convertVrm` (`vrm.sourceSha256`); converted character → its PMX (`conversion.sourceSha256` = source file hash, `conversion.generator`).
 2. `parse`; append converter warnings; `SpringSetup::fromManifest`; `conversionBoneMap`.
-3. Manifest = `Model::info()` (name, counts, warnings, morphs, bounds, morphInfo, boneList, materials minus `path`) + `version:2`, `vrm`|`conversion`, `sourceHash`=sha256(PMX), `textures[{base,sphere,toon,alpha}]`.
+3. Manifest = `Model::info()` (name, counts, warnings, morphs, bounds, morphInfo, boneList, materials minus `path`) + `version:2`, `vrm`|`conversion`, `sourceHash`=sha256(PMX), `textures[{base,sphere,toon,alpha}]`, and `fullTextures:true` only when the option kept a texture past 4096 (a model whose textures fit keeps its default identity; `loadAsset` refuses any other value).
 4. **Asset id** = sha256(compact `manifest.dump()`) while `manifest.id` = `sourceHash`; then `manifest.id = assetId`. `loadAsset` re-derives it the same way.
 5. Writes: `model.bin` → `prepareSourceMaterials` → `sources.local.json[id]={source,options}` (unreadable registry renamed `.damaged-<UTC>` → `registryBackup`) → `prepareModelFit` → `manifest.json` last. Exceptions remove a fresh asset's files.
-6. `prepareSourceMaterials`: per material `textures/<hash>.vtf` (v7.2 RGBA8888, full mip chain, 0x2000 flag with alpha) + VMT `materials/<materialPath>.vmt` (VertexLitGeneric, `$basetexture mmd/t/<hash16>`, `$alphatest 1`, `$alphatestreference .5`, `$nocull` = two-sided, SCMI phong/lightwarp/rim with `mmdhl/scmi/*`), streamed into `assets/<id>/materials-v5.gma`.
+6. `prepareSourceMaterials`: per material `textures/<hash>.vtf` (v7.2 RGBA8888, full mip chain, 0x2000 flag with alpha) + VMT `materials/<materialPath>.vmt` (VertexLitGeneric, `$basetexture mmd/t/<hash16>`, `$alphatest 1`, `$alphatestreference .5`, `$nocull` = two-sided, SCMI phong/lightwarp/rim with `mmdhl/scmi/*`), streamed into `assets/<id>/materials-v5.gma`. VTFs are scaled to 4096 (caches from before 2.2 hold larger PNGs); in a `fullTextures` asset a PNG past 4096 (IHDR read) keeps its size (≤16384) as `textures/<hash>.full.vtf` at `$basetexture mmd/tf/<hash16>`, so it never meets an older cache's 4096 copy of the same image. Peers build the same bytes from the manifest; a 2.3.0 peer scales, mismatches and downloads the package.
 
 `loadAsset` (both realms): version ∈ {1,2}; identity, `model.bin` and PNG hashes verified; conversion map validated; alpha classified at load (`translucentTexture`, `alphaCoverage`, `cutoutTriangles`, `dynamicCutout`, soft alpha `softTriangles`/`softCoverage` via `cutout.hpp`; none of it in the manifest, `AssetInfo` adds `softTriangles` per material); rebuilds a missing GMA; `prepareModelFit`. Runtime: `native_render.lua` draws the mounted VMTs; the legacy backend reads `textures/*.png`; `materials.lua` only adapts Entity material/bodygroup APIs over `rig.materials` and mounts packages.
 
@@ -200,6 +202,7 @@ GMA (GMAD v3): `models/mmd/<key16>/<readableName(name,28)>.mdl` (`carrierFiles` 
 |---|---|---|---|
 | Asset id | sha256(manifest JSON, `id`=`sourceHash`) | `assets.cpp` | everything keyed by id |
 | Manifest `version` | writes 2, loads 1–2 | `assets.cpp` | in identity |
+| Manifest `fullTextures` | `true` only when the option kept a texture past 4096 | `assets.cpp` | in identity; selects `.full.vtf` / `mmd/tf/` derivatives |
 | `CharacterConverterGenerator` | 1 | `character_import.hpp` | in `conversion` → converted ids |
 | `RigVersion` / `RigGenerator` / `RigGeneratorMinLoadable` | 3 / 31 / 30 | `rig.hpp`; caps; `actors.lua` `IsLoadableRig`/`IsCurrentRig`/`NewerActor` | format; refit + new keys; oldest loadable carrier (2.2 saves, dupes, NPCs) |
 | `shapeAtlasHash()` | sha256(`ShapeAtlas`) | `fitter.cpp` | must equal for **every** carrier in `rigFromManifest` |
@@ -214,7 +217,7 @@ GMA (GMAD v3): `models/mmd/<key16>/<readableName(name,28)>.mdl` (`carrierFiles` 
 | Path (cache-relative unless noted) | Content | Writer → reader |
 |---|---|---|
 | `assets/<id>/manifest.json`, `model.bin`, `materials-v5.gma` | manifest (§6), PMX/PMD bytes, VMT+VTF package | worker / sharing / Workshop → `loadAsset`, `library.Refresh`, mounts |
-| `textures/<sha256>.png`, `.vtf`; `*.share2` | shared PNGs, VTF derivatives, packed transfer copies | `normalizeTexture`, `prepareSourceMaterials`, `packSharedFile` |
+| `textures/<sha256>.png`, `.vtf`, `.full.vtf`; `*.share2` | shared PNGs, VTF derivatives (`.full.vtf`: kept past 4096 for a `fullTextures` asset), packed transfer copies | `normalizeTexture`, `prepareSourceMaterials`, `packSharedFile` |
 | `fits/g31-<atlas16>-<id>.json` | default fit | `prepareModelFit` (worker and game) |
 | `rigs/<key32>/carrier.gma`, `rig.json` | carrier, rig manifest | `packageCarrier` (server) / sharing → mounts, persistence |
 | `sources.local.json` | `{id:{source,options}}`, never shared | `importAsset` → `Reload`, library |

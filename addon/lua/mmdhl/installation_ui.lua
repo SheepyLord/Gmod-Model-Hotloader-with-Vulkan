@@ -378,12 +378,14 @@ local function notifyUpdate()
 end
 -- For a feature whose native function this binary lacks (other features call this, with
 -- an already localized name): a small dialog per feature. Its button opens the update
--- window, or the installation window while no newer release is known.
+-- window, or the installation window while no newer release is known. Without a release
+-- (a feature of the next one, whose label is not known yet), the text names none.
 local needed={}
 function M.ShowNativeUpdateNeeded(feature,release)
  local key=tostring(feature)
  if IsValid(needed[key]) and needed[key]:IsVisible() then needed[key]:MakePopup() return needed[key] end
- needed[key]=Derma_Query(L('install.update.needed',{feature=key,release=tostring(release or L'install.unknown_version')}),L'install.update.needed_title',L'install.update.button.show',function() M.OpenNativeUpdate() end,L'common.close')
+ local text=release and L('install.update.needed',{feature=key,release=tostring(release)}) or L('install.update.needed_newer',{feature=key})
+ needed[key]=Derma_Query(text,L'install.update.needed_title',L'install.update.button.show',function() M.OpenNativeUpdate() end,L'common.close')
  return needed[key]
 end
 hook.Add('MMDHL.InstallationChanged','MMDHL.InstallationNotice',notify)

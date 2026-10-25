@@ -198,7 +198,7 @@ messages, ConVars and DATA files have an owner column in §6–§8.
 - `ui` (CL). The `MMDHLLibrary` panel (`SetMode`, `SelectAsset`, `Place`, `Edit*`,
   `DeleteSelected`, `ExportSelected`), `Open`, `mmdhl.UI` helpers, Utilities pages.
 - `library` (CL). `library.Refresh/Update/Delete/StartImport/BrowseImport/ReloadCharacter`,
-  the failure UI (`ShowImportFailure`, `ImportCause/Stage/Hint`, `ExplainFit`) and
+  `CharacterImportOptions` (every character job's options), the failure UI (`ShowImportFailure`, `ImportCause/Stage/Hint`, `ExplainFit`) and
   `RequestSpawn`. nat: Browse, BeginImport, PollJob, CancelJob, Reload, PropReload,
   DeleteAssets.
 - `menu` (CL, loaded before the gate). The creation tab.
@@ -318,6 +318,7 @@ Flags: A archived, U userinfo. Help texts are English.
 | Sleep (secondary_backend) | `secondary_{sleep,sleep_linear,sleep_angular,sleep_seconds,wake_drift,wait_ms}` = 1, .5, .35, 1.5, .02, 0 |
 | Shortcuts (physics_reset) | `reset_all_key` 0, `toggle_physics_key` 0; `last_physics_accuracy` 10 |
 | Names, terms | `translate_names` 1, `translate_new_imports` 1, `translate_notice_seen` 0; `terms_warning_import` 1, `terms_warning_export` 1 |
+| Character imports (library) | `import_full_textures` 0 (keep textures past 4096 at full size; turns itself off on a binary module without `GetCapabilities().fullTextures`) |
 | Tools, debug (installation_ui, performance, bone_mapper_ui, physics_editor) | `native_update_reminder` 1; `debug_overlay` 0, `debug_print` 0; `bonemap_autoskip` 0; `physics_editor_{advanced,mirror,camera,actual,coached}` |
 | Props (props/library, props/render) | `prop_import_{axis,collision,scale,yaw}` = auto, hull, 1, 0; `prop_spawn_frozen` 0; `prop_specular` 1 |
 | Migration markers (first_person, settings) | `first_person_body` 2 (forced), `secondary_collision`, `collision_settings_version`, `first_person_default_version` |

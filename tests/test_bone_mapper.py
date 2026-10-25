@@ -340,8 +340,9 @@ LIBRARY = (ROOT / 'addon/lua/mmdhl/library.lua').read_text(encoding='utf-8')
 lua.execute(r'''
 CLIENT=true SERVER=false
 Color=function(r,g,b,a) return {r=r,g=g,b=b,a=a or 255} end
-AUTOSKIP=false
-CreateClientConVar=function() return {GetBool=function() return AUTOSKIP end} end
+AUTOSKIP=false FULL_TEXTURES=false
+CreateClientConVar=function(name) return {GetBool=function() if name=='mmdhl_import_full_textures' then return FULL_TEXTURES end return AUTOSKIP end} end
+cvars={AddChangeCallback=function() end} RunConsoleCommand=function() end
 NET={} net={Receive=function(name,fn) NET[name]=fn end}
 TIMERS={} timer={Simple=function(_,fn) TIMERS[#TIMERS+1]=fn end,Create=function() end,Remove=function() end}
 function RUN_TIMERS() local list=TIMERS TIMERS={} for _,fn in ipairs(list) do fn() end end
@@ -361,6 +362,9 @@ mmdhl.native={
 mmdhl.library={entries={}}
 ''')
 lua.execute('local native,L=mmdhl.native,mmdhl.L local library=mmdhl.library ' + definition(lua, LIBRARY, 'function library.StartImport'))
+# The character import options (full-size textures) and their ConVar, the block before StartImport.
+IMPORT_OPTIONS = LIBRARY[LIBRARY.index('-- Character imports may keep textures'):LIBRARY.index('-- kind is nil for characters')]
+lua.execute('local native,L=mmdhl.native,mmdhl.L local library=mmdhl.library ' + IMPORT_OPTIONS)
 lua.execute(UI)
 lua.execute(r'''
 DISK={}
@@ -412,6 +416,16 @@ library.job=nil
 -- ...but a guess still opens the window.
 local guess=PROBE(false) guess.sourceSha256=string.rep('d',64) guess.skeleton.signature=string.rep('d',64)
 assert(BM.OnJobStatus({state='complete',kind='bone_map',source='C:/m/guess.fbx',probe=guess})) assert(#TIMERS==1) RUN_TIMERS()
+-- Full-size textures: the probe and the converted import carry the player's choice, once
+-- the binary module keeps them (GetCapabilities().fullTextures); an older one gets neither.
+library.job=nil FULL_TEXTURES=true before=#CALLS
+assert(BM.Probe('C:/m/old.fbx') and CALLS[#CALLS].options.kind=='character_probe' and CALLS[#CALLS].options.fullTextures==nil)
+local capabilities=mmdhl.native.GetCapabilities
+mmdhl.native.GetCapabilities=function() return util.TableToJSON({characterImport={version=1,probeVersion=1,requestVersion=1,formats={'fbx','glb','gltf','dae'}},fullTextures=16384}) end
+library.job=nil assert(BM.Probe('C:/m/full.fbx') and CALLS[#CALLS].options.kind=='character_probe' and CALLS[#CALLS].options.fullTextures==true)
+library.job=nil assert(BM.OnJobStatus({state='complete',kind='bone_map',source='C:/m/full.fbx',filename='full.fbx',probe=PROBE(true)}))
+assert(CALLS[#CALLS].options.kind=='character' and CALLS[#CALLS].options.boneMap[VB..'Pelvis']=='Hips' and CALLS[#CALLS].options.fullTextures==true and #CALLS==before+3)
+library.job=nil FULL_TEXTURES=false mmdhl.native.GetCapabilities=capabilities
 AUTOSKIP=false
 -- The public entry: a probe status opens the convert window; fit mode needs the newer native.
 assert(mmdhl.OpenBoneMapper({probe={probe=PROBE(true),source='C:/m/api.fbx',filename='api.fbx'}}) and shown[#shown].state.source=='C:/m/api.fbx')
