@@ -105,7 +105,7 @@ int main(){try{
  {
   auto id=std::string(64,'a'),rig=std::string(32,'b');
   check(packageInstallLimit("assets/"+id+"/manifest.json")==64ull<<20&&packageInstallLimit("assets/"+id+"/model.bin")==1ull<<30,"model file limits");
-  check(packageInstallLimit("textures/"+id+".png")==256ull<<20&&packageInstallLimit("static/assets/"+id+".gmdl")==256ull<<20,"texture and prop limits");
+  check(packageInstallLimit("textures/"+id+".png")==1ull<<30&&packageInstallLimit("static/assets/"+id+".gmdl")==2ull<<30,"texture and prop limits (kept at full size)");
   for(auto path:{"assets/"+id+"/materials-v5.gma","rigs/"+rig+"/rig.json","textures/"+std::string(64,'A')+".png","assets/"+id+"/../model.bin"})check(packageInstallLimit(path)==0,"paths installers refuse");
  }
  // They also refuse a file that inflates more than PackageExpansionLimit times its packet

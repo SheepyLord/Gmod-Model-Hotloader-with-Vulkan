@@ -185,13 +185,13 @@ function library.StartError(err)
  return tostring(err or L'library.import.start_failed')
 end
 -- Character imports may keep textures larger than 4096 pixels at full size: the player's
--- choice, when the binary module can (GetCapabilities().fullTextures, the largest edge it keeps).
+-- choice, when the binary module can (2.3.1: GetCapabilities().fullTextures, the largest edge it keeps).
 local fullTextures=CreateClientConVar('mmdhl_import_full_textures','0',true,false,'Keep textures larger than 4096 pixels at full size when importing character models (more memory, slower loading)',0,1)
 function library.FullTexturesEdge()
  local caps=isfunction(native.GetCapabilities) and mmdhl.Decode(native.GetCapabilities())
  return istable(caps) and isnumber(caps.fullTextures) and caps.fullTextures or nil
 end
-local function needsUpdate() if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'library.full_textures.feature') end end
+local function needsUpdate() if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'library.full_textures.feature','2.3.1') end end
 -- The options of a character import job: its own (kind, the bone window's request) and the
 -- player's import settings; '{}' without any, as before. A binary module that cannot keep
 -- full-size textures imports as before, and the player hears why once.

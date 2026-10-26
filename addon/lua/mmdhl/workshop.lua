@@ -40,8 +40,9 @@ local function split(key) return key:match('^(%a+):(%x+)$') end
 local function fileLimit(path)
  local id,name=path:match('^assets/(%x+)/([%w%.]+)$')
  if hex(id,64) then return name=='manifest.json' and 64*1048576 or name=='model.bin' and 1073741824 or nil end
- if hex(path:match('^textures/(%x+)%.png$'),64) then return 256*1048576 end
- if hex(path:match('^static/assets/(%x+)%.gmdl$'),64) then return 268435456 end
+ -- As native/packages.cpp: textures and props kept at full size (2.3.1) are larger.
+ if hex(path:match('^textures/(%x+)%.png$'),64) then return 1073741824 end
+ if hex(path:match('^static/assets/(%x+)%.gmdl$'),64) then return 2147483648 end
 end
 -- A package comes from any addon; nothing in it is trusted. Returns the package or nil and why.
 function W.ValidatePackage(id,raw)

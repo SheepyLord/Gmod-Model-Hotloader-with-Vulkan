@@ -320,7 +320,7 @@ Flags: A archived, U userinfo. Help texts are English.
 | Names, terms | `translate_names` 1, `translate_new_imports` 1, `translate_notice_seen` 0; `terms_warning_import` 1, `terms_warning_export` 1 |
 | Character imports (library) | `import_full_textures` 0 (keep textures past 4096 at full size; turns itself off on a binary module without `GetCapabilities().fullTextures`) |
 | Tools, debug (installation_ui, performance, bone_mapper_ui, physics_editor) | `native_update_reminder` 1; `debug_overlay` 0, `debug_print` 0; `bonemap_autoskip` 0; `physics_editor_{advanced,mirror,camera,actual,coached}` |
-| Props (props/library, props/render) | `prop_import_{axis,collision,scale,yaw}` = auto, hull, 1, 0; `prop_spawn_frozen` 0; `prop_specular` 1 |
+| Props (props/library, props/render) | `prop_import_{axis,collision,scale,yaw,full_textures}` = auto, hull, 1, 0, 0; `prop_spawn_frozen` 0; `prop_specular` 1 |
 | Migration markers (first_person, settings) | `first_person_body` 2 (forced), `secondary_collision`, `collision_settings_version`, `first_person_default_version` |
 
 **CL, archived + userinfo**
@@ -331,7 +331,8 @@ Flags: A archived, U userinfo. Help texts are English.
 **SV, archived**
 - carrier: `native_carrier` 1 (0 = legacy backend); `backend_version` 0 (migration marker).
 - props/server: `prop_max_{materials,package_mb,texture_dimension,expanded_mb}` = 128, 256,
-  4096, 1024. These can only be lowered (max = default).
+  4096, 1024 (2.3.0's limits). Maxima 128, 2048, 16384, 4096: what the binary module accepts
+  from props imported with `full_textures` (2.3.1).
 
 **SH, archived + replicated** (physics_editor)
 - `physics_editor`: 1 on a dedicated server, else 2 (0 nobody, 1 admins, 2 editors).

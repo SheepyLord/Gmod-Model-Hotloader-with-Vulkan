@@ -39,4 +39,21 @@ void materialProcessingTests(){
     auto kept=makeTexture(atlasPNG,16);check(kept.width==16&&kept.height==16&&!kept.sourceWidth,"a texture within the limit was scaled");
     auto noted=fixture();noted.manifest["warnings"]=Json::array();addTexture(noted,wide,"wide.png");addTexture(noted,wide,"wide.png");
     check(noted.manifest["warnings"].size()==1&&noted.manifest["warnings"][0].get<std::string>().starts_with("Large texture wide.png (32 x 8) was scaled down to 16 x 4"),"scaled texture note missing or repeated");
+    // full_textures keeps textures up to 16384 (fullTextureLimits): a 4100 x 8 image is kept and
+    // noted, its alpha analysed, and the bundle decodes with the budgets every game module uses,
+    // not with 2.3.0's.
+    check(parseOptions(Json::object()).limits.textureDimension==4096&&parseOptions({{"full_textures",false}}).limits.textureDimension==4096,"textures past 4096 kept without the option");
+    auto full=parseOptions({{"full_textures",true}}).limits;
+    check(full.textureDimension==16384&&full.packageBytes==fullTextureLimits().packageBytes&&full.expandedBytes==fullTextureLimits().expandedBytes,"full_textures does not raise the texture limit and budgets");
+    rejects([]{parseOptions({{"full_textures","yes"}});},"a texture size option that is not a boolean accepted");
+    Bytes tga(18,0);tga[2]=2;tga[12]=uint8_t(4100&255);tga[13]=uint8_t(4100>>8);tga[14]=8;tga[16]=32;tga[17]=0x28;
+    for(int i=0;i<4100*8;i++){tga.push_back(uint8_t(i*7));tga.push_back(uint8_t(i*13));tga.push_back(uint8_t(i*29));tga.push_back(i%5?255:0);}
+    auto shrunk=makeTexture(tga,4096);check(shrunk.width==4096&&shrunk.height==8&&shrunk.sourceWidth==4100,"a texture past 4096 was not scaled down by default");
+    auto large=makeTexture(tga,full.textureDimension);check(large.width==4100&&large.height==8&&!large.sourceWidth,"full_textures scaled a texture within 16384");
+    auto big=fixture();big.manifest["format"]="pmx";big.manifest["warnings"]=Json::array();addTexture(big,large,"wide.tga");big.manifest["materials"][0]["base_texture"]=large.hash;
+    for(auto& v:big.vertices){v.u=v.pos.x<0?0.f:1.f;v.v=v.pos.y<0?.05f:.95f;}
+    check(big.manifest["warnings"].size()==1&&big.manifest["warnings"][0]=="Large texture wide.tga (4100 x 8) was kept at full size; memory use and loading time are higher.","a texture kept at full size is not noted");
+    analyzeMaterials(big);check(big.manifest["material_processing_version"]==2,"the alpha of a texture kept at full size was not analysed");
+    auto bundle=encode(big);rejects([&]{decode(bundle);},"2.3.0's limits accepted a texture past 4096");
+    auto loaded=decode(bundle,fullTextureLimits());check(loaded.textures.size()==1&&loaded.textures[0].width==4100&&loaded.id==sha256(bundle),"a bundle with a texture kept at full size does not decode with fullTextureLimits()");
 }

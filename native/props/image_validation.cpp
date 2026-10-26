@@ -2,7 +2,8 @@
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
-#define STBI_MAX_DIMENSIONS 4096
+// fullTextureLimits(): props imported with full_textures keep textures up to 16384.
+#define STBI_MAX_DIMENSIONS 16384
 #include <stb_image.h>
 namespace props {
 void validatePNG(const Texture& t) {

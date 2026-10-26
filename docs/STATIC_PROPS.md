@@ -122,11 +122,13 @@ Everything is under `garrysmod/data/mmd_hotloader/static/`:
 | `library/` | Names, folders, favorites and last size |
 | `sources.local.json` | Private absolute source paths for Reimport; never shared |
 
-Servers record approvals in `approved.json` under `props`. They limit uploads with these convars:
-- `mmdhl_prop_max_package_mb` (256)
-- `mmdhl_prop_max_expanded_mb` (1024)
-- `mmdhl_prop_max_texture_dimension` (4096)
+Servers record approvals in `approved.json` under `props`. They limit uploads with these convars (default, and the most they may be raised to since 2.3.1):
+- `mmdhl_prop_max_package_mb` (256, up to 2048)
+- `mmdhl_prop_max_expanded_mb` (1024, up to 4096)
+- `mmdhl_prop_max_texture_dimension` (4096, up to 16384)
 - `mmdhl_prop_max_materials` (128)
+
+Imports scale textures larger than 4096 pixels down to 4096. With **Keep full texture resolution (no 4096 limit)** in the Import options (ConVar `mmdhl_prop_import_full_textures`, binary module 2.3.1 or later) they keep their size up to 16384, and the prop may take up to 2 GB; older binary modules cannot load such a prop, and servers accept it from players only after the convars above are raised.
 
 ## Console
 

@@ -78,7 +78,7 @@ flowchart TD
 | File | Role / key symbols |
 |---|---|
 | `props/core.hpp/.cpp` | types (`Vertex` 48 B `static_assert`, `Hull`, `Texture`, `Asset`, `Options`, `Limits`); `encode/decode/validate`, `saveAsset/loadAsset`, `parseHulls`, `bundleManifest` (header only), `deleteBundles` (texture refcount GC), `parseOptions`, `sha256`, `writeAtomic` (tmp+rename; Win retries). `props::Protocol=2` unused |
-| `props/import.cpp` | `importModel` (dispatch by extension), assimp via `UnicodeIO` IOSystem (`DependencyScope::Reach::Local`), `makeTexture` (stb ≤16384², scaled to 4096, PNG level 1, SHA-256), `finishImport` |
+| `props/import.cpp` | `importModel` (dispatch by extension), assimp via `UnicodeIO` IOSystem (`DependencyScope::Reach::Local`), `makeTexture` (stb ≤16384², scaled to `Limits::textureDimension`: 4096, or 16384 with option `full_textures`; PNG level 1, SHA-256), `addTexture` (note per scaled texture, or `… was kept at full size …` past 4096), `finishImport` |
 | `props/pmx.cpp` | `importPMX`: own PMX 2.0/2.1 reader (not nanoem); geometry+materials only; tangents from UVs |
 | `props/blend.cpp` | `listBlendObjects`, `importBlend`: SDNA-driven; headers `BLENDER_v###`/`-v###`/`BLENDER17-01v0500`, little-endian, gzip/zstd; pointers scoped per owning ID; mesh layouts 5.x attributes, 4.x CustomData, MPoly/MLoop, pre-2.63 MFace; ear-clip n-gons; full object transforms + parents; node walk to image textures; visibility. No modifiers/shape keys/poses/linked data |
 | `props/zstd_decode.cpp` | `zstdDecompress`: in-house RFC 8878 decoder (no dictionaries, bounded output) |
@@ -88,7 +88,7 @@ flowchart TD
 | `props/material_overrides.cpp` | `applyMaterialOverrides`: `<model file>.gmodel.json` v1 |
 | `props/texture_resolver.cpp` | as written → basename → `tex`/`textures` up to grandparent → alias index; ambiguity = error. **Shared with `character_import.cpp`** (`Reach::Confined`) |
 | `props/render_plan.cpp` | `prepareRenderPlan`, `renderVertex`, `propScale` (0.01–100), `validateHullScale`, `traceScaled` |
-| `props/trace.cpp`, `image_validation.cpp` | swept-OBB continuous SAT vs hulls; `validatePNG` full decode |
+| `props/trace.cpp`, `image_validation.cpp` | swept-OBB continuous SAT vs hulls; `validatePNG` full decode (≤16384) |
 | `props/network_path.hpp` | `networkPath()`, also used across the runtime |
 | `prop_bindings.cpp` | Lua `Prop*` (§2.5); per-asset `std::async` cache; `validatePropBundle` for shared-file commits |
 
@@ -149,7 +149,7 @@ thread) · `PropCatalog` (headers only). Client: `PropDelete`; `module.cpp` `Bro
 
 ## 3. Lua
 
-- **Import/library**: options from convars `mmdhl_prop_import_{axis,collision,scale,yaw}` (`P.ImportOptions`).
+- **Import/library**: options from convars `mmdhl_prop_import_{axis,collision,scale,yaw,full_textures}` (`P.ImportOptions`; `full_textures=true` only when `GetCapabilities().propFullTextures` exists, else one `ShowNativeUpdateNeeded(…,'2.3.1')` and the ConVar turns itself off).
   `.blend` runs `blend_scene` first (1 object → direct import, several → `mmdhl.ShowBlendPicker`).
   `Lib.OnImported`: reimport copies name/folder/favorite/spawn, hides old entry (`deleted`,`replacedBy`), SP
   sends `replace_asset` and deletes the old bundle 3 s later if unused. Delete → `remove_asset`, `PropDelete`,
@@ -191,14 +191,14 @@ thread) · `PropCatalog` (headers only). Client: `PropDelete`; `module.cpp` `Bro
 
 | What | Value (where) |
 |---|---|
-| Bundle / expanded bytes | 256 MiB / 1 GiB (`Limits`, `checkGeometryStorage`) |
+| Bundle / expanded bytes | 256 MiB / 1 GiB (`Limits`, `checkGeometryStorage`); 2 GiB / 4 GiB with `full_textures` (`fullTextureLimits()`) |
 | Materials / textures | 128 / 256 per bundle |
-| Textures | source ≤16384², file ≤1 GiB, stored ≤4096 |
+| Textures | source ≤16384², file ≤1 GiB, stored ≤4096 (≤16384 with `full_textures`) |
 | Triangles | warning only above 1M tris or 3M verts |
 | `.blend` raw and inflated | 3 GiB |
 | Hulls | 1–16, 4–64 points, closed, convex, volume >0, radius ≤32768 |
 | Prop scale / import scale | 0.01–100 (UI 0.05–20), scaled extent ≤32768 / (0,10000] |
-| Server convars (archive; max = default) | `mmdhl_prop_max_{package_mb 256, expanded_mb 1024, texture_dimension 4096, materials 128}` via `P.InLimits` |
+| Server convars (archive; default/max) | `mmdhl_prop_max_{package_mb 256/2048, expanded_mb 1024/4096, texture_dimension 4096/16384, materials 128/128}` via `P.InLimits` |
 | Rate limits | 1 pending spawn (client timeout 75 s / 600 s awaiting approval), tool 0.3 s, resize 0.25 s, attach 0.2 s |
 
 ## 5. Where to change X
@@ -236,15 +236,16 @@ thread) · `PropCatalog` (headers only). Client: `PropDelete`; `module.cpp` `Bro
 - Scale ranges must agree (Lua `P.MinScale/MaxScale`, native `propScale`: 0.01–100).
 - `sources.local.json` never leaves the machine; `textures/` is derived.
 - Game modules link only `mmdhl_props_core`. Net formats and `MMDHLProp` keys are cross-version contracts.
+- The game modules (`prepare`, `validatePropBundle`, `PropSharedManifest`, `StartAssetCheck`) and `deriveProp` decode with `fullTextureLimits()` (16384 textures, 2 GiB, 4 GiB), so a prop imported with `full_textures` loads anywhere 2.3.1 runs; 2.3.0 refuses it ("Invalid texture metadata"). Default imports keep `Limits{}` and their bytes. Lua caps follow: `sharing.lua` static transfers ≤2 GiB, `workshop.lua`/`packages.cpp` texture files ≤1 GiB and `.gmdl` ≤2 GiB.
 
 ## 7. Tests
 
 | Test | Covers |
 |---|---|
-| CTest `static_props` → `mmdhl_props_tests` (`tests/props/*`) | round trip/hash, corruption, limits, hulls, traces, render plan, delete GC, alpha, resolver, synthetic `.blend` + zstd fuzz (docs: 340 checks, unverified) |
-| CTest `import_errors` | static OBJ via worker, `derive` presets, picker crash kind `static` |
+| CTest `static_props` → `mmdhl_props_tests` (`tests/props/*`) | round trip/hash, corruption, limits, hulls, traces, render plan, delete GC, alpha, resolver, synthetic `.blend` + zstd fuzz (docs: 340 checks, unverified); `full_textures` (kept 4100×8, note, decode with/without `fullTextureLimits()`) |
+| CTest `import_errors` | static OBJ via worker, `derive` presets, picker crash kind `static`, a 4100×8 texture with and without `full_textures` and a preset of it |
 | CTest `character_import_worker` (`scripts/test-character-import.py`) | damaged `static/sources.local.json`; OBJ/BLEND refused as characters |
-| `python scripts/check-lua-tests.py` (lupa): `tests/test_prop_physics_options.py`, `test_input_hardening.py`, `test_map_cleanup.py`, `test_sharing_requests.py`, `test_server_installation_requests.py` | reach rules, surfaces, delete; NaN/NULL hardening; cleanup; approvals/manifests; module-missing answers |
+| `python scripts/check-lua-tests.py` (lupa): `tests/test_prop_physics_options.py`, `test_input_hardening.py`, `test_map_cleanup.py`, `test_sharing_requests.py`, `test_server_installation_requests.py`, `test_full_textures.py` | reach rules, surfaces, delete; NaN/NULL hardening; cleanup; approvals/manifests; module-missing answers; `full_textures` option and server limit maxima |
 | `scripts/test-props-multiplayer.py` (owned dedicated server + 2 clients, Windows `.ps1` session) | import, share-on-spawn, approval, server physics, remote draw and trace, non-admin spawn |
 
 Untested offline: `render.lua`, `editor.lua`, `tool.lua`, stool, CoACD runs. `tests/game/prop-impact.lua`

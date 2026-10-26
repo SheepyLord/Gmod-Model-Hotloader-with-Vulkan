@@ -123,7 +123,7 @@ sequenceDiagram
 ### 4.2 Native functions (`module.cpp`)
 | Function | Realm | Notes |
 |---|---|---|
-| `GetCapabilities()` | both | `characterImport` (formats), `boneMap`, `rigVersion`, `rigGenerator`, `rigGeneratorMin` (§8), `fullTextures` (16384, the largest edge the option keeps; absent in 2.3.0) |
+| `GetCapabilities()` | both | `characterImport` (formats), `boneMap`, `rigVersion`, `rigGenerator`, `rigGeneratorMin` (§8), `fullTextures` (16384, the largest edge the option keeps; absent in 2.3.0), `propFullTextures` (the same for static props, §05) |
 | `Browse([kind])`, `BeginImport(path, optionsJSON)`, `Reload(id[, settingsJSON])`, `PollJob`, `CancelJob` | client (server throws "Imports must be started locally…") | `Reload` replays `sources.local.json[id]`; the settings' `fullTextures` replaces the recorded one (2.3.0 ignores argument 2) |
 | `InspectModelNotes(path)`, `DeleteAssets(json)` | client | terms texts; deletion (`'[]'` at startup finishes pending) |
 | `RequestAsset`/`AssetInfo` | both | async `loadAsset`; `AssetInfo` = `Model::info()` |

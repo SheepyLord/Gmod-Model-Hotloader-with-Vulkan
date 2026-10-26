@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ModelHotloader VERSION 2.3.0 LANGUAGES C CXX)
+project(ModelHotloader VERSION 2.3.1 LANGUAGES C CXX)
 # win64: Windows x64. linux64: Linux x86-64 (Garry's Mod's x86-64 branch; the default
 # branch is 32-bit on Linux, which Model Hotloader does not support).
 if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -9,7 +9,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
 else()
   message(FATAL_ERROR "Model Hotloader requires Windows x64 or Linux x86-64")
 endif()
-set(MMDHL_RELEASE "2.3.0" CACHE STRING "Immutable native release label")
+set(MMDHL_RELEASE "2.3.1" CACHE STRING "Immutable native release label")
 execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE MMDHL_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT MMDHL_COMMIT)
   set(MMDHL_COMMIT "source")

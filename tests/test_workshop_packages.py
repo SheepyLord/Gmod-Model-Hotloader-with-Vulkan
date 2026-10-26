@@ -222,7 +222,7 @@ def entry(size, packed=None): return {'size': size, 'sha256': 'e' * 64, 'packed'
 
 
 other = 'f' * 64
-for path, limit in [(f'assets/{other}/manifest.json', 64 * MiB), (f'assets/{other}/model.bin', GiB), (f'textures/{other}.png', 256 * MiB), (f'static/assets/{other}.gmdl', 256 * MiB)]:
+for path, limit in [(f'assets/{other}/manifest.json', 64 * MiB), (f'assets/{other}/model.bin', GiB), (f'textures/{other}.png', GiB), (f'static/assets/{other}.gmdl', 2 * GiB)]:  # textures and props kept at full size (2.3.1)
     assert reason({path: entry(limit)}) is None, path + ' at its limit'
     assert reason({path: entry(limit + 1)}) == 'file too large for its kind', path + ' over its limit'
 for path in [f'assets/{other}/materials-v5.gma', f'rigs/{"d" * 32}/carrier.gma', 'lua/autorun/x.lua', f'textures/{other.upper()}.png', f'assets/{other}/model.bin/x', 'textures/abc.png']:

@@ -23,6 +23,11 @@ struct Limits {
     // high-resolution sculpts make valid character files well over 1 GiB.
     uint64_t blendBytes = 3ull << 30; // below zlib's 32-bit total_out
 };
+// The import option full_textures (parseOptions) keeps textures up to 16384 pixels on a side,
+// the largest texture Direct3D 9 creates, and such a prop needs these budgets. The game modules
+// decode every bundle with them, so it loads wherever this binary runs; servers still cap
+// uploads with their own limits (mmdhl_prop_max_*).
+inline Limits fullTextureLimits(){Limits l;l.textureDimension=16384;l.packageBytes=2ull<<30;l.expandedBytes=4ull<<30;return l;}
 struct Vec {
     float x{}, y{}, z{};
     Vec operator+(Vec b) const { return {x+b.x,y+b.y,z+b.z}; }

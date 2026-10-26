@@ -60,8 +60,8 @@ public:
     Assimp::IOStream* Open(const char* p,const char* mode="rb")override{try{if(std::strchr(mode,'w')||std::strchr(mode,'a'))return nullptr;return new MemoryStream(readFile(path(p)));}catch(...){return nullptr;}}
     void Close(Assimp::IOStream* s)override{delete s;}
 };
-// Images larger than the limit are scaled down to it, keeping the ratio: the
-// game shows no more detail. Linear filtering suits colour and normal maps alike.
+// Images larger than the limit (4096, or 16384 with full_textures) are scaled down to
+// it, keeping the ratio. Linear filtering suits colour and normal maps alike.
 static Texture encodeTexture(const uint8_t* rgba,int w,int h,uint32_t limit){
     stbi_write_png_compression_level=1; // Lossless fast encoding; pixels/alpha are unchanged.
     stbi_write_force_png_filter=1; // Sub filter avoids five full-image filter trials.
@@ -95,6 +95,8 @@ Texture makeMaskedTexture(std::span<const uint8_t> base,std::span<const uint8_t>
 }
 void addTexture(Asset& a,Texture t,const std::string& name){for(auto& e:a.textures)if(e.hash==t.hash)return;
     if(t.sourceWidth)a.manifest["warnings"].push_back("Large texture "+(name.empty()?std::string():name+" ")+"("+std::to_string(t.sourceWidth)+" x "+std::to_string(t.sourceHeight)+") was scaled down to "+std::to_string(t.width)+" x "+std::to_string(t.height)+"; the game shows no more detail than that.");
+    // Only with full_textures: other imports scale every texture to 4096.
+    else if(std::max(t.width,t.height)>Limits{}.textureDimension)a.manifest["warnings"].push_back("Large texture "+(name.empty()?std::string():name+" ")+"("+std::to_string(t.width)+" x "+std::to_string(t.height)+") was kept at full size; memory use and loading time are higher.");
     a.textures.push_back(std::move(t));}
 static Json material(){return {{"alpha_explicit",false},{"specular",{0,0,0}},{"shininess",1},{"name","Material"},{"color",{1,1,1,1}},{"two_sided",false},{"alpha_mode","opaque"},{"alpha_cutoff",0.5},{"base_texture",""},{"normal_texture",""}};}
 static Texture rawTexture(const aiTexture* t,uint32_t limit){

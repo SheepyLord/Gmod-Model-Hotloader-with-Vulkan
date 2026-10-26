@@ -5,8 +5,10 @@ local L=mmdhl.L
 local native=P.native
 local approved=mmdhl.approved
 approved.props=approved.props or {}
-for name,default in pairs({mmdhl_prop_max_materials=128,mmdhl_prop_max_package_mb=256,mmdhl_prop_max_texture_dimension=4096,mmdhl_prop_max_expanded_mb=1024}) do
- CreateConVar(name,tostring(default),FCVAR_ARCHIVE,'Largest static prop this server accepts from uploads (native hard caps still apply)',1,default)
+-- {default, maximum}: the defaults are 2.3.0's limits; an administrator may raise them up to what
+-- the binary module accepts from props imported with full-size textures (2.3.1).
+for name,limit in pairs({mmdhl_prop_max_materials={128,128},mmdhl_prop_max_package_mb={256,2048},mmdhl_prop_max_texture_dimension={4096,16384},mmdhl_prop_max_expanded_mb={1024,4096}}) do
+ CreateConVar(name,tostring(limit[1]),FCVAR_ARCHIVE,'Largest static prop this server accepts from uploads (native hard caps still apply)',1,limit[2])
 end
 -- Approval changes also drop the prepared download manifests (sharing.lua).
 local function save() file.CreateDir('mmd_hotloader') file.Write('mmd_hotloader/approved.json',util.TableToJSON(approved,true)) if mmdhl.InvalidateSharedManifests then mmdhl.InvalidateSharedManifests() end end

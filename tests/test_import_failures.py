@@ -420,7 +420,7 @@ pick('C:/m/hero.pmx') assert(CALLS[#CALLS].options=='{}')
 library.job=nil assert(library.ReloadCharacter(string.rep('a',64)) and RELOADS[#RELOADS].settings=='{}')
 -- On, with a binary module that cannot: imports as before and says why once; turned on, the setting goes off again.
 CONVARS.mmdhl_import_full_textures='1'
-library.job=nil pick('C:/m/hero.pmx') assert(CALLS[#CALLS].options=='{}' and #NOTICES==1 and NOTICES[1][1]==L'library.full_textures.feature' and NOTICES[1][2]==nil)
+library.job=nil pick('C:/m/hero.pmx') assert(CALLS[#CALLS].options=='{}' and #NOTICES==1 and NOTICES[1][1]==L'library.full_textures.feature' and NOTICES[1][2]=='2.3.1')
 library.job=nil pick('C:/m/hero.pmx') assert(#NOTICES==1,'the update notice repeats on every import')
 CALLBACKS.mmdhl_import_full_textures('mmdhl_import_full_textures','0','1') assert(CONVARS.mmdhl_import_full_textures=='0' and #NOTICES==2)
 -- With one that keeps them (GetCapabilities().fullTextures): the import and the reload ask for them.

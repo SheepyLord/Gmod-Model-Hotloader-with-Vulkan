@@ -5,7 +5,8 @@
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
-#define STBI_MAX_DIMENSIONS 4096
+// fullTextureLimits(): props imported with full_textures keep textures up to 16384.
+#define STBI_MAX_DIMENSIONS 16384
 #include <stb_image.h>
 
 namespace props {
@@ -57,7 +58,7 @@ struct AlphaImage {
     explicit AlphaImage(const Texture& texture){
         int channels=0;
         std::unique_ptr<stbi_uc,void(*)(void*)> rgba(stbi_load_from_memory(texture.png.data(),int(texture.png.size()),&width,&height,&channels,4),stbi_image_free);
-        if(!rgba||width<=0||height<=0||width>4096||height>4096)throw std::runtime_error("Cannot analyze normalized texture alpha");
+        if(!rgba||width<=0||height<=0||width>int(fullTextureLimits().textureDimension)||height>int(fullTextureLimits().textureDimension))throw std::runtime_error("Cannot analyze normalized texture alpha");
         alpha.resize(size_t(width)*height);for(size_t i=0;i<alpha.size();++i){alpha[i]=rgba.get()[i*4+3];if(alpha[i]<247)nonOpaque.push_back(uint32_t(i));}
     }
     bool cutoutEdge(int x,int y)const {

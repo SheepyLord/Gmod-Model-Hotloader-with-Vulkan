@@ -183,7 +183,7 @@ FUNCTION(PollInstallationProbe) {
  if(installationProbe.wait_for(std::chrono::seconds(0))!=std::future_status::ready){push(LUA,{{"pending",true}});return 1;}
  push(LUA,installationProbe.get());return 1;
 } END_FUNCTION
-FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"rigGeneratorMin",RigGeneratorMinLoadable},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform",MMDHL_PLATFORM},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}},{"characterImport",{{"version",1},{"probeVersion",1},{"requestVersion",1},{"formats",{"fbx","glb","gltf","dae"}}}},{"boneMap",{{"version",1},{"fit",true}}},{"fullTextures",FullTextureEdge}});return 1;} END_FUNCTION
+FUNCTION(GetCapabilities) {push(LUA,{{"api",ApiVersion},{"version",MMDHL_RELEASE},{"build",MMDHL_BUILD_ID},{"installApi",MMDHL_INSTALL_API},{"rigVersion",RigVersion},{"rigGenerator",RigGenerator},{"rigGeneratorMin",RigGeneratorMinLoadable},{"physicsEditor",PhysicsSchema},{"sharingVersion",2},{"workers",workerCount()},{"presentationClock","fixed60-interpolated"},{"bulletApiSIMD",false},{"secondaryBroadphaseDefault",secondaryBroadphaseDefault()},{"platform",MMDHL_PLATFORM},{"parser","nanoem"},{"physics","Bullet 3.25"},{"sharedProcessSnapshots",false},{"skinning",{"BDEF1","BDEF2","BDEF4","SDEF","QDEF"}},{"characterImport",{{"version",1},{"probeVersion",1},{"requestVersion",1},{"formats",{"fbx","glb","gltf","dae"}}}},{"boneMap",{{"version",1},{"fit",true}}},{"fullTextures",FullTextureEdge},{"propFullTextures",props::fullTextureLimits().textureDimension}});return 1;} END_FUNCTION
 FUNCTION(Browse) {auto kind=LUA->IsType(1,GarrysMod::Lua::Type::String)?stringArg(LUA,1):std::string();if(!kind.empty()&&kind!="static")throw std::runtime_error("Unknown import kind");LUA->PushNumber(double(launch(true,"",kind.empty()?Json::object():Json{{"kind",kind}})));return 1;} END_FUNCTION
 // Save a part preset of a cached static prop (materials and/or region cut).
 FUNCTION(PropDerive) {auto id=stringArg(LUA,1);if(!validId(id))throw std::runtime_error("Invalid prop ID");if(!fs::exists(context->cache/L"static"/L"assets"/wide(id+".gmdl")))throw std::runtime_error("The original prop is not in the local cache");auto options=json(LUA,2);options["kind"]="derive";options["parent"]=id;LUA->PushNumber(double(launch(false,"",options)));return 1;} END_FUNCTION
@@ -250,7 +250,7 @@ FUNCTION(StartAssetCheck) {
  auto cache=context->cache;auto handle=context->sequence++;
  context->assetChecks.emplace(handle,std::async(std::launch::async,[cache,kind,id]{
   if(kind=="character"){loadAsset(cache,id);return;}
-  auto bundle=props::decode(props::readFile(cache/L"static"/L"assets"/wide(id+".gmdl")));if(bundle.id!=id)throw std::runtime_error("Prop SHA-256 mismatch");}));
+  auto limits=props::fullTextureLimits();auto bundle=props::decode(props::readFile(cache/L"static"/L"assets"/wide(id+".gmdl"),limits.packageBytes),limits);if(bundle.id!=id)throw std::runtime_error("Prop SHA-256 mismatch");}));
  LUA->PushNumber(double(handle));return 1;
 } END_FUNCTION
 // false while the check runs, then true, or nil, why the files do not make up the model and "invalid".

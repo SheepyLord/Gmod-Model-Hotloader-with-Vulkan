@@ -197,7 +197,8 @@ props::Json deriveProp(const mmd::fs::path& cache,const props::Json& request,con
     PropProgress progress(status,presetName);
     props::Progress report{[&](const props::ProgressUpdate& event){progress.update(event);}};
     report("Reading the original prop",.05f);
-    auto a=props::loadAsset(root,parent);
+    // A preset of a prop imported with full_textures keeps its textures (fullTextureLimits).
+    auto a=props::loadAsset(root,parent,props::fullTextureLimits());
     // Material slots to leave out. util.TableToJSON writes Lua's whole numbers as 1.0.
     auto hiddenSlots=request.value("hidden",Json::array());if(!hiddenSlots.is_array())throw std::runtime_error("Invalid hidden materials");
     std::set<size_t> hidden;for(auto& v:hiddenSlots){auto slot=mmd::wholeNumber(v,0,65535);if(!slot)throw std::runtime_error("Invalid hidden material slot");hidden.insert(size_t(*slot));}
@@ -233,7 +234,7 @@ props::Json deriveProp(const mmd::fs::path& cache,const props::Json& request,con
     out.manifest["triangles"]=out.indices.size()/3;out.manifest["vertices"]=out.vertices.size();
     props::updateBounds(out);
     out.hulls.clear();props::makeCollision(out,request.value("collision",std::string("hull")),report);
-    auto id=props::saveAsset(root,out,report,props::Limits{});
+    auto id=props::saveAsset(root,out,report,props::fullTextureLimits());
     Json info={{"name",out.manifest["name"]},{"warnings",out.manifest.value("warnings",Json::array())},{"triangles",out.indices.size()/3},{"vertices",out.vertices.size()},{"materials",materials.size()},
         {"collision_hulls",out.hulls.size()},{"collision_method",out.manifest.value("collision_method",std::string("coacd"))},{"mins",out.manifest["mins"]},{"maxs",out.manifest["maxs"]},{"derived_from",parent},{"preset",out.manifest["preset"]}};
     return progress.complete({{"state","complete"},{"kind","static"},{"progress",1},{"stage","Preset saved"},{"asset",id},{"info",info}});

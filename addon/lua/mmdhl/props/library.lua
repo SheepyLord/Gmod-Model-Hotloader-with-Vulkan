@@ -145,6 +145,7 @@ local options={
  collision=CreateClientConVar('mmdhl_prop_import_collision','hull',true,false,'Static prop collision: hull (fast single hull) or balanced (multiple hulls)'),
  scale=CreateClientConVar('mmdhl_prop_import_scale','1',true,false,'Extra scale applied when importing static props',.01,100),
  yaw=CreateClientConVar('mmdhl_prop_import_yaw','0',true,false,'Turn static props when importing (degrees)',-180,180),
+ fullTextures=CreateClientConVar('mmdhl_prop_import_full_textures','0',true,false,'Keep textures larger than 4096 pixels at full size when importing static props (more memory, slower loading)',0,1),
 }
 CreateClientConVar('mmdhl_prop_spawn_frozen','0',true,false,'Freeze newly placed static props',0,1)
 -- Shared with the Static Prop tool (its ClientConVars collide, gravity and
@@ -160,13 +161,30 @@ function P.PlacementSurface()
  local surface=GetConVar('mmdhl_prop_physprop'):GetString()
  return P.SurfaceMaterialIds[surface] and surface or P.DefaultSurface
 end
+-- The largest texture edge a prop import keeps with full_textures (2.3.1), or nil.
+function P.FullTexturesEdge()
+ local caps=native and isfunction(native.GetCapabilities) and mmdhl.Decode(native.GetCapabilities())
+ return istable(caps) and isnumber(caps.propFullTextures) and caps.propFullTextures or nil
+end
+local function needsUpdate() if mmdhl.ShowNativeUpdateNeeded then mmdhl.ShowNativeUpdateNeeded(L'library.full_textures.feature','2.3.1') end end
+-- A binary module that cannot keep full-size textures imports as before, and the player hears why once.
 function P.ImportOptions()
  local axis=options.axis:GetString() if axis~='y_up' and axis~='z_up' then axis='auto' end
  local collision=options.collision:GetString()=='balanced' and 'balanced' or 'hull'
  local scale=math.Clamp(tonumber(options.scale:GetString()) or 1,.01,100)
  local yaw=math.Clamp(math.Round(tonumber(options.yaw:GetString()) or 0),-180,180)
- return {kind='static',axis=axis,collision=collision,scale=scale,rotation={0,yaw,0}}
+ local result={kind='static',axis=axis,collision=collision,scale=scale,rotation={0,yaw,0}}
+ if options.fullTextures:GetBool() then
+  if P.FullTexturesEdge() then result.full_textures=true
+  elseif not P.fullTexturesNoticed then P.fullTexturesNoticed=true needsUpdate() end
+ end
+ return result
 end
+-- Turned on with a binary module that cannot keep full-size textures: it stays off.
+cvars.AddChangeCallback('mmdhl_prop_import_full_textures',function(_,_,value)
+ if (tonumber(value) or 0)==0 or P.FullTexturesEdge() then return end
+ RunConsoleCommand('mmdhl_prop_import_full_textures','0') needsUpdate()
+end,'MMDHL.PropFullTextures')
 -- Called by the character library's import poll for completed prop jobs.
 function Lib.OnImported(status,previous)
  local id=status.asset

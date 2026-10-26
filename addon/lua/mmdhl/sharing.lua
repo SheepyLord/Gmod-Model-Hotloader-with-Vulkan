@@ -112,7 +112,7 @@ local function accept(p,token,manifest)
  manifest.files=files manifest.name=isstring(manifest.name) and manifest.name or manifest.asset:sub(1,12)
  if manifest.kind=='static' then
   local item=manifest.files[1]
-  if #manifest.files~=1 or not istable(item) or item.path~='static/assets/'..manifest.asset..'.gmdl' or item.sha256~=manifest.asset or not isnumber(item.size) or item.size<24 or item.size>268435456 or item.size%1~=0 or item.derive then return false,L'share.error.invalid_prop_manifest' end
+  if #manifest.files~=1 or not istable(item) or item.path~='static/assets/'..manifest.asset..'.gmdl' or item.sha256~=manifest.asset or not isnumber(item.size) or item.size<24 or item.size>2147483648 or item.size%1~=0 or item.derive then return false,L'share.error.invalid_prop_manifest' end
   if SERVER and item.size>GetConVar('mmdhl_prop_max_package_mb'):GetInt()*1048576 then return false,L'share.error.prop_too_large' end
   local state={token=token,manifest=manifest,index=1,completed=0,total=item.size,time=RealTime(),started=RealTime(),startClock=clock(),wireBytes=0,rawBytes=0,cachedBytes=0}
   incoming[key(p)]=state nextFile(p,state) return true

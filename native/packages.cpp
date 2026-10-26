@@ -1,5 +1,6 @@
 #include "packages.hpp"
 #include "props/network_path.hpp"
+#include "props/core.hpp"
 #include "sharing.hpp"
 #include "release.hpp"
 #ifdef _WIN32
@@ -101,7 +102,9 @@ uint64_t packageInstallLimit(const std::string& path){
  static const std::regex asset("assets/[a-f0-9]{64}/(manifest\\.json|model\\.bin)"),texture("textures/[a-f0-9]{64}\\.png"),prop("static/assets/[a-f0-9]{64}\\.gmdl");
  std::smatch match;
  if(std::regex_match(path,match,asset))return match[1]=="manifest.json"?64ull<<20:1ull<<30;
- if(std::regex_match(path,texture)||std::regex_match(path,prop))return 256ull<<20;
+ // Textures and props kept at full size (fullTextures, full_textures) are larger than 2.3.0 allowed.
+ if(std::regex_match(path,texture))return 1ull<<30;
+ if(std::regex_match(path,prop))return props::fullTextureLimits().packageBytes;
  return 0;
 }
 Json exportPackage(const fs::path& cache,const fs::path& gameRoot,const Json& spec,PackageProgress& progress){

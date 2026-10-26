@@ -32,8 +32,9 @@ uint64_t integer(Lua* l,int i,uint64_t maximum){double n=l->GetNumber(i);if(!std
 std::string id(Lua* l,int i){auto s=text(l,i);if(!props::validHash(s))throw std::runtime_error("Invalid prop ID");return s;}
 fs::path bundle(const std::string& asset){return state->root/L"assets"/props::wide(asset+".gmdl");}
 std::shared_ptr<Asset> prepare(const fs::path& root,const std::string& asset){
-    // Textures are content-addressed; skip rewriting a PNG the engine may be reading.
-    auto bytes=props::readFile(root/L"assets"/props::wide(asset+".gmdl"));auto a=std::make_shared<Asset>(props::decode(bytes));
+    // Textures are content-addressed; skip rewriting a PNG the engine may be reading. A prop
+    // imported with full_textures loads too (fullTextureLimits).
+    auto limits=props::fullTextureLimits();auto bytes=props::readFile(root/L"assets"/props::wide(asset+".gmdl"),limits.packageBytes);auto a=std::make_shared<Asset>(props::decode(bytes,limits));
     if(a->id!=asset)throw std::runtime_error("Prop SHA-256 mismatch");
     for(auto& t:a->textures){auto path=root/L"textures"/props::wide(t.hash+".png");std::error_code ec;if(!fs::is_regular_file(path,ec)||fs::file_size(path,ec)!=t.png.size())props::writeAtomic(path,t.png);}
     props::prepareRenderPlan(*a);return a;
@@ -121,7 +122,7 @@ LUA_FUNCTION(PropRelease){try{
     state->colliders.erase(asset);LUA->PushBool(true);return 1;
 }catch(const std::exception& e){return failure(LUA,e);}}
 LUA_FUNCTION(PropSharedManifest){try{
-    auto asset=id(LUA,1);auto a=get(asset);auto bytes=props::readFile(bundle(asset));
+    auto asset=id(LUA,1);auto a=get(asset);auto bytes=props::readFile(bundle(asset),props::fullTextureLimits().packageBytes);
     if(props::sha256(bytes)!=asset)throw std::runtime_error("Cached prop failed SHA-256 verification; import it again");
     std::string name=a?a->manifest.value("name",std::string("Imported prop")):std::string("Imported prop");
     pushJson(LUA,{{"version",1},{"kind","static"},{"asset",asset},{"name",name},{"size",bytes.size()},{"files",Json::array({{{"path","static/assets/"+asset+".gmdl"},{"size",bytes.size()},{"sha256",asset}}})}});return 1;
@@ -138,7 +139,7 @@ LUA_FUNCTION(PropDelete){try{
 bool isPropBundle(const std::string& relative){static const std::regex pattern("static/assets/[a-f0-9]{64}\\.gmdl");return std::regex_match(relative,pattern);}
 void validatePropBundle(const std::string& relative,std::span<const unsigned char> bytes){
     if(!isPropBundle(relative))return;
-    auto asset=relative.substr(14,64);auto a=props::decode(bytes);
+    auto asset=relative.substr(14,64);auto a=props::decode(bytes,props::fullTextureLimits());
     if(a.id!=asset)throw std::runtime_error("Shared prop does not match its content hash");
 }
 namespace {

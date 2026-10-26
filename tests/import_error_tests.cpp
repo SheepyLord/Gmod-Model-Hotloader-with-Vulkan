@@ -379,7 +379,21 @@ int main(int argc,char** argv){try{
   check(taken&&total==12*(slots-1)&&fewest<12,"worker: slots hidden as GLua floats (0.0, 1.0…) leave the presets; 41 CJK characters and 31 emoji are names within 60 characters");
   r=derive(L"long",std::string(61,'n'),"[]");check(r.status["state"]=="failed"&&has(r.status["error"],"60 characters"),"worker: a preset name over 60 characters is refused");
   r=derive(L"half","Bad","[0.5]");check(r.status["state"]=="failed","worker: a hidden slot that is no whole number is refused, not ignored");
-  r=derive(L"every","All","["+all+"]");check(r.status["state"]=="failed"&&has(r.status["error"],"keeps no geometry"),"worker: hiding every slot as GLua floats reaches the no-geometry guard");}
+  r=derive(L"every","All","["+all+"]");check(r.status["state"]=="failed"&&has(r.status["error"],"keeps no geometry"),"worker: hiding every slot as GLua floats reaches the no-geometry guard");
+  // ---- a static prop's texture past 4096: scaled by default, kept with full_textures, and a preset of that prop saves ----
+  auto wideProp=temp/L"wide-prop";fs::create_directories(wideProp);
+  {Bytes tga(18,0);tga[2]=2;tga[12]=uint8_t(4100&255);tga[13]=uint8_t(4100>>8);tga[14]=8;tga[16]=32;tga[17]=0x28;
+   for(int i=0;i<4100*8;i++){tga.push_back(uint8_t(i*7));tga.push_back(uint8_t(i*13));tga.push_back(uint8_t(i*29));tga.push_back(255);}writeAtomic(wideProp/L"wide.tga",tga);}
+  writeAtomic(wideProp/L"cube.mtl",bytes("newmtl Front\nKd 1 1 1\nmap_Kd wide.tga\n"));
+  writeAtomic(wideProp/L"cube.obj",bytes("mtllib cube.mtl\nv -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\n"
+   "usemtl Front\nf 1 2 3\nf 1 3 4\nf 5 7 6\nf 5 8 7\nf 1 5 6\nf 1 6 2\nf 2 6 7\nf 2 7 3\nf 3 7 8\nf 3 8 4\nf 4 8 5\nf 4 5 1\n"));
+  auto noted=[](const Json& s,const std::string& text){for(auto& w:s["info"].value("warnings",Json::array()))if(w.get<std::string>().starts_with(text))return true;return false;};
+  r=request(worker,temp/L"job-prop-default",wideProp/L"cube.obj",{{"kind","static"}});
+  check(r.status["state"]=="complete"&&noted(r.status,"Large texture wide.tga (4100 x 8) was scaled down to 4096 x 8"),"worker: a static prop's texture past 4096 is scaled down by default");
+  r=request(worker,temp/L"job-prop-full",wideProp/L"cube.obj",{{"kind","static"},{"full_textures",true}});auto wideParent=r.status.value("asset",std::string());
+  check(r.status["state"]=="complete"&&noted(r.status,"Large texture wide.tga (4100 x 8) was kept at full size"),"worker: full_textures keeps a static prop's texture at full size");
+  r=request(worker,temp/L"job-prop-preset",wideProp/L"cube.obj",{{"kind","derive"},{"parent",wideParent},{"name","Whole"},{"hidden",Json::array()},{"collision","hull"}});
+  check(r.status["state"]=="complete","worker: a preset of a prop kept at full size saves");}
  else std::cout<<"SKIP worker checks: pass the path of mmdhl_worker.exe\n";
  std::error_code ec;fs::remove_all(temp,ec);
  std::cout<<checks<<" import error checks passed\n";return 0;
