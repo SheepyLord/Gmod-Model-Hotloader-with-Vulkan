@@ -5,7 +5,9 @@ files, a module and runtime from two builds, a release without verification), an
 CheckInstallation skips require only when there is nothing to load (no module file for
 this realm, another platform). Warnings reach the console before require; when loading
 fails, the warnings that explain it become its problems (else the loader's error is the
-reason), and when the worker's self-test fails (CoACD in it), only its feature's do. Also the
+reason), and when the worker's self-test fails (CoACD in it), only its feature's do. With no
+runtime in bin/win64, the copy in lua/bin is checked, and the missing file is reported only
+when the module does not load that copy (the GMod native loader loads it first). Also the
 loaded-identity check (both 64-bit layouts, a dedicated server, a broken policy), Recheck,
 every approved release evaluating without issues (publish-native-release.py's evaluate()),
 that nothing of accepting unverified files is left in the addon, and all addon Lua syntax."""
@@ -79,7 +81,12 @@ for key in ('client','runtime','worker','coacd'):
         elif failure=='unreadable': files[path]='unreadable'
         elif failure=='truncate': files[path]['size']-=1
         else: files[path]['sha256']='0'*64
-        s,_=evaluate(files);assert features(s)==CLIENT_ON and not s.blocked and codes(s)==(['missing'] if failure=='missing' else ['unreadable'] if failure=='unreadable' else ['damaged_or_unrecognized']),(key,failure,codes(s))
+        s,_=evaluate(files)
+        if key=='runtime' and failure=='missing':
+            # The worker's copy in lua/bin is checked instead: another loader may load it (below).
+            assert features(s)==CLIENT_ON and codes(s)==[] and s.files.runtime.relative=='lua/bin/'+NAMES['runtime'] and s.files.runtime.missingAt=='bin/win64/'+NAMES['runtime'],codes(s)
+            continue
+        assert features(s)==CLIENT_ON and not s.blocked and codes(s)==(['missing'] if failure=='missing' else ['unreadable'] if failure=='unreadable' else ['damaged_or_unrecognized']),(key,failure,codes(s))
         v=s.issues[1];assert v.warning is True and v.feature==feature and v.component==key,(key,failure)
         relative=path.split('/',1)[1]
         if failure in ('missing','unreadable'):
@@ -89,6 +96,21 @@ for key in ('client','runtime','worker','coacd'):
         assert s.installed==(None if key=='client' else policy['recommended']),(key,failure)
 files=installed();files[COPY]['sha256']='0'*64
 s,_=evaluate(files);assert features(s)==CLIENT_ON and codes(s)==['damaged_or_unrecognized'] and s.issues[1].component=='workerRuntime' and s.issues[1].feature=='imports' and s.issues[1].warning
+# No runtime in bin/win64: the game may still load the copy in lua/bin, which the GMod native
+# loader loads before the module (its packages cannot write bin/win64). That copy is checked,
+# and the missing file waits for require (missingAt): CheckInstallation reports it unless the
+# loaded runtime is that copy. Without the copy too, both are missing now, as before.
+for server in (False,True):
+    files=installed(server);del files[RUNTIME]
+    s,_=evaluate(files,server=server);r=s.files.runtime
+    assert s.features.core and codes(s)==[] and r.relative=='lua/bin/'+NAMES['runtime'] and r.search=='MOD' and r.missingAt=='bin/win64/'+NAMES['runtime'] and s.installed==policy['recommended'],codes(s)
+    del files[COPY]
+    s,_=evaluate(files,server=server)
+    assert codes(s)==(['missing'] if server else ['missing','missing']) and s.files.runtime.relative=='bin/win64/'+NAMES['runtime'] and s.files.runtime.missingAt is None,codes(s)
+    assert s.issues[1].component=='runtime' and s.issues[1].cause and (server or s.issues[2].component=='workerRuntime')
+# A dedicated server keeps its own search (beside srcds_win64.exe, then bin/win64).
+files=installed(True,True);del files['BASE_PATH/'+NAMES['runtime']]
+s,_=evaluate(files,server=True,dedicated=True);assert codes(s)==['missing'] and s.files.runtime.missingAt is None,codes(s)
 # Another platform: no binary exists for it, so nothing is read; CheckInstallation keeps everything off (below).
 # Linux's default branch is 32-bit: only the x86-64 branch has binaries.
 for windows,linux,arch in ((False,False,'x64'),(True,False,'x86'),(True,False,'arm64'),(False,True,'x86')):
@@ -109,10 +131,13 @@ both[beside]='unreadable'
 s,_=evaluate(both,server=True,dedicated=True);assert features(s)==SERVER_ON and s.files.runtime.relative==name and codes(s)==['unreadable'] and s.issues[1].cause
 neither=installed(True,True);del neither[beside]
 s,_=evaluate(neither,server=True,dedicated=True);assert features(s)==SERVER_ON and s.files.runtime.relative==name and codes(s)==['missing'] and s.issues[1].cause
-# Clients and listen servers never take the runtime from beside the executable.
+# Clients and listen servers never take the runtime from beside the executable (with none in
+# bin/win64 they check the copy in lua/bin, see above; without it, bin/win64 is missing).
 for server in (False,True):
     beside_only=installed(server,True)
-    s,_=evaluate(beside_only,server=server);assert s.features.core and codes(s)==['missing'] and s.files.runtime.relative=='bin/win64/'+name
+    s,_=evaluate(beside_only,server=server);assert s.features.core and codes(s)==[] and s.files.runtime.relative=='lua/bin/'+name
+    del beside_only[COPY]
+    s,_=evaluate(beside_only,server=server);assert s.features.core and codes(s)[0]=='missing' and s.files.runtime.relative=='bin/win64/'+name
 old=deepcopy(release);old['release']='1.0.0';old['build']='old'
 for f in old['files'].values():f['sha256']='1'*64
 p=deepcopy(policy);p['releases']['1.0.0']=old
@@ -139,7 +164,9 @@ for broken in ({'schema':1},dict(policy,schema=2),dict(policy,recommended='0.0.0
     assert s.update is None and s.installed is None and s.expected is None and not s.unverified and CLIENT in reads and RUNTIME in reads and WORKER in reads
     assert s.files.client.actual.sha256==release['files']['client']['sha256'] and s.files.client.expected is None
 files=installed();del files[RUNTIME]
-s,_=evaluate(files,p={'schema':1});assert codes(s)==['policy_invalid','missing'] and s.issues[2].cause and s.features.core
+s,_=evaluate(files,p={'schema':1});assert codes(s)==['policy_invalid'] and s.files.runtime.missingAt=='bin/win64/'+name and s.features.core,codes(s)
+del files[COPY]
+s,_=evaluate(files,p={'schema':1});assert codes(s)==['policy_invalid','missing','missing'] and s.issues[2].cause and s.features.core,codes(s)
 future=deepcopy(old);future['release']='9.0.0';future['build']='future'
 p=deepcopy(policy);p['releases']['9.0.0']=future
 files=installed()
@@ -338,9 +365,18 @@ for key,field,value,same in [('runtime','path',game+'shadow\\'+release['files'][
     broken=deepcopy(layouts);broken[key][field]=value
     ok,message,interface=validator(convert(broken))
     assert ok is False and interface is same and message==L('install.error.loaded_module_mismatch' if key=='module' else 'install.error.loaded_runtime_mismatch'),(key,field)
+# The GMod native loader's layout: with no runtime in bin/win64 the check read the copy in lua/bin,
+# and the game loaded that file. With a runtime in bin/win64 too, the lua/bin one loaded is
+# another file than the one checked: a warning, as before.
+copy_only=installed();del copy_only[RUNTIME]
+lua.globals().TEST_STATUS,_=evaluate(copy_only)
+from_lua_bin=deepcopy(layouts);from_lua_bin['runtime']['path']=game.lower()+'garrysmod\\lua\\bin\\'+release['files']['runtime']['name']
+assert lua.execute('local status=TEST_STATUS\n'+part+'\nreturn identitiesMatch')(convert(from_lua_bin)) is True
+ok,message,interface=validator(convert(from_lua_bin))
+assert ok is False and interface is True and message==L('install.error.loaded_runtime_mismatch')
 print(f'PASS: {count} installation policy scenarios (warnings only: files this addon does not know, two builds, a broken policy, missing files, '
-      'where a dedicated server finds its runtime; every approved release without issues), twenty-one loaded-identity checks (both 64-bit layouts, '
-      'a dedicated server, a broken policy) and all addon Lua syntax')
+      'where a dedicated server finds its runtime, the copy in lua/bin; every approved release without issues), twenty-three loaded-identity checks '
+      '(both 64-bit layouts, the runtime loaded from lua/bin, a dedicated server, a broken policy) and all addon Lua syntax')
 
 # ---- CheckInstallation: the files are always tried ----
 HASHED="value={size=size,sha256=util.SHA256(bytes),path=search..'/'..path}"
@@ -487,6 +523,18 @@ assert issue(s,'missing')[0].warning is True and issue(s,'missing')[0].component
 lua_,g,M,ok=session(files,require_error='The specified module could not be found.');s=M.GetInstallationStatus()
 assert ok is False and 'require mmdhl' in events(g) and codes(s)==['missing','loader_failed'] and s.issues[1].warning is None
 assert same(M,M.loadError,L('install.error.file_missing',path='bin/win64/'+NAMES['runtime'])) and not any(features(s))
+# The GMod native loader's layout: no runtime in bin/win64, and the module loads with the copy in
+# lua/bin, which the loader loaded first. That copy is the runtime: nothing is missing and nothing
+# else was loaded, so no warning reaches the console, on either realm or after a Recheck. (When
+# the module does not load, the missing file in bin/win64 is the reason, as just above.)
+for server in (False,True):
+    files=installed(server);del files[RUNTIME]
+    from_lua_bin=identity(server=server,runtime_at=GAME+'garrysmod\\lua\\bin\\'+NAMES['runtime'])
+    lua_,g,M,ok=session(files,server=server,info=from_lua_bin);s=M.GetInstallationStatus()
+    assert ok is True and M.native is not None and codes(s)==[] and s.features.core and M.loadError is None and s.installed==policy['recommended'],codes(s)
+    assert events(g)==['require mmdhl'],events(g)
+    if not server: g.ANSWER(convert(worker(),lua_));assert codes(s)==[] and s.features.imports,codes(s)
+    s=M.CheckInstallation(True);assert codes(s)==[] and s.features.core and events(g)==['require mmdhl'],(codes(s),events(g))
 
 # Another platform: nothing is read and nothing loads; the platform is the reason.
 for windows,linux,arch in ((False,False,'x64'),(True,False,'x86'),(False,True,'x86')):
@@ -534,7 +582,8 @@ for result,code in ((coacd_failed,'dependency_failed'),(None,'worker_failed')):
     else: g.ANSWER(False,'Worker self-test failed: exit code 3')
     failed=issue(s,code)
     assert len(failed)==1 and failed[0].warning is None and issue(s,'missing')[0].warning is True and s.features.core and M.loadError is None,codes(s)
-print('PASS: CheckInstallation always tries the files (one or two builds this addon does not know, a missing runtime, a broken policy), prints every '
+print('PASS: CheckInstallation always tries the files (one or two builds this addon does not know, a missing runtime, a runtime loaded from '
+      'lua/bin by the GMod native loader, a broken policy), prints every '
       'warning before require, and skips it only without a module file or on another platform; a failed load names the warning that explains it, '
       'else the loader\'s error; the self-test decides CoACD')
 

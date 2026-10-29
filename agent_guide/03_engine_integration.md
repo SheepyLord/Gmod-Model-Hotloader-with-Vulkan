@@ -173,7 +173,8 @@ Engine calls stay guarded and fail cleanly.
 - **`render_binaries.hpp`** is not a runtime gate.
 
 **Lua** (`installation.lua`):
-- **`EvaluateInstallation`** (pure, warnings only): reads module, runtime, worker, CoACD by size, SHA-256 and build ID; compares with `native_policy.lua` releases (Linux: `platforms.linux64`); reports the renderer.
+- **`EvaluateInstallation`** (pure, warnings only): reads module, runtime, worker, CoACD by size, SHA-256 and build ID; compares with `native_policy.lua` releases (Linux: `platforms.linux64`); reports the renderer. Windows client or listen server with no runtime in `bin/win64` but a copy in `lua/bin`: that copy is the runtime checked (`search='MOD'`), and `files.runtime.missingAt` holds the missing `bin/win64` path. The GMod native loader loads that copy before the module, since its packages cannot write `bin/win64`.
+- **`reportMissingRuntime`**: with `missingAt` set, the missing file becomes a warning, and the reason if loading fails, unless the loaded runtime is that `lua/bin` file (`GetInstallationInfo` path). It runs before `promote` when nothing loads, and in `assessLoaded`.
 - **`CheckInstallation`**: (1) always tries `require`; on failure `cause` warnings become problems. (2) `ConfigureCompatibility`: Windows offers the whole policy, then minus one library at a time, then none; Linux an empty policy. (3) `RefreshGameCompatibility` retries pending libraries 20 × 0.5 s, then warns `game_not_ready` and turns the feature on. (4) Worker self-test (30 s).
 - **Problems vs warnings:** `issue()` turns its feature off; `warn()` disables nothing. `identity` gives one banner line; `cause` is promoted only on load failure.
 - **Server:** broadcasts `mmdhl_install_status`. It pools net names before loading, so requests still get an answer.

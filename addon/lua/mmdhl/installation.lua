@@ -153,6 +153,15 @@ function M.EvaluateInstallation(policy,reader,env)
   local function present(path) local found,err=reader(path,'BASE_PATH',runtime.size) return found~=nil or err~='missing' end
   if present(runtime.name) or not present(runtimePath) then runtimePath=runtime.name end
  end
+ -- With no runtime where Windows looks, the game may still load the copy in lua/bin: the
+ -- GMod native loader, whose packages cannot write bin/win64, loads it from there before the
+ -- module. That copy is checked; whether it is the one loaded is known only after require,
+ -- so the missing file waits (files.runtime.missingAt) until CheckInstallation knows.
+ local missingAt
+ if windows and not env.dedicated then
+  local _,err=reader(runtimePath,runtimeSearch,runtime.size)
+  if err=='missing' and reader('lua/bin/'..runtime.name,'MOD',runtime.size) then missingAt=runtimePath runtimePath,runtimeSearch='lua/bin/'..runtime.name,'MOD' end
+ end
  local checks={{role,'lua/bin/'..files[role].name,'MOD','core'}, {'runtime',runtimePath,runtimeSearch,'core'}}
  if not env.server then
   checks[#checks+1]={'worker','lua/bin/'..files.worker.name,'MOD','imports'}
@@ -197,10 +206,11 @@ function M.EvaluateInstallation(policy,reader,env)
    warn(s,other and 'mixed_installation' or 'damaged_or_unrecognized',key,other and L('install.error.file_mixed',{path=path,release=other,required=selected.release}) or L('install.error.file_unrecognized',{path=path}),feature,{identity=true,detail=actual.size..':'..actual.sha256})
   end
  end
+ s.files.runtime.missingAt=missingAt
  -- The package unpacked into the wrong folder: found there while the game folder lacks its
  -- files, that is why nothing loads, so it comes first (after loading fails it is the problem
  -- every player sees). A copy left there beside a working installation says nothing.
- if s.files[role].error=='missing' or s.files.runtime.error=='missing' then
+ if s.files[role].error=='missing' or s.files.runtime.error=='missing' or missingAt then
   for _,root in ipairs(misplacedRoots(env.find)) do
    local found
    for _,path in ipairs({root..'garrysmod/lua/bin/'..files[role].name,root..(windows and 'bin/win64/' or 'garrysmod/lua/bin/')..runtime.name}) do if not found and reader(path,'BASE_PATH') then found=path end end
@@ -397,12 +407,24 @@ local function normalize(path) return tostring(path or ''):gsub('\\','/'):gsub('
 -- 2026-09-17 the main branch starts gmod_win64.exe in the game folder and still
 -- loads the engine, and this runtime, from bin/win64. Native builds up to
 -- 2.1.0-native.5 expect the runtime beside the executable, so the runtime may also
--- be the file this check read, under the game folder of the loaded module.
+-- be the file this check read, under the game folder of the loaded module (in garrysmod/
+-- when it was read through MOD: the copy in lua/bin).
 local function expectedPaths(key,info)
  local paths={normalize(info[key].expectedPath)}
  local root=key=='runtime' and info.module and normalize(info.module.expectedPath):match('^(.+)/garrysmod/lua/bin/[^/]+$')
- if root and status.files.runtime then paths[2]=root..'/'..normalize(status.files.runtime.relative) end
+ if root and status.files.runtime then paths[2]=root..'/'..(status.files.runtime.search=='MOD' and 'garrysmod/' or '')..normalize(status.files.runtime.relative) end
  return paths
+end
+-- The runtime EvaluateInstallation took from lua/bin, with none where Windows looks: loaded
+-- from that file (another loader loaded it first), it is the runtime and nothing is missing.
+-- Otherwise (nothing loaded, loaded from elsewhere, or a module too old to say where) the
+-- missing file is a warning after all, and the reason when loading failed.
+local function reportMissingRuntime(info)
+ local runtime=status.files.runtime
+ if not (runtime and runtime.missingAt) then return end
+ local loaded=type(info)=='table' and type(info.module)=='table' and type(info.runtime)=='table' and normalize(info.runtime.path)
+ for _,path in ipairs(loaded and expectedPaths('runtime',info) or {}) do if loaded==path then return end end
+ warn(status,'missing','runtime',L('install.error.file_missing',{path=runtime.missingAt}),'core',{cause=true})
 end
 -- Whether Garry's Mod loaded the files this check read. On a mismatch, also returns
 -- whether the loaded files share this addon's interface (installation API, native API,
@@ -572,6 +594,7 @@ local configureError,compatibilityFallback
 -- What the loaded module says about itself, on the first load and on every Recheck.
 local function assessLoaded()
  status.loaded=loadedIdentity
+ reportMissingRuntime(loadedIdentity)
  if type(rawNative.GetInstallationInfo)=='function' then checkLoaded(loadedIdentity) end
  if type(rawNative.GetInstallationInfo)~='function' or type(rawNative.ConfigureCompatibility)~='function' or type(rawNative.CheckCompatibility)~='function' then
   -- From before installation verification: it runs, with the update offered as needed. A
@@ -594,7 +617,7 @@ function M.CheckInstallation(recheck)
  status=M.EvaluateInstallation(policy,readerForSession(),{server=SERVER,windows=system.IsWindows(),linux=system.IsLinux(),arch=jit.arch,dedicated=SERVER and game.IsDedicated(),find=find})
  if recheck then
   -- Garry's Mod never loads a DLL twice: what did not load needs a restart.
-  if not rawNative then promote(status) issue(status,'restart_required','module',L'install.error.restart_to_load') notifyChanged() return status end
+  if not rawNative then reportMissingRuntime() promote(status) issue(status,'restart_required','module',L'install.error.restart_to_load') notifyChanged() return status end
   assessLoaded()
   if previous then
    -- Runtime failures are carried over below; valid files alone do not mean a restart repairs them.
@@ -618,6 +641,7 @@ function M.CheckInstallation(recheck)
  end
  -- Nothing loaded: the warnings that explain why become the problems, and everything is off.
  local function unloaded(problem)
+  reportMissingRuntime()
   promote(status)
   if problem then issue(status,'loader_failed','module',problem) end
   status.blocked=true for key in pairs(status.features) do status.features[key]=false end

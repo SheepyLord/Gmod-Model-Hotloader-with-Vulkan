@@ -170,7 +170,10 @@ messages, ConVars and DATA files have an owner column in §6–§8.
 **Installation and policy**
 - `installation` (SH; works without native). `EvaluateInstallation` (pure) hashes the module,
   runtime, worker, worker-runtime copy and CoACD (≤ 128 MiB each), reads their build ID
-  (`<commit>-YYYYMMDDTHHMMSSZ`), compares against the policy and emits only warnings.
+  (`<commit>-YYYYMMDDTHHMMSSZ`), compares against the policy and emits only warnings. With no
+  runtime in `bin/win64` (Windows client or listen server), the copy in `lua/bin` is the runtime
+  checked. The missing file waits in `files.runtime.missingAt` and is reported only if the loaded
+  runtime is not that copy: the GMod native loader loads it first.
   `CheckInstallation` then:
   1. prints the warnings and calls `require`;
   2. `ConfigureCompatibility` (win64: policy, retried without one library at a time; linux:
